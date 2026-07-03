@@ -302,24 +302,73 @@ export function ActionsPage() {
   }
 
   // ── TEST ACTION ──────────────────────────────────────────
+  // Randomized test data to make notifications less monotonous
+  const testUsers = [
+    { user: "PixelPioneer", nickname: "Pixel Pioneer" },
+    { user: "NeonNinja", nickname: "Neon Ninja" },
+    { user: "CyberSamurai", nickname: "Cyber Samurai" },
+    { user: "GlitchGamer", nickname: "Glitch Gamer" },
+    { user: "VoidVoyager", nickname: "Void Voyager" },
+    { user: "QuantumQueen", nickname: "Quantum Queen" },
+    { user: "RetroRacer", nickname: "Retro Racer" },
+    { user: "SynthSorcerer", nickname: "Synth Sorcerer" },
+    { user: "ByteBard", nickname: "Byte Bard" },
+    { user: "FluxPhantom", nickname: "Flux Phantom" },
+  ];
+
+  const testMessages = [
+    "Just tested this action! 🎉",
+    "Testing 1, 2, 3... working! ✅",
+    "Action triggered successfully! 🚀",
+    "Boom! That worked perfectly! 💥",
+    "Smooth like butter! 🧈",
+    "Level up achieved! ⬆️",
+    "Critical hit on that test! 🎯",
+    "Deployed and verified! 📦",
+    "All systems green! 🟢",
+    "Test complete - no bugs found! 🐛❌",
+  ];
+
+  const testKeystrokes = [
+    "Ctrl+Shift+K",
+    "Alt+F4",
+    "Ctrl+Alt+Del",
+    "Win+R",
+    "Ctrl+Shift+Esc",
+    "F12",
+    "Ctrl+Z",
+    "Alt+Tab",
+    "Win+D",
+    "Ctrl+Shift+N",
+  ];
+
   function testAction(action: any) {
+    // Pick random test data for variety
+    const randomUser = testUsers[Math.floor(Math.random() * testUsers.length)];
+    const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)];
+    const randomKeystroke = testKeystrokes[Math.floor(Math.random() * testKeystrokes.length)];
+
     let info = `📋 ${action.name}`;
     info += ` | ${action.overlayScreen || "Screen 1"}`;
     info += ` | ${action.displayDuration || action.duration || 20}s`;
     if (action.sound) info += ` | 🔊 Sound`;
     if (action.video) info += ` | 🎬 Video`;
     if (action.image) info += ` | 🖼️ Image`;
-    if (action.keystroke) info += ` | ⌨️ ${action.keystrokeKeys}`;
+    if (action.keystroke) info += ` | ⌨️ ${action.keystrokeKeys || randomKeystroke}`;
     if (action.minecraft) info += ` | ⛏️ ${action.minecraftCommand}`;
 
     // Kirim action content asli ke overlay widget
     const overlayData: any = {
-      user: "TestUser",
-      nickname: "Test User",
+      user: randomUser.user,
+      nickname: randomUser.nickname,
       actionName: action.name,
       timestamp: Date.now(),
       // Include the target screen so only that overlay widget receives it
       screen: action.overlayScreen ? action.overlayScreen.replace("Screen ", "") : "1",
+      // Add randomized test message
+      testMessage: randomMessage,
+      // Add randomized keystroke for testing if not provided
+      testKeystroke: randomKeystroke,
     };
 
     if (action.video && action.videoFile) {
@@ -331,14 +380,14 @@ export function ActionsPage() {
       overlayData.imageFile = action.imageFile;
       overlayData.duration = action.displayDuration || action.duration || 5;
     } else if (action.keystroke) {
-      // Include keystroke data for testing
+      // Include keystroke data for testing - use action's keystroke or random one for variety
       overlayData.type = "keystroke";
-      overlayData.keystrokeKeys = action.keystrokeKeys;
+      overlayData.keystrokeKeys = action.keystrokeKeys || randomKeystroke;
       overlayData.keystrokeHoldMs = action.keystrokeHoldMs || 100;
 
       // Also try to send actual keystroke via Electron if available
       if (typeof window !== 'undefined' && (window as any).electronAPI?.sendKeystroke) {
-        (window as any).electronAPI.sendKeystroke(action.keystrokeKeys, action.keystrokeHoldMs || 100);
+        (window as any).electronAPI.sendKeystroke(action.keystrokeKeys || randomKeystroke, action.keystrokeHoldMs || 100);
       }
     } else {
       overlayData.type = "gift";
@@ -348,8 +397,8 @@ export function ActionsPage() {
     }
 
     sendToOverlay(overlayData);
-    console.log("[Action Test]", info, "→ dikirim ke overlay:", overlayData.type, "| screen:", overlayData.screen);
-    alert("🚀 Action Test: " + action.name + "\n" + info);
+    console.log("[Action Test]", info, "→ dikirim ke overlay:", overlayData.type, "| screen:", overlayData.screen, "| user:", overlayData.user);
+    alert("🚀 Action Test: " + action.name + "\n" + info + "\n\n👤 Test User: @" + overlayData.user + " (" + overlayData.nickname + ")\n💬 " + overlayData.testMessage);
   }
 
   // ── GET TRIGGER TEXT ──────────────────────────
