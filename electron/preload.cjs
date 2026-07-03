@@ -74,8 +74,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   // ── Keystroke ──
-  sendKeystroke: (keys, holdMs) => ipcRenderer.invoke("send-keystroke", keys, holdMs),
-  sendKeystrokes: (keys, opts = {}) => ipcRenderer.send("keystroke:send", { keys, holdMs: opts.holdMs || 100, eventData: opts.eventData || null }),
+  sendKeystroke: (keys, holdMs, eventData) => ipcRenderer.invoke("send-keystroke", keys, holdMs, eventData),
+  sendKeystrokes: (keys, opts = {}) => ipcRenderer.invoke("send-keystroke", keys, opts.holdMs || 100, opts.eventData || null),
   onKeystrokeEvent: (cb) => {
     const listener = (_, d) => cb(d);
     ipcRenderer.on("keystroke-event", listener);

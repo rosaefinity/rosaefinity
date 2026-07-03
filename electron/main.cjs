@@ -395,12 +395,13 @@ async function sendKeystroke(keys, holdMs = 100, eventData) {
 
   function comboToPsKeys(combo) {
     const parts = combo.split("+").map(p => p.trim());
-    let mainKey = parts.pop().toUpperCase();
+    const mainKey = parts.pop().toUpperCase();
     const modifiers = parts.map(p => p.toLowerCase());
     const specialKey = keyMap[mainKey] || keyMap[mainKey.toUpperCase()];
     let psKey = specialKey || mainKey;
     let result = psKey;
-    modifiers.reverse().forEach(mod => {
+    // Keep modifiers in original order (Ctrl+Shift+L → ^+L, not +^L)
+    modifiers.forEach(mod => {
       const mc = modMap[mod];
       if (mc) result = mc + result;
     });
@@ -665,12 +666,14 @@ ipcMain.on("overlay:send", (_, data) => {
 });
 
 // ── Keystroke ──
-ipcMain.on("keystroke:send", (_, { keys, holdMs, eventData }) => {
-  sendKeystroke(keys, holdMs || 100, eventData);
+ipcMain.on("keystroke:send", async (_, { keys, holdMs, eventData }) => {
+  console.log(`[Keystroke IPC] on called: keys="${keys}", holdMs=${holdMs}, eventData=${JSON.stringify(eventData)}`);
+  await sendKeystroke(keys, holdMs, eventData);
 });
 // Also handle invoke-style (used by ActionsPage testAction)
-ipcMain.handle("send-keystroke", async (_, keys, holdMs) => {
-  return await sendKeystroke(keys, holdMs || 100, null);
+ipcMain.handle("send-keystroke", async (_, keys, holdMs, eventData) => {
+  console.log(`[Keystroke IPC] invoke called: keys="${keys}", holdMs=${holdMs}, eventData=${JSON.stringify(eventData)}`);
+  return await sendKeystroke(keys, holdMs || 100, eventData || null);
 });
 
 // ── Gifts ──

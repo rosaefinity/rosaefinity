@@ -178,6 +178,7 @@ export interface SetupConfig {
   pointsFollow: number;
   pointsComment: number;
   pointsShare: number;
+  pointsSubscribe: number;
   subBonus: number;
   levelPoints: number;
   levelMultiplier: number;
