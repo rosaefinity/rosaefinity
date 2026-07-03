@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RosaeFinity Overlay Widget</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      margin: 0; padding: 0;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    body { pointer-events: none; }
+
+    #alerts-container {
+      position: fixed;
+      bottom: 20px; left: 20px; right: 20px;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 10px;
+      z-index: 9999;
+    }
+
+    .alert-card {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 18px; border-radius: 14px;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+                 fadeOut 0.4s ease forwards var(--out-delay, 4.5s);
+      max-width: 420px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+    }
+
+    .alert-gift    { background: rgba(224, 48, 106, 0.88); color: #fff; }
+    .alert-follow  { background: rgba(78, 123, 255, 0.88); color: #fff; }
+    .alert-comment { background: rgba(30, 30, 50, 0.82); color: #e8e8ff; border: 1px solid rgba(255,255,255,0.1); }
+    .alert-like    { background: rgba(240, 160, 32, 0.88); color: #fff; }
+    .alert-share   { background: rgba(62, 207, 142, 0.88); color: #fff; }
+    .alert-subscribe { background: rgba(168, 85, 247, 0.88); color: #fff; }
+    .alert-action  { background: rgba(124, 58, 237, 0.88); color: #fff; }
+
+    .alert-icon { font-size: 28px; flex-shrink: 0; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3)); }
+    .alert-body { flex: 1; min-width: 0; }
+    .alert-title { font-size: 11px; font-weight: 700; text-transform: uppercase; opacity: 0.7; letter-spacing: 0.06em; margin-bottom: 2px; }
+    .alert-user { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .alert-detail { font-size: 12px; opacity: 0.8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .alert-badge { background: rgba(255,255,255,0.2); border-radius: 20px; padding: 4px 12px; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+
+    /* ── Fullscreen media overlays (video/image) ── */
+    .media-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+    }
+    .media-overlay video,
+    .media-overlay img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    @keyframes slideIn {
+      from { transform: translateX(-40px); opacity: 0; }
+      to   { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+
+    #no-events {
+      position: fixed;
+      bottom: 20px; left: 20px;
+      color: rgba(255,255,255,0.15);
+      font-size: 11px;
+      font-family: 'Segoe UI', sans-serif;
+      letter-spacing: 0.05em;
+    }
+    #status-dot {
+      position: fixed;
+      top: 8px; right: 8px;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+      transition: background 0.3s;
+      z-index: 99999;
+    }
+    #status-dot.connected { background: #22c55e; }
+  </style>
+</head>
+<body>
+  <div id="status-dot" title="Disconnected"></div>
+  <div id="no-events">🌹 RosaeFinity Overlay — waiting for events...</div>
+  <div id="alerts-container"></div>
+
+  <script>
+    const container = document.getElementById("alerts-container");
+    const noEvents = document.getElementById("no-events");
+    const statusDot = document.getElementById("status-dot");
+    const ICONS = { gift: "🎁", follow: "👤", comment: "💬", like: "❤️", share: "🔗", subscribe: "⭐", action: "⚡", keystroke: "⌨️" };
+
+    const params = new URLSearchParams(window.location.search);
+    const filterScreen = params.get("screen");
+
+    function showAlert(data) {
+      if (!data) return;
+      if (filterScreen && data.screen && String(data.screen) !== filterScreen) return;
+
+      noEvents.style.display = "none";
+
+      // ── VIDEO (fullscreen, full resolution) ──
+      if (data.type === "video" && data.videoFile) {
+        const overlay = document.createElement("div");
+        overlay.className = "media-overlay";
+        const vid = document.createElement("video");
+        vid.src = data.videoFile;
+        vid.autoplay = true;
+        vid.playsInline = true;
+        vid.setAttribute("playsinline", "");
+        vid.volume = 1;
+        vid.muted = false;
+        overlay.appendChild(vid);
+        document.body.appendChild(overlay);
+
+        // When metadata loads, let the video's natural size drive the display
+        vid.onloadedmetadata = () => {
+          // Video will use max-width:100% max-height:100% + object-fit:contain
+          // This shows the FULL video at its native aspect ratio, filling as much
+          // of the canvas as possible without cropping
+        };
+
+        // Try playing with audio
+        vid.play().catch(() => {
+          // Retry once — Browser Sources may need a moment
+          setTimeout(() => { vid.play().catch(() => {}); }, 100);
+        });
+
+        const dur = (data.duration || 5) * 1000;
+        const remove = () => { if (overlay.parentElement) overlay.remove(); };
+        setTimeout(remove, dur);
+        vid.onended = remove;
+        return;
+      }
+
+      // ── IMAGE (fullscreen) ──
+      if (data.type === "image" && data.imageFile) {
+        const overlay = document.createElement("div");
+        overlay.className = "media-overlay";
+        const img = document.createElement("img");
+        img.src = data.imageFile;
+        overlay.appendChild(img);
+        document.body.appendChild(overlay);
+        setTimeout(() => { if (overlay.parentElement) overlay.remove(); }, (data.duration || 5) * 1000);
+        return;
+      }
+
+      // ── KEYSTROKE ──
+      if (data.type === "keystroke" && data.keystrokeKeys) {
+        const card = document.createElement("div");
+        card.className = "alert-card alert-action";
+        card.style.setProperty("--out-delay", "4.5s");
+        card.innerHTML = `
+          <div class="alert-icon">${ICONS.keystroke || "⌨️"}</div>
+          <div class="alert-body">
+            <div class="alert-title">Keystroke</div>
+            <div class="alert-user">@${data.user || data.nickname || "test"}</div>
+            <div class="alert-detail"><code style="font-family: monospace; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">${data.keystrokeKeys}</code></div>
+            <div class="alert-detail">Hold: ${data.keystrokeHoldMs || 100}ms</div>
+          </div>
+        `;
+        container.prepend(card);
+        setTimeout(() => { if (card.parentElement) card.remove(); }, 5000);
+        while (container.children.length > 5) container.lastElementChild.remove();
+        return;
+      }
+
+      // ── ALERT CARD ──
+      const card = document.createElement("div");
+      const eventType = data.eventType || data.type || "action";
+      card.className = `alert-card alert-${["gift","follow","like","share","subscribe","comment"].includes(eventType) ? eventType : "action"}`;
+      card.style.setProperty("--out-delay", "4.5s");
+
+      let detail = "";
+      let badge = "";
+      if (eventType === "gift") { detail = data.giftName || "Gift"; badge = `×${data.repeatCount || 1}`; }
+      else if (eventType === "comment") { detail = data.comment || ""; }
+      else if (eventType === "like") { badge = `+${data.likeCount || 1} ❤️`; }
+
+      card.innerHTML = `
+        <div class="alert-icon">${ICONS[eventType] || "⚡"}</div>
+        <div class="alert-body">
+          <div class="alert-title">${eventType}</div>
+          <div class="alert-user">@${data.user || data.nickname || "someone"}</div>
+          ${detail ? `<div class="alert-detail">${detail}</div>` : ""}
+        </div>
+        ${badge ? `<div class="alert-badge">${badge}</div>` : ""}
+      `;
+      container.prepend(card);
+      setTimeout(() => { if (card.parentElement) card.remove(); }, 5000);
+      while (container.children.length > 5) container.lastElementChild.remove();
+    }
+
+    // ═══ EVENT SOURCES ═══
+
+    // SSE
+    function connectSSE() {
+      try {
+        const es = new EventSource("http://127.0.0.1:18890/events");
+        es.onopen = () => { statusDot.classList.add("connected"); statusDot.title = "Connected"; };
+        es.onmessage = (e) => { try { showAlert(JSON.parse(e.data)); } catch {} };
+        es.onerror = () => { statusDot.classList.remove("connected"); es.close(); setTimeout(connectSSE, 3000); };
+      } catch (_) { setTimeout(connectSSE, 3000); }
+    }
+    connectSSE();
+
+    // BroadcastChannel
+    try { new BroadcastChannel("rosaefinity-overlay").onmessage = (e) => { if (e.data) showAlert(e.data); }; } catch {}
+
+    // localStorage polling
+    let lastChecked = 0;
+    setInterval(() => {
+      try {
+        const t = localStorage.getItem("rf_overlay_test_time");
+        if (t && parseInt(t) > lastChecked) {
+          lastChecked = parseInt(t);
+          const d = localStorage.getItem("rf_overlay_test");
+          if (d) { try { showAlert(JSON.parse(d)); } catch {} }
+        }
+      } catch {}
+    }, 500);
+
+    // CustomEvent
+    window.addEventListener("rosae:overlay-event", (e) => { if (e.detail) showAlert(e.detail); });
+
+    console.log("[Overlay] Ready");
+  </script>
+</body>
+</html>

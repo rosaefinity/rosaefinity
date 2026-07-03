@@ -1,0 +1,75 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-background: #09090B;
+  --color-sidebar: #111118;
+  --color-card: #17171F;
+  --color-primary: #7C3AED;
+  --color-primary-hover: #6D28D9;
+  --color-primary-light: #8B5CF6;
+  --color-primary-glow: rgba(124, 58, 237, 0.3);
+  --color-secondary: #EC4899;
+  --color-secondary-hover: #DB2777;
+  --color-secondary-light: #F472B6;
+  --color-secondary-glow: rgba(236, 72, 153, 0.3);
+  --color-accent: #00D4FF;
+  --color-accent-hover: #00B8E6;
+  --color-accent-light: #33DDFF;
+  --color-accent-glow: rgba(0, 212, 255, 0.3);
+  --color-success: #22C55E;
+  --color-success-hover: #16A34A;
+  --color-warning: #F59E0B;
+  --color-warning-hover: #D97706;
+  --color-danger: #EF4444;
+  --color-danger-hover: #DC2626;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-shimmer: shimmer 2s infinite;
+  --animate-glow-pulse: glow-pulse 2s ease-in-out infinite;
+  --animate-float: float 3s ease-in-out infinite;
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(124, 58, 237, 0.2); }
+    50% { box-shadow: 0 0 40px rgba(124, 58, 237, 0.4); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+  }
+}
+
+@layer base {
+  * { @apply border-white/[0.06]; }
+  body {
+    @apply bg-background text-white font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@utility scrollbar-thin {
+  &::-webkit-scrollbar { width: 4px; height: 4px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 999px; }
+  &::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+}
+
+@utility glass {
+  background: rgba(255,255,255,0.04);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.06);
+}
