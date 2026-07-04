@@ -129,10 +129,41 @@ export interface TikTokGift {
   id?: string;
 }
 
+// ===== Stats =====
+export interface Stats {
+  gifts: number;
+  likes: number;
+  views: number;
+  follows: number;
+}
+
+// ===== Screen Connection (Multi-Screen v2) =====
+export type ScreenId = string; // "screen-0" through "screen-7"
+
+export const SCREEN_IDS: ScreenId[] = [
+  "screen-0", "screen-1", "screen-2", "screen-3",
+  "screen-4", "screen-5", "screen-6", "screen-7",
+];
+
+export type TikTokConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
+export interface ScreenConnectionState {
+  screenId: ScreenId;
+  isLive: boolean;
+  username: string;
+  roomId: string;
+  viewerCount: number;
+  status: TikTokConnectionStatus;
+  lastError?: string;
+  reconnectAttempts: number;
+  isReconnecting: boolean;
+  stats: Stats;
+}
+
 // ===== Live Event =====
 export interface LiveEvent {
   type: "gift" | "follow" | "comment" | "like" | "share" | "join" | "subscribe";
-  screenId: ScreenId;
+  screenId?: ScreenId;
   user: string;
   nickname?: string;
   giftName?: string;
@@ -145,27 +176,17 @@ export interface LiveEvent {
   timestamp: number;
 }
 
-// ===== Stats =====
-export interface Stats {
-  gifts: number;
-  likes: number;
-  views: number;
-  follows: number;
-}
+// ===== TikTok Connection =====
 
-// ===== Screen Connection =====
-export type ScreenId = string; // "screen-0" through "screen-7"
-
-export const SCREEN_IDS: ScreenId[] = [
-  "screen-0", "screen-1", "screen-2", "screen-3",
-  "screen-4", "screen-5", "screen-6", "screen-7",
-];
-
-export interface ScreenConnectionState {
-  screenId: ScreenId;
-  isLive: boolean;
+export interface TikTokConnectionState {
+  status: TikTokConnectionStatus;
   username: string;
+  roomId: string;
+  viewerCount: number;
   stats: Stats;
+  lastError?: string;
+  reconnectAttempts: number;
+  isReconnecting: boolean;
 }
 
 // ===== Settings / Setup Config =====

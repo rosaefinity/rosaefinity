@@ -98,6 +98,13 @@ interface AppStore {
   // Dexie hydration — restore media stripped by partialize
   hydrateMedia: () => Promise<void>;
 
+  // ══ TIKTOK CONNECTION STATE ══
+  tikTokConnection: TikTokConnectionState;
+  setTikTokConnected: (username: string, roomId: string) => void;
+  setTikTokDisconnected: () => void;
+  setTikTokStats: (stats: Partial<Stats>) => void;
+  setTikTokReconnecting: (isReconnecting: boolean) => void;
+
   // ══ MULTI-SCREEN CONNECTION STATE ══
   screenConnections: Record<ScreenId, ScreenConnectionState>;
   setScreenConnected: (screenId: ScreenId, username: string) => void;
@@ -153,12 +160,22 @@ const DEFAULT_ALERTS: Record<string, { enabled: boolean; minDiamond?: number; mi
   subscribe: { enabled: true, duration: 5, color: "#a855f7" },
 };
 
+const DEFAULT_TIKTOK_CONNECTION: TikTokConnectionState = {
+  status: "disconnected",
+  username: "",
+  roomId: "",
+  viewerCount: 0,
+  stats: { gifts: 0, likes: 0, views: 0, follows: 0 },
+  reconnectAttempts: 0,
+  isReconnecting: false,
+};
+
 // ── Per-screen defaults ──
 const DEFAULT_SCREEN_CONNECTIONS: Record<ScreenId, ScreenConnectionState> = {} as any;
 const DEFAULT_SCREEN_EVENTS: Record<ScreenId, LiveEvent[]> = {} as any;
 const DEFAULT_SCREEN_NAMES: Record<ScreenId, string> = {} as any;
 for (const id of SCREEN_IDS) {
-  DEFAULT_SCREEN_CONNECTIONS[id] = { screenId: id, isLive: false, username: "", stats: { gifts: 0, likes: 0, views: 0, follows: 0 } };
+  DEFAULT_SCREEN_CONNECTIONS[id] = { screenId: id, isLive: false, username: "", roomId: "", viewerCount: 0, status: "disconnected", reconnectAttempts: 0, isReconnecting: false, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } };
   DEFAULT_SCREEN_EVENTS[id] = [];
   DEFAULT_SCREEN_NAMES[id] = "";
 }
@@ -203,6 +220,9 @@ export const useAppStore = create<AppStore>()(
       obsConnected: false,
       sbConnected: false,
       mcConnected: false,
+
+      // ══ TikTok connection state ══
+      tikTokConnection: { ...DEFAULT_TIKTOK_CONNECTION },
 
       // ══ Per-screen connection state ══
       screenConnections: { ...DEFAULT_SCREEN_CONNECTIONS },
@@ -378,15 +398,44 @@ export const useAppStore = create<AppStore>()(
       setSbConnected: (connected) => set({ sbConnected: connected }),
       setMcConnected: (connected) => set({ mcConnected: connected }),
 
+      // ══ TikTok Connection ═══
+      setTikTokConnected: (username, roomId) => set((s) => ({
+        tikTokConnection: {
+          status: "connected",
+          username,
+          roomId,
+          viewerCount: 0,
+          stats: { gifts: 0, likes: 0, views: 0, follows: 0 },
+          reconnectAttempts: 0,
+          isReconnecting: false,
+        },
+        isLive: true,
+        liveUsername: username,
+        stats: { gifts: 0, likes: 0, views: 0, follows: 0 },
+      })),
+      setTikTokDisconnected: () => set((s) => ({
+        tikTokConnection: { ...s.tikTokConnection, status: "disconnected", username: "", isReconnecting: false },
+        isLive: false,
+        liveUsername: "",
+      })),
+      setTikTokStats: (partial) => set((s) => ({
+        tikTokConnection: { ...s.tikTokConnection, stats: { ...s.tikTokConnection.stats, ...partial } },
+        stats: { ...s.stats, ...partial },
+      })),
+      setTikTokReconnecting: (isReconnecting) => set((s) => ({
+        tikTokConnection: { ...s.tikTokConnection, isReconnecting },
+      })),
+
       // ══ Per-screen connection actions ═══
       setScreenConnected: (screenId, username) => set((s) => ({
-        screenConnections: { ...s.screenConnections, [screenId]: { screenId, isLive: true, username, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } } },
+        screenConnections: { ...s.screenConnections, [screenId]: { screenId, isLive: true, status: "connected", username, roomId: "", viewerCount: 0, reconnectAttempts: 0, isReconnecting: false, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } } },
         // Deprecated compat: also set singleton fields if screen-0
-        ...(screenId === "screen-0" ? { isLive: true, liveUsername: username, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } } : {}),
+        ...(screenId === "screen-0" ? { isLive: true, liveUsername: username, stats: { gifts: 0, likes: 0, views: 0, follows: 0 }, tikTokConnection: { ...s.tikTokConnection, status: "connected" as const, username, roomId: "", viewerCount: 0, reconnectAttempts: 0, isReconnecting: false, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } } } : {}),
       })),
       setScreenDisconnected: (screenId) => set((s) => ({
-        screenConnections: { ...s.screenConnections, [screenId]: { ...s.screenConnections[screenId], isLive: false, username: "" } },
-        ...(screenId === "screen-0" ? { isLive: false, liveUsername: "" } : {}),
+        screenConnections: { ...s.screenConnections, [screenId]: { ...s.screenConnections[screenId], isLive: false, status: "disconnected" as const, username: "" } },
+        // Deprecated compat: also set singleton fields if screen-0
+        ...(screenId === "screen-0" ? { isLive: false, liveUsername: "", tikTokConnection: { ...s.tikTokConnection, status: "disconnected" as const, username: "", isReconnecting: false } } : {}),
       })),
       incrementScreenStat: (screenId, key, value = 1) => set((s) => {
         const conn = s.screenConnections[screenId];
@@ -396,7 +445,7 @@ export const useAppStore = create<AppStore>()(
       setScreenStats: (screenId, partial) => set((s) => {
         const conn = s.screenConnections[screenId];
         if (!conn) return {};
-        return { screenConnections: { ...s.screenConnections, [screenId]: { ...conn, stats: { ...conn.stats, ...partial } } } };
+        return { screenConnections: { ...s.screenConnections, [screenId]: { ...conn, ...partial, stats: { ...conn.stats, ...partial } } } };
       }),
       setScreenTikTokName: (screenId, name) => set((s) => ({
         screenTikTokNames: { ...s.screenTikTokNames, [screenId]: name },
@@ -438,15 +487,16 @@ export const useAppStore = create<AppStore>()(
         actions: state.actions.map(({ soundFile, videoFile, imageFile, ...rest }) => rest),
         customSounds: state.customSounds.map(({ file, ...rest }) => rest),
         // Strip runtime connection state — all screens start offline on restart
+        tikTokConnection: {
+          ...DEFAULT_TIKTOK_CONNECTION,
+        },
         screenConnections: Object.fromEntries(
-          Object.entries(state.screenConnections).map(([id, conn]) => [
-            id,
-            { ...conn, isLive: false, username: "", stats: { gifts: 0, likes: 0, views: 0, follows: 0 } },
-          ])
+          SCREEN_IDS.map(id => [id, { screenId: id, isLive: false, username: "", roomId: "", viewerCount: 0, status: "disconnected" as const, reconnectAttempts: 0, isReconnecting: false, stats: { gifts: 0, likes: 0, views: 0, follows: 0 } }])
         ),
-        screenLiveEvents: Object.fromEntries(
-          Object.keys(state.screenLiveEvents).map((id) => [id, []])
-        ),
+        isLive: false,
+        liveUsername: "",
+        liveEvents: [],
+        screenLiveEvents: Object.fromEntries(SCREEN_IDS.map(id => [id, []])),
       }),
     }
   )

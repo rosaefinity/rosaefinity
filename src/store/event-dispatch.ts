@@ -8,7 +8,6 @@ const userCooldowns: Map<string, Map<string, number>> = new Map();
 
 export function dispatchTikTokEvent(data: any) {
   if (!data) return;
-  const screenId: ScreenId = data.screenId || "screen-0";
   const store = useAppStore.getState();
   const { events, actions, alertsMasterEnabled, alertSettings } = store;
 
@@ -17,6 +16,8 @@ export function dispatchTikTokEvent(data: any) {
   // Per-type alert toggle check
   const typeSettings = alertSettings[data.type as keyof typeof alertSettings];
   if (typeSettings && typeof typeSettings === "object" && "enabled" in typeSettings && !typeSettings.enabled) return;
+
+  const screenId: ScreenId = data.screenId || "screen-0";
 
   const liveEvent: LiveEvent = {
     type: data.type,
