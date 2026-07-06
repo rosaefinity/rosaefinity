@@ -3,6 +3,7 @@ import { defineOverlay } from '../defineOverlay';
 import React from 'react';
 
 const TestRenderer: React.FC<{ config: Record<string, unknown>; mode: 'preview' | 'browser-source' }> = () => null;
+const TestIcon: React.FC<{ className?: string }> = () => null;
 
 describe('defineOverlay', () => {
   it('returns a valid OverlayModule descriptor', () => {
@@ -11,7 +12,7 @@ describe('defineOverlay', () => {
       name: 'Test Overlay',
       description: 'A test overlay',
       category: 'alerts',
-      icon: React.Fragment,
+      icon: TestIcon,
       tags: ['test'],
       supportsBrowserSource: true,
       supportsPreview: true,
@@ -42,7 +43,7 @@ describe('defineOverlay', () => {
       name: 'Test',
       description: 'Test',
       category: 'alerts',
-      icon: React.Fragment,
+      icon: TestIcon,
       tags: [],
       supportsBrowserSource: true,
       supportsPreview: true,
