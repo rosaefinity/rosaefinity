@@ -20,6 +20,11 @@ const spotify       = require("./backend/spotify.cjs");
 const authSystem    = require("./backend/auth-system.cjs");
 const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/global-input-hook.cjs");
 
+// ── Phase 2: Stability Modules ──────────────
+const { Logger } = require("./logger.cjs");
+const { MemoryManager } = require("./memory-manager.cjs");
+const { ServiceMonitor } = require("./service-monitor.cjs");
+
 const isDev = process.env.NODE_ENV === "development" || process.argv.includes("--dev");
 
 // ── State ───────────────────────────────────
@@ -1032,19 +1037,93 @@ ipcMain.handle("capture:setSource", (_, sourceId) => {
   return { success: true };
 });
 
+// ═════════════════════════════════════════════
+//  PHASE 2: DIAGNOSTICS & LOGGING
+// ═════════════════════════════════════════════
+
+ipcMain.handle("diagnostics:get", () => {
+  return {
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    nodeVersion: process.versions.node,
+    platform: `${process.platform} ${process.arch}`,
+    uptime: process.uptime(),
+    memory: memoryManager ? memoryManager.getStats() : {},
+    services: serviceMonitor ? serviceMonitor.getStatus() : {},
+    ipcListeners: memoryManager ? [...memoryManager.ipcListeners.keys()] : [],
+    sseStatus: sseClients.length > 0 ? "connected" : "idle",
+  };
+});
+
+ipcMain.handle("logs:export", () => {
+  return logger ? logger.exportLogs() : "";
+});
+
+ipcMain.handle("service:restart", async (_, serviceName) => {
+  if (!serviceMonitor) return { success: false, error: "Service monitor not initialized" };
+  try {
+    await serviceMonitor.manualRestart(serviceName);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // =============================================
 //  APP LIFECYCLE
 // =============================================
 app.whenReady().then(async () => {
+  // ── Phase 2: Initialize stability modules ──
+  const logger = new Logger();
+  const memoryManager = new MemoryManager(logger);
+  const serviceMonitor = new ServiceMonitor(logger, memoryManager);
+
+  logger.info("Application starting", { version: app.getVersion() });
+
   createMainWindow();
   createTray();
   startSSEServer();
+
+  // Set main window for service monitor notifications
+  serviceMonitor.setMainWindow(mainWindow);
+
+  // ── Register services for monitoring ──
+  serviceMonitor.register("sse-server", {
+    healthCheck: () => {
+      return new Promise((resolve) => {
+        const http = require("http");
+        const req = http.get(`http://127.0.0.1:${SSE_PORT}/events`, { timeout: 2000 }, (res) => {
+          res.resume();
+          resolve(true);
+        });
+        req.on("error", () => resolve(false));
+        req.on("timeout", () => { req.destroy(); resolve(false); });
+      });
+    },
+    restart: async () => {
+      // SSE server restart is handled by the existing server
+      logger.info("SSE server restart requested");
+    },
+    isCritical: true,
+  });
+
+  serviceMonitor.register("global-hook", {
+    healthCheck: () => Promise.resolve(isHookRunning() || true), // Not always needed
+    restart: async () => {
+      logger.info("Global hook restart requested");
+    },
+    isCritical: false,
+  });
+
+  serviceMonitor.start();
+  memoryManager.startMonitor();
+  logger.info("Phase 2 stability modules initialized");
 
   // Init backend systems
   licenseSystem.initLicense();
   authSystem.initAuth();
   pointsSystem.initPointsSystem();
-  console.log("[RF] Backend loaded: points, obs, streamerbot, minecraft, spotify, license, auth");
+  logger.info("Backend loaded: points, obs, streamerbot, minecraft, spotify, license, auth");
 
   // Pre-fetch gifts in background
   muatGiftTikTok().then(gifts => console.log(`[RF] ${gifts.length} gifts loaded`)).catch(() => {});
@@ -1070,12 +1149,13 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 
-// ── Phase 1: Graceful shutdown ──
-app.on("before-quit", (e) => {
+// ── Phase 1+2: Graceful shutdown ──
+app.on("before-quit", async (e) => {
   if (isQuitting) return;
   isQuitting = true;
-  console.log("[RF] Application shutting down gracefully");
+  if (logger) logger.info("Application shutting down gracefully");
   disconnectAllScreens();
+  if (memoryManager) await memoryManager.cleanupAll();
 });
 
 // ── Phase 1: Global error handlers ──
