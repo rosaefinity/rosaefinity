@@ -18,13 +18,20 @@ const minecraft     = require("./backend/minecraft.cjs");
 const licenseSystem = require("./backend/license-system.cjs");
 const spotify       = require("./backend/spotify.cjs");
 const authSystem    = require("./backend/auth-system.cjs");
+const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/global-input-hook.cjs");
 
-const isDev = process.env.NODE_ENV === "development";
+const isDev = process.env.NODE_ENV === "development" || process.argv.includes("--dev");
 
 // ── State ───────────────────────────────────
 let mainWindow          = null;
 let overlayWindow       = null;
 let tray                = null;
+let isQuitting          = false;
+
+// ── Crash tracking ──────────────────────────
+let rendererCrashCount  = 0;
+const MAX_RENDERER_CRASHES = 5;
+const CRASH_RESET_MS    = 5 * 60 * 1000; // Reset crash count after 5 min stability
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 
@@ -169,39 +176,148 @@ try {
 } catch (_) { /* not available */ }
 
 // =============================================
+//  PATH RESOLUTION (Phase 1 — production black screen fix)
+// =============================================
+
+function resolveIndexHtml() {
+  const strategies = [
+    // Standard: dist/index.html relative to project root
+    path.join(__dirname, "..", "dist", "index.html"),
+    // Asar unpacked: resourcesPath
+    path.join(process.resourcesPath || "", "dist", "index.html"),
+    // App path
+    path.join(app.getAppPath(), "dist", "index.html"),
+    // Current working directory
+    path.join(process.cwd(), "dist", "index.html"),
+  ];
+
+  for (const p of strategies) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch (_) {}
+  }
+
+  return null; // No valid path found
+}
+
+function resolveErrorHtml() {
+  const strategies = [
+    path.join(__dirname, "error.html"),
+    path.join(app.getAppPath(), "electron", "error.html"),
+  ];
+
+  for (const p of strategies) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+function loadErrorPage(reason) {
+  const errorPath = resolveErrorHtml();
+  if (errorPath && mainWindow && !mainWindow.isDestroyed()) {
+    const params = new URLSearchParams({
+      version: app.getVersion(),
+      platform: process.platform,
+      cwd: process.cwd(),
+      expected: path.join(__dirname, "..", "dist", "index.html"),
+      reason: reason || "unknown",
+    });
+    mainWindow.loadFile(errorPath);
+  }
+}
+
+// =============================================
 //  WINDOW MANAGEMENT
 // =============================================
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900,
     minWidth: 1200, minHeight: 700,
-    backgroundColor: "#1a1a24",
+    backgroundColor: "#0a0a0f",
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#1a1a24", symbolColor: "#ffffff", height: 36 },
-    icon: path.join(__dirname, "icon.ico"),
+    titleBarOverlay: { color: "#0a0a0f", symbolColor: "#ffffff", height: 36 },
+    icon: path.join(__dirname, "..", "public", "icon.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false,
+      sandbox: false,
     },
     show: false,
   });
 
+  // ── Load content ──
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    const indexPath = resolveIndexHtml();
+    if (indexPath) {
+      mainWindow.loadFile(indexPath);
+    } else {
+      console.error("[RF] CRITICAL: index.html not found at any expected path");
+      loadErrorPage("index.html-not-found");
+    }
   }
 
-  mainWindow.once("ready-to-show", () => mainWindow.show());
+  // ── Show when ready (prevent white flash) ──
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+  });
+
+  // ── Phase 1: did-fail-load handler ──
+  mainWindow.webContents.on("did-fail-load", (e, errorCode, errorDescription, validatedURL) => {
+    console.error(`[RF] Page load failed: ${errorCode} ${errorDescription} ${validatedURL}`);
+    if (!isDev) {
+      loadErrorPage(`load-failed-${errorCode}`);
+    }
+  });
+
+  // ── Phase 1: Renderer crash recovery ──
+  mainWindow.webContents.on("render-process-gone", (e, details) => {
+    rendererCrashCount++;
+    console.error(`[RF] Renderer crashed (attempt ${rendererCrashCount}):`, details.reason);
+
+    if (rendererCrashCount < MAX_RENDERER_CRASHES) {
+      console.log(`[RF] Auto-restarting renderer in 2s (attempt ${rendererCrashCount}/${MAX_RENDERER_CRASHES})`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.reload();
+        }
+      }, 2000);
+    } else {
+      console.error("[RF] Max renderer crashes reached — showing error page");
+      loadErrorPage("max-crashes-reached");
+    }
+  });
+
+  // ── Phase 1: Unresponsive handler ──
+  mainWindow.on("unresponsive", () => {
+    console.warn("[RF] Window became unresponsive");
+  });
+
+  // ── Phase 1: Close handler (graceful shutdown) ──
   mainWindow.on("closed", () => {
     mainWindow = null;
     if (overlayWindow) overlayWindow.close();
     disconnectAllScreens();
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: "deny" }; });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  // ── Reset crash count after 5 min of stability ──
+  if (rendererCrashCount > 0) {
+    setTimeout(() => {
+      if (rendererCrashCount > 0) rendererCrashCount--;
+    }, CRASH_RESET_MS);
+  }
 }
 
 function createOverlayWindow() {
@@ -226,7 +342,7 @@ function createOverlayWindow() {
 
 function createTray() {
   try {
-    tray = new Tray(path.join(__dirname, "icon.ico"));
+    tray = new Tray(path.join(__dirname, "..", "public", "icon.ico"));
     const ctx = Menu.buildFromTemplate([
       { label: "Show RosaeFinity", click: () => mainWindow?.show() },
       { label: "Quit", click: () => app.quit() },
@@ -676,6 +792,37 @@ ipcMain.handle("send-keystroke", async (_, keys, holdMs, eventData) => {
   return await sendKeystroke(keys, holdMs || 100, eventData || null);
 });
 
+// ── Global Input Hook (keyboard + mouse capture) ──
+ipcMain.handle("global-hook:start", (_, screen) => {
+  console.log("[GlobalHook] Starting global input hook for screen:", screen);
+  const started = startGlobalHook((type, data) => {
+    // Forward events to renderer via IPC
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("global-hook:event", { type, ...data, screen: screen || "1" });
+    }
+    // Also broadcast to SSE for Browser Source
+    broadcastSSE({
+      type: "keystroke",
+      source: "global-hook",
+      event: type,
+      ...data,
+      screen: screen || "1",
+      timestamp: Date.now(),
+    });
+  });
+  return { success: started, running: isHookRunning() };
+});
+
+ipcMain.handle("global-hook:stop", () => {
+  console.log("[GlobalHook] Stopping global input hook");
+  stopGlobalHook();
+  return { success: true };
+});
+
+ipcMain.handle("global-hook:status", () => {
+  return { running: isHookRunning() };
+});
+
 // ── Gifts ──
 ipcMain.on("gift:request", async () => {
   const gifts = await muatGiftTikTok();
@@ -918,8 +1065,25 @@ app.whenReady().then(async () => {
   });
   console.log("[RF] Display media handler registered for screen capture");
 
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", disconnectAllScreens);
+
+// ── Phase 1: Graceful shutdown ──
+app.on("before-quit", (e) => {
+  if (isQuitting) return;
+  isQuitting = true;
+  console.log("[RF] Application shutting down gracefully");
+  disconnectAllScreens();
+});
+
+// ── Phase 1: Global error handlers ──
+process.on("uncaughtException", (error) => {
+  console.error("[RF] Uncaught exception:", error.message);
+  console.error("[RF] Stack:", error.stack);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[RF] Unhandled promise rejection:", reason);
+});

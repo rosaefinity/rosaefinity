@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RosaeFinity — Error</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 600px;
+      width: 100%;
+      background: #12121a;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 2.5rem;
+      text-align: center;
+    }
+    .icon { font-size: 3rem; margin-bottom: 1rem; }
+    h1 { font-size: 1.5rem; color: #fff; margin-bottom: 0.5rem; }
+    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .debug-info {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: left;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-bottom: 1.5rem;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .debug-info div { margin-bottom: 0.3rem; }
+    .debug-info .label { color: #888; }
+    .debug-info .value { color: #ccc; }
+    .btn {
+      display: inline-block;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      margin: 0 0.5rem;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-primary {
+      background: linear-gradient(135deg, #8b5cf6, #ec4899);
+      color: #fff;
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #ccc;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h1>Unable to Load RosaeFinity</h1>
+    <p class="subtitle">The application could not load its resources. This may be a configuration issue.</p>
+
+    <div class="debug-info" id="debugInfo">
+      <div><span class="label">App Version:</span> <span class="value" id="appVersion">Unknown</span></div>
+      <div><span class="label">Platform:</span> <span class="value" id="platform">Unknown</span></div>
+      <div><span class="label">Working Directory:</span> <span class="value" id="cwd">Unknown</span></div>
+      <div><span class="label">Expected Path:</span> <span class="value" id="expectedPath">Unknown</span></div>
+    </div>
+
+    <button class="btn btn-primary" onclick="location.reload()">Retry</button>
+    <button class="btn btn-secondary" onclick="copyDebugInfo()">Copy Debug Info</button>
+  </div>
+
+  <script>
+    // Populate debug info from URL params
+    const params = new URLSearchParams(window.location.search);
+    document.getElementById('appVersion').textContent = params.get('version') || 'Unknown';
+    document.getElementById('platform').textContent = params.get('platform') || navigator.platform;
+    document.getElementById('cwd').textContent = params.get('cwd') || 'Unknown';
+    document.getElementById('expectedPath').textContent = params.get('expected') || 'Unknown';
+
+    function copyDebugInfo() {
+      const info = document.getElementById('debugInfo').innerText;
+      navigator.clipboard.writeText(info).catch(() => {});
+    }
+  </script>
+</body>
+</html>
