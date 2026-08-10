@@ -82,6 +82,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("keystroke-event", listener);
   },
 
+  // ── Global Input Hook ──
+  startGlobalHook: (screen) => ipcRenderer.invoke("global-hook:start", screen),
+  stopGlobalHook: () => ipcRenderer.invoke("global-hook:stop"),
+  getGlobalHookStatus: () => ipcRenderer.invoke("global-hook:status"),
+  onGlobalHookEvent: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("global-hook:event", listener);
+    return () => ipcRenderer.removeListener("global-hook:event", listener);
+  },
+
   // ── Gifts ──
   requestGifts: () => ipcRenderer.send("gift:request"),
   refreshGifts: () => ipcRenderer.send("gift:refresh"),

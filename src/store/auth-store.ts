@@ -4,7 +4,6 @@ import type { User, LoginCredentials, RegisterData } from "../types";
 
 interface AuthStore {
   user: User | null;
-  token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
@@ -23,7 +22,6 @@ export const useAuthStore = create<AuthStore>()(
   persist(
     (set, get) => ({
       user: null,
-      token: null,
       isAuthenticated: false,
       isLoading: false,
       error: null,
@@ -47,7 +45,7 @@ export const useAuthStore = create<AuthStore>()(
                   provider: "email", plan: "pro",
                   createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
                 };
-                set({ user, token: "rf_demo_token", isAuthenticated: true, isLoading: false });
+                set({ user, isAuthenticated: true, isLoading: false });
               } else {
                 set({ isLoading: false, error: result.error || "Email atau password salah" });
               }
@@ -64,7 +62,7 @@ export const useAuthStore = create<AuthStore>()(
               createdAt: userData?.createdAt || new Date().toISOString(),
               lastLogin: new Date().toISOString(),
             };
-            set({ user, token: "rf_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+            set({ user, isAuthenticated: true, isLoading: false });
             return;
           }
 
@@ -76,7 +74,7 @@ export const useAuthStore = create<AuthStore>()(
               provider: "email", plan: "pro",
               createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
             };
-            set({ user, token: "rf_demo_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+            set({ user, isAuthenticated: true, isLoading: false });
           } else {
             const stored = localStorage.getItem("rf_users");
             const users: Record<string, { name: string; password: string }> = stored ? JSON.parse(stored) : {};
@@ -90,7 +88,7 @@ export const useAuthStore = create<AuthStore>()(
                 email, name: data.name, provider: "email", plan: "free",
                 createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
               };
-              set({ user, token: "rf_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+              set({ user, isAuthenticated: true, isLoading: false });
             } else {
               set({ isLoading: false, error: "Email atau password salah" });
             }
@@ -126,7 +124,7 @@ export const useAuthStore = create<AuthStore>()(
             provider: "google", plan: "free",
             createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
           };
-          set({ user, token: "rf_google_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+          set({ user, isAuthenticated: true, isLoading: false });
         } catch {
           set({ isLoading: false, error: "Google login gagal. Coba lagi." });
         }
@@ -148,7 +146,7 @@ export const useAuthStore = create<AuthStore>()(
               email: data.email, name: data.name, provider: "email", plan: "free",
               createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
             };
-            set({ user, token: "rf_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+            set({ user, isAuthenticated: true, isLoading: false });
             return;
           }
 
@@ -167,7 +165,7 @@ export const useAuthStore = create<AuthStore>()(
             email: data.email, name: data.name, provider: "email", plan: "free",
             createdAt: new Date().toISOString(), lastLogin: new Date().toISOString(),
           };
-          set({ user, token: "rf_token_" + Date.now(), isAuthenticated: true, isLoading: false });
+          set({ user, isAuthenticated: true, isLoading: false });
         } catch {
           set({ isLoading: false, error: "Registrasi gagal. Coba lagi." });
         }
@@ -176,7 +174,7 @@ export const useAuthStore = create<AuthStore>()(
       logout: () => {
         const a = getApi();
         if (a) a.authLogout().catch(() => {});
-        set({ user: null, token: null, isAuthenticated: false, error: null });
+        set({ user: null, isAuthenticated: false, error: null });
       },
 
       clearError: () => set({ error: null }),

@@ -56,6 +56,12 @@ export interface ElectronAPI {
   sendKeystrokes: (keys: string, opts?: { holdMs?: number; eventData?: any }) => void;
   onKeystrokeEvent: (cb: (data: any) => void) => () => void;
 
+  // Global Input Hook
+  startGlobalHook: (screen?: string) => Promise<{ success: boolean; running: boolean }>;
+  stopGlobalHook: () => Promise<{ success: boolean }>;
+  getGlobalHookStatus: () => Promise<{ running: boolean }>;
+  onGlobalHookEvent: (cb: (data: { type: string; key?: string; code?: string; keyCode?: number; x?: number; y?: number; dx?: number; dy?: number; alt?: boolean; ctrl?: boolean; shift?: boolean; meta?: boolean; screen?: string }) => void) => () => void;
+
   // Gifts
   requestGifts: () => void;
   refreshGifts: () => void;

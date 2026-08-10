@@ -1,0 +1,1 @@
+{"version":3,"file":"license.service.d.ts","sourceRoot":"","sources":["../../src/services/license.service.ts"],"names":[],"mappings":"AAGA,qBAAa,cAAc;IACnB,eAAe,CAAC,MAAM,EAAE,MAAM,EAAE,UAAU,EAAE,MAAM,EAAE,mBAAmB,CAAC,EAAE,MAAM;;;;;;;IAqChF,iBAAiB,CAAC,MAAM,EAAE,MAAM,EAAE,UAAU,EAAE,MAAM;;;;IA0BpD,YAAY,CAAC,MAAM,EAAE,MAAM;;;;;;;;;;;;;;;CAelC;AAED,eAAO,MAAM,cAAc,gBAAuB,CAAC"}

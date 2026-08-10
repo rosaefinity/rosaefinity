@@ -914,38 +914,38 @@ ipcMain.handle("auth:validateSession", () => authSystem.validateSession());
 
 // ── Stream Profiles ──
 ipcMain.handle("auth:profileLimit", () => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   if (!user) return { limit: 1, current: 0 };
   const profiles = authSystem.getUserStreamProfiles(user.id);
   return { limit: authSystem.getProfileLimit(user.id), current: profiles.length };
 });
 ipcMain.handle("auth:getProfiles", () => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.getUserStreamProfiles(user.id) : [];
 });
 ipcMain.handle("auth:createProfile", (_, profileData) => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.createStreamProfile(user.id, profileData) : { success: false, error: "Not logged in" };
 });
 ipcMain.handle("auth:updateProfile", (_, { profileId, updates }) => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.updateStreamProfile(user.id, profileId, updates) : { success: false, error: "Not logged in" };
 });
 ipcMain.handle("auth:deleteProfile", (_, { profileId }) => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.deleteStreamProfile(user.id, profileId) : { success: false, error: "Not logged in" };
 });
 ipcMain.handle("auth:setCurrentProfile", (_, { profileId }) => authSystem.setCurrentStreamProfile(profileId));
 ipcMain.handle("auth:getCurrentProfile", () => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.getCurrentStreamProfile(user.id) : null;
 });
 ipcMain.handle("auth:exportProfile", (_, { profileId }) => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.exportStreamProfile(user.id, profileId) : { success: false, error: "Not logged in" };
 });
 ipcMain.handle("auth:importProfile", (_, profileData) => {
-  const user = authSystem.getCurrentUser();
+  const user = authSystem.getCurrentUserSync();
   return user ? authSystem.importStreamProfile(user.id, profileData) : { success: false, error: "Not logged in" };
 });
 

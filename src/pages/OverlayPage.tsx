@@ -8,6 +8,9 @@ import {
   ChevronDown, Lightbulb, Sparkles, Wifi, WifiOff, Eye, Maximize2,
   AlertTriangle, CheckCircle2
 } from "lucide-react";
+import { getOverlayModule } from "../overlays/registry";
+import { GiftAlertRenderer } from "../overlays/gift-alert/GiftAlertRenderer";
+import type { RendererProps } from "../overlays/types";
 
 type AspectRatio = "16:9" | "9:16" | "1:1";
 
@@ -29,6 +32,9 @@ export function OverlayPage() {
     animationSpeed: "normal" as const,
   });
 
+  // Get the Gift Alert module for preview
+  const giftAlertModule = getOverlayModule("gift-alert");
+
   // Load saved aspect ratio from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem("rf_overlay_aspectRatio");
@@ -45,6 +51,9 @@ export function OverlayPage() {
 
   const ratioDimensions = { "16:9": { width: 320, height: 180 }, "9:16": { width: 180, height: 320 }, "1:1": { width: 250, height: 250 } };
   const dims = ratioDimensions[aspectRatio];
+
+  // Preview config for Gift Alert renderer
+  const giftAlertConfig = giftAlertModule?.defaultConfig || {};
 
   return (
     <div className="p-6 h-full overflow-y-auto">
@@ -153,24 +162,18 @@ export function OverlayPage() {
               <div className="absolute inset-0 flex items-center justify-center p-4">
                 <div className="text-center" style={{ opacity: previewConfig.transparency, transform: `scale(${previewConfig.scale})`, borderRadius: previewConfig.borderRadius }}>
                   <div className="w-full h-full bg-background/90 rounded-xl border border-white/[0.1] flex items-center justify-center relative overflow-hidden">
-                    {isAnyLive ? (
-                      <>
-                        <div className="absolute top-3 left-3 flex gap-1">
-                          <span className="px-2 py-0.5 rounded bg-green/20 text-green text-[10px] font-medium flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-green animate-pulse" /> LIVE
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-primary/20 text-primary text-[10px] font-medium">{liveUsernames}</span>
-                        </div>
-                        <div className="absolute bottom-3 right-3 text-right">
-                          <p className="text-xs text-white/50">Waiting for events...</p>
-                          <p className="text-xs text-white/30">Gifts • Follows • Likes • Comments</p>
-                        </div>
-                      </>
+                    {giftAlertModule ? (
+                      // Render the actual Gift Alert renderer with preview event
+                      <GiftAlertRenderer
+                        config={giftAlertConfig}
+                        mode="preview"
+                        size={{ width: dims.width, height: dims.height }}
+                      />
                     ) : (
                       <div className="text-center">
                         <WifiOff className="w-12 h-12 text-white/20 mx-auto mb-3" />
                         <p className="text-sm font-medium text-white/70 mb-1">Overlay Preview</p>
-                        <p className="text-xs text-white/40">Connect to TikTok Live to preview alerts</p>
+                        <p className="text-xs text-white/40">Gift Alert module not registered</p>
                       </div>
                     )}
                   </div>

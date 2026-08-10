@@ -1,0 +1,987 @@
+// =============================================
+// RosaeFinity Production Database Schema
+// =============================================
+// Version: 1.0.0
+// Database: MySQL Community
+// ORM: Prisma
+// Tables: 29
+// ENUMs: 17
+// =============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================
+// ENUMS
+// =============================================
+
+enum UserRoles {
+  user
+  admin
+}
+
+enum UserStatuses {
+  active
+  suspended
+  deleted
+}
+
+enum Themes {
+  light
+  dark
+  system
+}
+
+enum LicenseTypes {
+  trial
+  personal
+  business
+}
+
+enum LicenseStatuses {
+  active
+  expired
+  revoked
+}
+
+enum ActivationActions {
+  activated
+  deactivated
+  reactivated
+}
+
+enum SubscriptionPlans {
+  free
+  pro
+  business
+}
+
+enum SubscriptionStatuses {
+  active
+  cancelled
+  past_due
+  paused
+}
+
+enum PaymentStatuses {
+  pending
+  completed
+  failed
+  refunded
+}
+
+enum PaymentGateways {
+  stripe
+  paypal
+  crypto
+}
+
+enum OverlayTypes {
+  gift
+  alert
+  goal
+  game
+  interactive
+  sports
+  music
+  trending
+}
+
+enum GoalTypes {
+  followers
+  likes
+  gifts
+  custom
+}
+
+enum AnimationSpeeds {
+  slow
+  normal
+  fast
+}
+
+enum MediaTypes {
+  video
+  image
+}
+
+enum FeatureFlagTypes {
+  boolean
+  percentage
+  userList
+}
+
+enum EmailVerificationPurposes {
+  registration
+  email_change
+  account_recovery
+}
+
+enum CrashReportStatuses {
+  new
+  investigating
+  resolved
+  wont_fix
+}
+
+// =============================================
+// CORE USER TABLES
+// =============================================
+
+model Users {
+  id            String       @id @default(uuid())
+  email         String       @unique @db.VarChar(255)
+  username      String       @unique @db.VarChar(50)
+  passwordHash  String?      @db.VarChar(255)
+  emailVerified Boolean      @default(false)
+  avatar        String?      @db.VarChar(500)
+  role          UserRoles    @default(user)
+  status        UserStatuses @default(active)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?    @db.Timestamp(6)
+  version       Int          @default(1)
+
+  // Relations
+  refreshTokens        RefreshTokens[]
+  sessions             Sessions[]
+  devices              Devices[]
+  userSettings         UserSettings?
+  licenses             Licenses[]
+  subscriptions        Subscriptions[]
+  payments             Payments[]
+  overlayScenes        OverlayScenes[]
+  overlayInstances     OverlayInstances[]
+  overlaySettings      OverlaySettings?
+  actionGroups         ActionGroups[]
+  actions              Actions[]
+  goals                Goals[]
+  mediaLibrary         MediaLibrary[]
+  soundLibrary         SoundLibrary[]
+  browserSources       BrowserSources[]
+  obsSettings          OBSSettings?
+  tiktokAccounts       TikTokAccounts[]
+  streamProfiles       StreamProfiles[]
+  emailVerifications   EmailVerification[]
+  passwordResetTokens  PasswordResetTokens[]
+  apiKeys              APIKeys[]
+  auditLogs            AuditLogs[]
+  activationHistory    ActivationHistory[]
+  crashReports         CrashReports[]
+  resolvedCrashReports CrashReports[]        @relation("CrashReportResolver")
+  webhookLogs          WebhookLogs[]
+  backupHistory        BackupHistory[]
+  featureFlagsCreated  FeatureFlags[]        @relation("FeatureFlagCreator")
+
+  @@index([email])
+  @@index([username])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model RefreshTokens {
+  id        String    @id @default(uuid())
+  userId    String    @db.Char(36)
+  sessionId String?   @db.Char(36)
+  deviceId  String?   @db.Char(36)
+  token     String    @unique @db.VarChar(500)
+  expiresAt DateTime  @db.Timestamp(6)
+  revokedAt DateTime? @db.Timestamp(6)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? @db.Timestamp(6)
+
+  // Relations
+  user    Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Sessions? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  device  Devices?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([deviceId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+model Sessions {
+  id             String    @id @default(uuid())
+  userId         String    @db.Char(36)
+  deviceId       String?   @db.Char(36)
+  sessionToken   String    @unique @db.VarChar(500)
+  ipAddress      String?   @db.VarChar(45)
+  userAgent      String?   @db.VarChar(500)
+  lastActivityAt DateTime  @default(now())
+  expiresAt      DateTime  @db.Timestamp(6)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime? @db.Timestamp(6)
+
+  // Relations
+  user          Users           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device        Devices?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  refreshTokens RefreshTokens[]
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([sessionToken])
+  @@index([expiresAt])
+}
+
+model Devices {
+  id         String    @id @default(uuid())
+  userId     String    @db.Char(36)
+  deviceId   String    @unique @db.VarChar(255)
+  deviceName String    @db.VarChar(100)
+  os         String    @db.VarChar(50)
+  cpu        String?   @db.VarChar(100)
+  ipAddress  String?   @db.VarChar(45)
+  lastLogin  DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime? @db.Timestamp(6)
+
+  // Relations
+  user             Users              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions         Sessions[]
+  userSettings     UserSettings[]
+  refreshTokens    RefreshTokens[]
+  overlayScenes    OverlayScenes[]
+  overlaySettings  OverlaySettings[]
+  overlayInstances OverlayInstances[]
+  actions          Actions[]
+  goals            Goals[]
+  browserSources   BrowserSources[]
+  obsSettings      OBSSettings[]
+  auditLogs        AuditLogs[]
+  streamProfiles   StreamProfiles[]
+  crashReports     CrashReports[]
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([os])
+  @@index([lastLogin])
+}
+
+model UserSettings {
+  id                   String    @id @default(uuid())
+  userId               String    @unique @db.Char(36)
+  deviceId             String?   @db.Char(36)
+  language             String    @default("en") @db.VarChar(10)
+  theme                Themes    @default(system)
+  notificationsEnabled Boolean   @default(true)
+  soundEnabled         Boolean   @default(true)
+  masterVolume         Float     @default(0.8)
+  debugMode            Boolean   @default(false)
+  tiktokLanguage       String    @default("en") @db.VarChar(10)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  deletedAt            DateTime? @db.Timestamp(6)
+  version              Int       @default(1)
+
+  // Relations
+  user   Users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+}
+
+// =============================================
+// BUSINESS TABLES
+// =============================================
+
+model Licenses {
+  id                  String          @id @default(uuid())
+  userId              String?         @db.Char(36)
+  licenseKey          String          @unique @db.VarChar(50)
+  type                LicenseTypes    @default(personal)
+  status              LicenseStatuses @default(active)
+  activatedAt         DateTime?       @db.Timestamp(6)
+  expiredAt           DateTime?       @db.Timestamp(6)
+  hardwareFingerprint String?         @db.VarChar(255)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  deletedAt           DateTime?       @db.Timestamp(6)
+  version             Int             @default(1)
+
+  // Relations
+  user              Users?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  activationHistory ActivationHistory[]
+
+  @@index([userId])
+  @@index([licenseKey])
+  @@index([status])
+  @@index([expiredAt])
+}
+
+model ActivationHistory {
+  id                  String            @id @default(uuid())
+  licenseId           String            @db.Char(36)
+  userId              String?           @db.Char(36)
+  deviceId            String?           @db.VarChar(255)
+  hardwareFingerprint String?           @db.VarChar(255)
+  ipAddress           String?           @db.VarChar(45)
+  userAgent           String?           @db.VarChar(500)
+  action              ActivationActions
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  deletedAt           DateTime?         @db.Timestamp(6)
+
+  // Relations
+  license Licenses @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+  user    Users?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([licenseId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model Subscriptions {
+  id         String               @id @default(uuid())
+  userId     String               @db.Char(36)
+  plan       SubscriptionPlans    @default(free)
+  status     SubscriptionStatuses @default(active)
+  startDate  DateTime             @db.Timestamp(6)
+  endDate    DateTime             @db.Timestamp(6)
+  autoRenew  Boolean              @default(true)
+  externalId String?              @db.VarChar(255)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+  deletedAt  DateTime?            @db.Timestamp(6)
+  version    Int                  @default(1)
+
+  // Relations
+  user     Users      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  payments Payments[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([plan])
+  @@index([externalId])
+  @@index([endDate])
+}
+
+model Payments {
+  id             String          @id @default(uuid())
+  subscriptionId String          @db.Char(36)
+  userId         String          @db.Char(36)
+  invoice        String          @unique @db.VarChar(100)
+  gateway        PaymentGateways
+  amount         Decimal         @db.Decimal(10, 2)
+  currency       String          @default("USD") @db.VarChar(3)
+  paymentStatus  PaymentStatuses
+  paidAt         DateTime?       @db.Timestamp(6)
+  externalId     String?         @db.VarChar(255)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletedAt      DateTime?       @db.Timestamp(6)
+
+  // Relations
+  subscription Subscriptions @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user         Users         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([subscriptionId])
+  @@index([userId])
+  @@index([invoice])
+  @@index([paymentStatus])
+  @@index([paidAt])
+  @@index([externalId])
+}
+
+// =============================================
+// OVERLAY SYSTEM TABLES
+// =============================================
+
+model OverlayScenes {
+  id           String       @id @default(uuid())
+  userId       String       @db.Char(36)
+  deviceId     String?      @db.Char(36)
+  name         String       @db.VarChar(100)
+  description  String?      @db.Text
+  thumbnailUrl String?      @db.VarChar(500)
+  isTemplate   Boolean      @default(false)
+  overlayType  OverlayTypes
+  settings     Json?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?    @db.Timestamp(6)
+  version      Int          @default(1)
+
+  // Relations
+  user             Users              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device           Devices?           @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  overlayInstances OverlayInstances[]
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([isTemplate])
+  @@index([overlayType])
+  @@index([createdAt])
+}
+
+model OverlayInstances {
+  id        String    @id @default(uuid())
+  userId    String    @db.Char(36)
+  sceneId   String?   @db.Char(36)
+  deviceId  String?   @db.Char(36)
+  screenId  String    @db.VarChar(20)
+  isActive  Boolean   @default(false)
+  positionX Float     @default(0)
+  positionY Float     @default(0)
+  scaleX    Float     @default(1)
+  scaleY    Float     @default(1)
+  opacity   Float     @default(1)
+  zIndex    Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? @db.Timestamp(6)
+  version   Int       @default(1)
+
+  // Relations
+  user   Users          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scene  OverlayScenes? @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  device Devices?       @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([sceneId])
+  @@index([deviceId])
+  @@index([screenId])
+  @@index([isActive])
+  @@index([userId, screenId])
+  @@index([userId, isActive])
+}
+
+model OverlaySettings {
+  id             String          @id @default(uuid())
+  userId         String          @unique @db.Char(36)
+  deviceId       String?         @db.Char(36)
+  theme          Themes          @default(system)
+  primaryColor   String          @default("#6366f1") @db.VarChar(7)
+  secondaryColor String          @default("#8b5cf6") @db.VarChar(7)
+  transparency   Float           @default(1)
+  scale          Float           @default(1)
+  borderRadius   Int             @default(8)
+  animationSpeed AnimationSpeeds @default(normal)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletedAt      DateTime?       @db.Timestamp(6)
+  version        Int             @default(1)
+
+  // Relations
+  user   Users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+}
+
+// =============================================
+// ACTION SYSTEM TABLES
+// =============================================
+
+model ActionGroups {
+  id          String    @id @default(uuid())
+  userId      String    @db.Char(36)
+  name        String    @db.VarChar(100)
+  description String?   @db.Text
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime? @db.Timestamp(6)
+  version     Int       @default(1)
+
+  // Relations
+  user    Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actions Actions[]
+
+  @@index([userId])
+  @@index([sortOrder])
+}
+
+model Actions {
+  id       String  @id @default(uuid())
+  userId   String  @db.Char(36)
+  groupId  String? @db.Char(36)
+  deviceId String? @db.Char(36)
+  name     String  @db.VarChar(100)
+  screen   String  @db.VarChar(20)
+  duration Int     @default(5)
+  enabled  Boolean @default(true)
+
+  // Sound settings
+  soundEnabled Boolean @default(false)
+  soundFileId  String? @db.Char(36)
+  soundVolume  Float   @default(0.8)
+  soundFadeIn  Float   @default(0)
+  soundFadeOut Float   @default(0)
+  soundLoop    Boolean @default(false)
+  soundDelay   Int     @default(0)
+
+  // Video settings
+  videoEnabled  Boolean @default(false)
+  videoFileId   String? @db.Char(36)
+  videoAutoplay Boolean @default(true)
+  videoLoop     Boolean @default(false)
+  videoSpeed    Float   @default(1)
+  videoFadeIn   Float   @default(0)
+  videoFadeOut  Float   @default(0)
+
+  // Image settings
+  imageEnabled   Boolean @default(false)
+  imageFileId    String? @db.Char(36)
+  imageOpacity   Float   @default(1)
+  imageScale     Float   @default(1)
+  imagePositionX Float   @default(0)
+  imagePositionY Float   @default(0)
+  imageAnimation String? @db.VarChar(50)
+
+  // Keystroke settings
+  keystrokeEnabled  Boolean @default(false)
+  keystrokeKeys     String? @db.VarChar(100)
+  keystrokeHoldMs   Int     @default(0)
+  keystrokeDuration Int     @default(0)
+
+  // Minecraft settings
+  minecraftEnabled  Boolean @default(false)
+  minecraftCommand  String? @db.VarChar(500)
+  minecraftQueue    Boolean @default(false)
+  minecraftCooldown Int     @default(0)
+  minecraftDelay    Int     @default(0)
+  minecraftRandom   Boolean @default(false)
+
+  // Advanced settings
+  advancedSettings Json?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? @db.Timestamp(6)
+  version   Int       @default(1)
+
+  // Relations
+  user      Users         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group     ActionGroups? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  device    Devices?      @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  soundFile SoundLibrary? @relation(fields: [soundFileId], references: [id], onDelete: SetNull)
+  videoFile MediaLibrary? @relation("ActionVideo", fields: [videoFileId], references: [id], onDelete: SetNull)
+  imageFile MediaLibrary? @relation("ActionImage", fields: [imageFileId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([groupId])
+  @@index([deviceId])
+  @@index([screen])
+  @@index([enabled])
+  @@index([soundFileId])
+  @@index([videoFileId])
+  @@index([imageFileId])
+  @@index([userId, enabled])
+}
+
+model Goals {
+  id              String    @id @default(uuid())
+  userId          String    @db.Char(36)
+  deviceId        String?   @db.Char(36)
+  name            String    @db.VarChar(100)
+  type            GoalTypes
+  targetValue     Int
+  currentValue    Int       @default(0)
+  resetOnComplete Boolean   @default(false)
+  isActive        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime? @db.Timestamp(6)
+  version         Int       @default(1)
+
+  // Relations
+  user   Users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([type])
+  @@index([isActive])
+  @@index([userId, isActive])
+}
+
+// =============================================
+// MEDIA LIBRARY TABLES
+// =============================================
+
+model MediaLibrary {
+  id           String     @id @default(uuid())
+  userId       String     @db.Char(36)
+  name         String     @db.VarChar(100)
+  fileName     String     @db.VarChar(255)
+  mimeType     String     @db.VarChar(100)
+  size         BigInt     @db.BigInt
+  checksum     String     @db.VarChar(64)
+  localPath    String?    @db.VarChar(500)
+  cloudUrl     String?    @db.VarChar(500)
+  mediaType    MediaTypes
+  duration     Float?
+  thumbnailUrl String?    @db.VarChar(500)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?  @db.Timestamp(6)
+
+  // Relations
+  user         Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actionVideos Actions[] @relation("ActionVideo")
+  actionImages Actions[] @relation("ActionImage")
+
+  @@index([userId])
+  @@index([mediaType])
+  @@index([createdAt])
+  @@index([checksum])
+}
+
+model SoundLibrary {
+  id        String    @id @default(uuid())
+  userId    String    @db.Char(36)
+  name      String    @db.VarChar(100)
+  fileName  String    @db.VarChar(255)
+  mimeType  String    @db.VarChar(100)
+  size      BigInt    @db.BigInt
+  checksum  String    @db.VarChar(64)
+  localPath String?   @db.VarChar(500)
+  cloudUrl  String?   @db.VarChar(500)
+  duration  Float
+  enabled   Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? @db.Timestamp(6)
+
+  // Relations
+  user    Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actions Actions[]
+
+  @@index([userId])
+  @@index([enabled])
+  @@index([createdAt])
+  @@index([checksum])
+}
+
+model BrowserSources {
+  id              String    @id @default(uuid())
+  userId          String    @db.Char(36)
+  deviceId        String?   @db.Char(36)
+  name            String    @db.VarChar(100)
+  url             String    @db.VarChar(1000)
+  width           Int       @default(1920)
+  height          Int       @default(1080)
+  refreshInterval Int       @default(0)
+  isActive        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime? @db.Timestamp(6)
+  version         Int       @default(1)
+
+  // Relations
+  user   Users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+// =============================================
+// INTEGRATION TABLES
+// =============================================
+
+model OBSSettings {
+  id              String    @id @default(uuid())
+  userId          String    @unique @db.Char(36)
+  deviceId        String?   @db.Char(36)
+  ipAddress       String    @db.VarChar(45)
+  port            Int       @default(4455)
+  password        String    @db.VarChar(255)
+  sceneCollection String?   @db.VarChar(100)
+  defaultScene    String?   @db.VarChar(100)
+  isConnected     Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime? @db.Timestamp(6)
+  version         Int       @default(1)
+
+  // Relations
+  user           Users            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device         Devices?         @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  streamProfiles StreamProfiles[]
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([isConnected])
+}
+
+model TikTokAccounts {
+  id             String    @id @default(uuid())
+  userId         String    @db.Char(36)
+  tiktokUsername String    @db.VarChar(100)
+  tiktokUserId   String    @unique @db.VarChar(50)
+  accessToken    String    @db.Text
+  refreshToken   String    @db.Text
+  tokenExpiresAt DateTime? @db.Timestamp(6)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime? @db.Timestamp(6)
+  version        Int       @default(1)
+
+  // Relations
+  user           Users            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  streamProfiles StreamProfiles[]
+
+  @@index([userId])
+  @@index([tiktokUsername])
+  @@index([isActive])
+  @@index([tokenExpiresAt])
+}
+
+model StreamProfiles {
+  id              String    @id @default(uuid())
+  userId          String    @db.Char(36)
+  deviceId        String?   @db.Char(36)
+  tiktokAccountId String?   @db.Char(36)
+  obsSettingsId   String?   @db.Char(36)
+  name            String    @db.VarChar(100)
+  isDefault       Boolean   @default(false)
+  overlaySettings Json?
+  alertSettings   Json?
+  pointsConfig    Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime? @db.Timestamp(6)
+  version         Int       @default(1)
+
+  // Relations
+  user          Users           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device        Devices?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  tiktokAccount TikTokAccounts? @relation(fields: [tiktokAccountId], references: [id], onDelete: SetNull)
+  obsSettings   OBSSettings?    @relation(fields: [obsSettingsId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([tiktokAccountId])
+  @@index([obsSettingsId])
+  @@index([isDefault])
+  @@index([userId, isDefault])
+}
+
+// =============================================
+// SECURITY TABLES
+// =============================================
+
+model EmailVerification {
+  id         String                    @id @default(uuid())
+  userId     String                    @db.Char(36)
+  token      String                    @unique @db.VarChar(500)
+  email      String                    @db.VarChar(255)
+  purpose    EmailVerificationPurposes
+  expiresAt  DateTime                  @db.Timestamp(6)
+  verifiedAt DateTime?                 @db.Timestamp(6)
+  createdAt  DateTime                  @default(now())
+  updatedAt  DateTime                  @updatedAt
+  deletedAt  DateTime?                 @db.Timestamp(6)
+
+  // Relations
+  user Users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([purpose])
+  @@index([expiresAt])
+}
+
+model PasswordResetTokens {
+  id        String    @id @default(uuid())
+  userId    String    @db.Char(36)
+  token     String    @unique @db.VarChar(500)
+  expiresAt DateTime  @db.Timestamp(6)
+  usedAt    DateTime? @db.Timestamp(6)
+  ipAddress String?   @db.VarChar(45)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? @db.Timestamp(6)
+
+  // Relations
+  user Users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+model APIKeys {
+  id         String    @id @default(uuid())
+  userId     String    @db.Char(36)
+  name       String    @db.VarChar(100)
+  keyHash    String    @unique @db.VarChar(255)
+  prefix     String    @db.VarChar(10)
+  scopes     Json?
+  lastUsedAt DateTime? @db.Timestamp(6)
+  expiresAt  DateTime? @db.Timestamp(6)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime? @db.Timestamp(6)
+
+  // Relations
+  user Users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([keyHash])
+  @@index([expiresAt])
+}
+
+model AuditLogs {
+  id         String    @id @default(uuid())
+  userId     String?   @db.Char(36)
+  deviceId   String?   @db.Char(36)
+  action     String    @db.VarChar(100)
+  resource   String    @db.VarChar(100)
+  resourceId String?   @db.Char(36)
+  details    Json?
+  ipAddress  String?   @db.VarChar(45)
+  userAgent  String?   @db.VarChar(500)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime? @db.Timestamp(6)
+
+  // Relations
+  user   Users?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  device Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([action])
+  @@index([resource])
+  @@index([resourceId])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+// =============================================
+// FEATURE MANAGEMENT TABLES
+// =============================================
+
+model FeatureFlags {
+  id          String           @id @default(uuid())
+  key         String           @unique @db.VarChar(100)
+  name        String           @db.VarChar(100)
+  description String?          @db.Text
+  isEnabled   Boolean          @default(false)
+  createdBy   String           @db.Char(36)
+  targeting   Json?
+  flagType    FeatureFlagTypes @default(boolean)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  deletedAt   DateTime?        @db.Timestamp(6)
+  version     Int              @default(1)
+
+  // Relations
+  creator Users @relation("FeatureFlagCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@index([key])
+  @@index([isEnabled])
+  @@index([createdBy])
+  @@index([flagType])
+}
+
+model AppVersions {
+  id           String    @id @default(uuid())
+  version      String    @unique @db.VarChar(20)
+  platform     String    @db.VarChar(20)
+  downloadUrl  String    @db.VarChar(500)
+  releaseNotes String?   @db.Text
+  isMandatory  Boolean   @default(false)
+  isLatest     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime? @db.Timestamp(6)
+
+  @@index([version])
+  @@index([platform])
+  @@index([isLatest])
+}
+
+model CrashReports {
+  id         String              @id @default(uuid())
+  userId     String?             @db.Char(36)
+  deviceId   String?             @db.Char(36)
+  appVersion String              @db.VarChar(20)
+  platform   String              @db.VarChar(20)
+  stackTrace String              @db.Text
+  systemInfo Json?
+  status     CrashReportStatuses @default(new)
+  resolvedBy String?             @db.Char(36)
+  resolvedAt DateTime?           @db.Timestamp(6)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  deletedAt  DateTime?           @db.Timestamp(6)
+
+  // Relations
+  user     Users?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  device   Devices? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  resolver Users?   @relation("CrashReportResolver", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deviceId])
+  @@index([appVersion])
+  @@index([status])
+  @@index([resolvedBy])
+  @@index([createdAt])
+}
+
+model WebhookLogs {
+  id           String    @id @default(uuid())
+  userId       String?   @db.Char(36)
+  event        String    @db.VarChar(100)
+  endpoint     String    @db.VarChar(500)
+  statusCode   Int
+  requestBody  String?   @db.Text
+  responseBody String?   @db.Text
+  durationMs   Int
+  success      Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime? @db.Timestamp(6)
+
+  // Relations
+  user Users? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([event])
+  @@index([statusCode])
+  @@index([success])
+  @@index([createdAt])
+}
+
+model BackupHistory {
+  id           String    @id @default(uuid())
+  userId       String    @db.Char(36)
+  backupType   String    @db.VarChar(20)
+  status       String    @db.VarChar(20)
+  storageUrl   String?   @db.VarChar(500)
+  sizeBytes    BigInt?   @db.BigInt
+  startedAt    DateTime  @db.Timestamp(6)
+  completedAt  DateTime? @db.Timestamp(6)
+  errorMessage String?   @db.Text
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime? @db.Timestamp(6)
+
+  // Relations
+  user Users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([startedAt])
+  @@index([createdAt])
+}

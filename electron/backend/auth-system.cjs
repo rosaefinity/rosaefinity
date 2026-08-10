@@ -1,38 +1,38 @@
-﻿// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
 // RosaeFinity Authentication System
-// Supports: Google OAuth, Email/Password, Session Management
+// Uses backend API (http://localhost:3000/api/v1/*)
+// for email/password and Google authentication.
+// Stream profiles remain local.
 // ═══════════════════════════════════════════════
 
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
+const http = require("http");
+const { apiUrl } = require("./api-config.cjs");
 
 const DATA_DIR = path.join(__dirname, "data");
-const AUTH_FILE = path.join(DATA_DIR, "auth.json");
 const SESSION_FILE = path.join(DATA_DIR, "session.json");
 const STREAM_PROFILES_FILE = path.join(DATA_DIR, "stream-profiles.json");
 
-// ══ Stream Profile Limits ══════════════════════════
+// ══ Stream Profile Limits ════════════════════════
 const PROFILE_LIMITS = {
-  free: 1,   // Free plan: 1 stream profile
-  pro: 10,   // Pro plan: 10 stream profiles
+  free: 1,
+  pro: 10,
 };
 
 // ══ Internal State ═════════════════════════════════
-let authData = {
-  users: {},           // { email: { id, email, passwordHash, name, avatar, provider, createdAt, lastLogin } }
-  currentUser: null,   // Currently logged in user email
-};
-
 let sessionData = {
-  token: null,
+  accessToken: null,
+  refreshToken: null,
   userId: null,
   expiresAt: null,
   rememberMe: false,
 };
 
-let streamProfiles = {}; // { userId: [ { id, name, tiktokUsername, overlaySettings, alertsSettings, actions, createdAt, updatedAt } ] }
+// In-memory cache of the authenticated backend user
+let cachedBackendUser = null;
 
+let streamProfiles = {};
 let currentStreamProfileId = null;
 
 // ══ Helpers ══════════════════════════════════════════
@@ -42,55 +42,89 @@ function ensureDataDir() {
   }
 }
 
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password, storedHash) {
-  const [salt, hash] = storedHash.split(":");
-  const verifyHash = crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return hash === verifyHash;
-}
-
-function generateToken() {
-  return crypto.randomBytes(32).toString("hex");
-}
-
-function generateUserId() {
-  return "usr_" + crypto.randomBytes(12).toString("hex");
+function generateId() {
+  const crypto = require("crypto");
+  return crypto.randomBytes(12).toString("hex");
 }
 
 function generateProfileId() {
-  return "spf_" + crypto.randomBytes(12).toString("hex");
+  return "spf_" + generateId();
+}
+
+// ══ HTTP Client ══════════════════════════════════════
+/**
+ * Make an HTTP request to the backend API.
+ * Returns { ok: true, status, data } or { ok: false, status, error, data? }
+ * NEVER logs passwords, tokens, or sensitive data.
+ */
+function apiRequest(method, endpoint, body, accessToken) {
+  return new Promise((resolve) => {
+    const url = new URL(`${apiUrl}${endpoint}`);
+    const postData = body ? JSON.stringify(body) : null;
+
+    const headers = {
+      "Content-Type": "application/json",
+      ...(postData ? { "Content-Length": Buffer.byteLength(postData) } : {}),
+      ...(accessToken ? { "Authorization": `Bearer ${accessToken}` } : {}),
+    };
+
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method,
+        headers,
+        timeout: 15000,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, data: parsed });
+          } catch {
+            resolve({ ok: false, status: res.statusCode, error: "Invalid response from server" });
+          }
+        });
+      }
+    );
+
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, error: "Backend server unreachable" });
+    });
+
+    req.on("error", (err) => {
+      resolve({ ok: false, status: 0, error: `Backend server unavailable: ${err.message}` });
+    });
+
+    if (postData) req.write(postData);
+    req.end();
+  });
 }
 
 // ══ Persistence ══════════════════════════════════════
-function loadAuth() {
+function loadSession() {
   try {
     ensureDataDir();
-    if (fs.existsSync(AUTH_FILE)) {
-      authData = JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8"));
-    }
     if (fs.existsSync(SESSION_FILE)) {
-      sessionData = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8"));
+      const loaded = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8"));
+      sessionData = {
+        accessToken: loaded.accessToken || null,
+        refreshToken: loaded.refreshToken || loaded.token || null, // fallback for old format
+        userId: loaded.userId || null,
+        expiresAt: loaded.expiresAt || null,
+        rememberMe: loaded.rememberMe || false,
+      };
     }
     if (fs.existsSync(STREAM_PROFILES_FILE)) {
       streamProfiles = JSON.parse(fs.readFileSync(STREAM_PROFILES_FILE, "utf-8"));
     }
-    console.log("[AUTH] Auth data loaded");
+    console.log("[AUTH] Session data loaded");
   } catch (e) {
-    console.error("[AUTH] Error loading:", e.message);
-  }
-}
-
-function saveAuth() {
-  try {
-    ensureDataDir();
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(authData, null, 2), "utf-8");
-  } catch (e) {
-    console.error("[AUTH] Error saving auth:", e.message);
+    console.error("[AUTH] Error loading session:", e.message);
   }
 }
 
@@ -112,159 +146,326 @@ function saveStreamProfiles() {
   }
 }
 
+// ══ User Mapping ══════════════════════════════════════
+/**
+ * Map a backend API user object to the format expected by the frontend.
+ * Backend actual: {id, email, username, role, avatar, ...}
+ * Frontend: {id, email, name, provider, plan, ...}
+ */
+function mapBackendUser(backendUser) {
+  if (!backendUser) return null;
+  return {
+    id: backendUser.id,
+    email: backendUser.email,
+    name: backendUser.username || backendUser.displayName || backendUser.email?.split("@")[0] || "User",
+    avatar: backendUser.avatar || null,
+    provider: backendUser.authProvider || "email",
+    plan: backendUser.role === "admin" ? "pro" : backendUser.accountType || "free",
+    createdAt: backendUser.createdAt || new Date().toISOString(),
+    lastLogin: backendUser.lastLogin || new Date().toISOString(),
+  };
+}
+
 // ══ Session Management ═══════════════════════════════
-function createSession(userId, rememberMe = false) {
-  const token = generateToken();
+function createLocalSession(accessToken, refreshToken, userId, rememberMe) {
   const expiresAt = rememberMe
-    ? Date.now() + 30 * 24 * 60 * 60 * 1000  // 30 days
-    : Date.now() + 24 * 60 * 60 * 1000;       // 1 day
+    ? Date.now() + 30 * 24 * 60 * 60 * 1000
+    : Date.now() + 7 * 24 * 60 * 60 * 1000;
 
   sessionData = {
-    token,
+    accessToken,
+    refreshToken,
     userId,
     expiresAt,
     rememberMe,
   };
+  cachedBackendUser = null; // clear cache on new session
   saveSession();
-  return { token, expiresAt };
+  return { expiresAt };
 }
 
-function validateSession() {
-  if (!sessionData.token || !sessionData.userId || !sessionData.expiresAt) {
+function validateLocalSession() {
+  if (!sessionData.accessToken || !sessionData.userId || !sessionData.expiresAt) {
     return { valid: false };
   }
   if (Date.now() > sessionData.expiresAt) {
     clearSession();
     return { valid: false, reason: "expired" };
   }
-  return { valid: true, userId: sessionData.userId, token: sessionData.token };
+  return {
+    valid: true,
+    userId: sessionData.userId,
+    accessToken: sessionData.accessToken,
+  };
 }
 
 function clearSession() {
-  sessionData = { token: null, userId: null, expiresAt: null, rememberMe: false };
+  sessionData = { accessToken: null, refreshToken: null, userId: null, expiresAt: null, rememberMe: false };
+  cachedBackendUser = null;
   saveSession();
-  authData.currentUser = null;
-  saveAuth();
-}
-
-function getCurrentUser() {
-  const session = validateSession();
-  if (!session.valid) return null;
-  const user = Object.values(authData.users).find(u => u.id === session.userId);
-  return user || null;
 }
 
 // ══ User Registration & Login ═════════════════════════
-function registerEmail(email, password, name) {
-  const normalizedEmail = email.toLowerCase().trim();
-  
-  if (!normalizedEmail.includes("@")) {
+async function registerEmail(email, password, name) {
+  console.log("[AUTH] registerEmail called");
+
+  if (!email || !email.includes("@")) {
     return { success: false, error: "Email tidak valid" };
   }
-  if (password.length < 6) {
+  if (!password || password.length < 6) {
     return { success: false, error: "Password minimal 6 karakter" };
   }
-  if (authData.users[normalizedEmail]) {
-    return { success: false, error: "Email sudah terdaftar" };
+
+  console.log("[AUTH] backend register request started");
+  const result = await apiRequest("POST", "/auth/register", {
+    email: email.toLowerCase().trim(),
+    password,
+    displayName: name || email.split("@")[0],
+  });
+
+  if (!result.ok) {
+    const raw = result.data?.error || result.error || "Registrasi gagal";
+    const errorMsg = typeof raw === "object" ? (raw.message || raw.code || "Registrasi gagal") : String(raw);
+    console.log("[AUTH] backend register failed:", errorMsg);
+    return { success: false, error: errorMsg };
   }
 
-  const userId = generateUserId();
-  const passwordHash = hashPassword(password);
-  
-  const user = {
-    id: userId,
-    email: normalizedEmail,
-    passwordHash,
-    name: name || normalizedEmail.split("@")[0],
-    avatar: null,
-    provider: "email",
-    createdAt: Date.now(),
-    lastLogin: Date.now(),
+  const { user: backendUser, accessToken, refreshToken } = result.data.data || result.data;
+  const user = mapBackendUser(backendUser);
+
+  console.log("[AUTH] backend register succeeded, authenticated user:", user.email);
+  createLocalSession(accessToken, refreshToken, user.id, false);
+
+  return {
+    success: true,
+    user,
+    session: { token: accessToken, expiresAt: sessionData.expiresAt },
   };
-
-  authData.users[normalizedEmail] = user;
-  authData.currentUser = normalizedEmail;
-  saveAuth();
-
-  const session = createSession(userId, false);
-  return { success: true, user, session };
 }
 
-function loginEmail(email, password, rememberMe = false) {
-  const normalizedEmail = email.toLowerCase().trim();
-  const user = authData.users[normalizedEmail];
+async function loginEmail(email, password, rememberMe = false) {
+  console.log("[AUTH] loginEmail called");
 
-  if (!user) {
-    return { success: false, error: "Email tidak ditemukan" };
+  if (!email || !email.includes("@")) {
+    return { success: false, error: "Email tidak valid" };
   }
-  if (user.provider !== "email") {
-    return { success: false, error: `Akun ini menggunakan login ${user.provider}. Gunakan tombol ${user.provider}.` };
-  }
-  if (!verifyPassword(password, user.passwordHash)) {
-    return { success: false, error: "Password salah" };
+  if (!password) {
+    return { success: false, error: "Password harus diisi" };
   }
 
-  user.lastLogin = Date.now();
-  authData.currentUser = normalizedEmail;
-  saveAuth();
+  console.log("[AUTH] backend login request started");
+  const result = await apiRequest("POST", "/auth/login", {
+    email: email.toLowerCase().trim(),
+    password,
+    rememberMe,
+  });
 
-  const session = createSession(user.id, rememberMe);
-  return { success: true, user, session };
+  if (!result.ok) {
+    const raw = result.data?.error || result.error || "Email atau password salah";
+    const errorMsg = typeof raw === "object" ? (raw.message || raw.code || "Email atau password salah") : String(raw);
+    console.log("[AUTH] backend login failed:", errorMsg);
+    return { success: false, error: errorMsg };
+  }
+
+  const { user: backendUser, accessToken, refreshToken } = result.data.data || result.data;
+  const user = mapBackendUser(backendUser);
+
+  console.log("[AUTH] backend login succeeded, authenticated user:", user.email);
+  createLocalSession(accessToken, refreshToken, user.id, rememberMe);
+
+  // Cache the backend user for getCurrentUser
+  cachedBackendUser = backendUser;
+
+  return {
+    success: true,
+    user,
+    session: { token: accessToken, expiresAt: sessionData.expiresAt },
+  };
 }
 
-function loginGoogle(googleData) {
-  // googleData: { id, email, name, picture, accessToken }
-  const normalizedEmail = googleData.email.toLowerCase().trim();
-  
-  let user = authData.users[normalizedEmail];
-  const isNewUser = !user;
+async function loginGoogle(googleData) {
+  console.log("[AUTH] loginGoogle called");
+  // Delegate to backend — backend has loginWithProvider('google', ...)
+  const result = await apiRequest("POST", "/auth/login/google", {
+    accessToken: googleData.accessToken,
+    idToken: googleData.idToken || undefined,
+  });
 
-  if (isNewUser) {
-    user = {
-      id: generateUserId(),
-      email: normalizedEmail,
-      passwordHash: null,
-      name: googleData.name,
-      avatar: googleData.picture,
-      provider: "google",
-      googleId: googleData.id,
-      accessToken: googleData.accessToken,
-      createdAt: Date.now(),
-      lastLogin: Date.now(),
-    };
-    authData.users[normalizedEmail] = user;
-  } else {
-    // Update existing user with Google data
-    user.name = googleData.name;
-    user.avatar = googleData.picture;
-    user.provider = "google";
-    user.googleId = googleData.id;
-    user.accessToken = googleData.accessToken;
-    user.lastLogin = Date.now();
+  if (!result.ok) {
+    const raw = result.data?.error || result.error || "Google login gagal";
+    const errorMsg = typeof raw === "object" ? (raw.message || raw.code || "Google login gagal") : String(raw);
+    console.log("[AUTH] backend google login failed:", errorMsg);
+    return { success: false, error: errorMsg };
   }
 
-  authData.currentUser = normalizedEmail;
-  saveAuth();
+  const { user: backendUser, accessToken, refreshToken } = result.data.data || result.data;
+  const user = mapBackendUser(backendUser);
 
-  const session = createSession(user.id, true); // Google login = remember me
-  return { success: true, user, session, isNewUser };
+  console.log("[AUTH] backend google login succeeded, authenticated user:", user.email);
+  createLocalSession(accessToken, refreshToken, user.id, true);
+
+  cachedBackendUser = backendUser;
+
+  return {
+    success: true,
+    user,
+    session: { token: accessToken, expiresAt: sessionData.expiresAt },
+  };
 }
 
-function logout() {
+async function logout() {
+  console.log("[AUTH] logout called");
+
+  // Attempt to invalidate backend session
+  if (sessionData.accessToken) {
+    console.log("[AUTH] invalidating backend session");
+    await apiRequest("POST", "/auth/logout", null, sessionData.accessToken);
+  }
+
   clearSession();
+  console.log("[AUTH] local session cleared");
   return { success: true };
 }
 
-// ══ Stream Profiles ═══════════════════════════════════
+// ══ Token Refresh ════════════════════════════════════
+async function refreshAccessToken() {
+  if (!sessionData.refreshToken) {
+    return false;
+  }
+
+  console.log("[AUTH] refreshing access token");
+  const result = await apiRequest("POST", "/auth/refresh", {
+    refreshToken: sessionData.refreshToken,
+  });
+
+  if (!result.ok) {
+    console.log("[AUTH] token refresh failed, clearing session");
+    clearSession();
+    return false;
+  }
+
+  const { user: backendUser, accessToken, refreshToken } = result.data.data || result.data;
+  sessionData.accessToken = accessToken;
+  sessionData.refreshToken = refreshToken;
+  sessionData.userId = backendUser.id;
+  sessionData.expiresAt = Date.now() + (sessionData.rememberMe ? 30 : 7) * 24 * 60 * 60 * 1000;
+  cachedBackendUser = backendUser;
+  saveSession();
+
+  console.log("[AUTH] token refreshed successfully");
+  return true;
+}
+
+// ══ Get Current User (sync — local session only) ═══
+/**
+ * Returns the currently authenticated user from the local session cache.
+ * Does NOT make backend calls. Use for stream profile handlers.
+ * Returns null if no valid session exists.
+ */
+function getCurrentUserSync() {
+  const session = validateLocalSession();
+  if (!session.valid) return null;
+
+  // Use cached backend user if available
+  if (cachedBackendUser) {
+    return mapBackendUser(cachedBackendUser);
+  }
+
+  // Minimal user from session data
+  if (session.userId) {
+    return {
+      id: session.userId,
+      email: "",
+      name: "User",
+      provider: "email",
+      plan: "free",
+      createdAt: new Date().toISOString(),
+      lastLogin: new Date().toISOString(),
+    };
+  }
+  return null;
+}
+
+// ══ Get Current User (async — validates against backend) ═════════════════════════
+async function getCurrentUser() {
+  const session = validateLocalSession();
+  if (!session.valid) {
+    return null;
+  }
+
+  // Try backend /me endpoint with current access token
+  let result = await apiRequest("GET", "/auth/me", null, session.accessToken);
+
+  // If token expired (401), try refreshing
+  if (result.status === 401 && sessionData.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      result = await apiRequest("GET", "/auth/me", null, sessionData.accessToken);
+    }
+  }
+
+  if (result.ok && result.data?.data) {
+    cachedBackendUser = result.data.data;
+    return mapBackendUser(result.data.data);
+  }
+
+  // If backend is unreachable, use cached user (if any)
+  if (cachedBackendUser) {
+    console.log("[AUTH] backend unreachable, using cached user data");
+    return mapBackendUser(cachedBackendUser);
+  }
+
+  // Fallback: return minimal user from session data
+  if (session.userId) {
+    return {
+      id: session.userId,
+      email: "",
+      name: "User",
+      provider: "email",
+      plan: "free",
+      createdAt: new Date().toISOString(),
+      lastLogin: new Date().toISOString(),
+    };
+  }
+
+  return null;
+}
+
+// ══ Validate Session ════════════════════════════════════
+async function validateSession() {
+  const local = validateLocalSession();
+  if (!local.valid) {
+    return { valid: false, reason: local.reason || "no session" };
+  }
+
+  // Validate against backend
+  const result = await apiRequest("GET", "/auth/me", null, local.accessToken);
+
+  if (result.ok) {
+    return { valid: true, userId: local.userId, token: local.accessToken };
+  }
+
+  // If 401, try refresh
+  if (result.status === 401 && sessionData.refreshToken) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return { valid: true, userId: sessionData.userId, token: sessionData.accessToken };
+    }
+  }
+
+  // Backend unreachable but local session is not expired — still valid locally
+  if (result.status === 0) {
+    console.log("[AUTH] backend unreachable, session valid locally");
+    return { valid: true, userId: local.userId, token: local.accessToken };
+  }
+
+  // Backend explicitly rejected the session
+  clearSession();
+  return { valid: false, reason: "session invalidated by server" };
+}
+
+// ══ Stream Profiles (unchanged — local storage) ═════════════════════════
 function getProfileLimit(userId) {
-  // Check user's plan (Free/Pro) - integrate with license system
-  const user = Object.values(authData.users).find(u => u.id === userId);
-  if (!user) return PROFILE_LIMITS.free;
-  
-  // For now, check license system
-  // In production, this would come from license-system.js
-  // For simplicity, we'll use a user property or check license
-  // Default to free
   return PROFILE_LIMITS.free;
 }
 
@@ -275,10 +476,10 @@ function getUserStreamProfiles(userId) {
 function createStreamProfile(userId, profileData) {
   const limit = getProfileLimit(userId);
   const currentProfiles = getUserStreamProfiles(userId);
-  
+
   if (currentProfiles.length >= limit) {
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: `Batas stream profile tercapai (${limit}). Upgrade ke Pro untuk lebih banyak.`,
       limit,
       current: currentProfiles.length,
@@ -303,7 +504,6 @@ function createStreamProfile(userId, profileData) {
   streamProfiles[userId].push(profile);
   saveStreamProfiles();
 
-  // If this is the first profile, set as current
   if (!currentStreamProfileId) {
     currentStreamProfileId = profile.id;
   }
@@ -314,7 +514,7 @@ function createStreamProfile(userId, profileData) {
 function updateStreamProfile(userId, profileId, updates) {
   const profiles = getUserStreamProfiles(userId);
   const index = profiles.findIndex(p => p.id === profileId);
-  
+
   if (index === -1) {
     return { success: false, error: "Stream profile tidak ditemukan" };
   }
@@ -327,7 +527,7 @@ function updateStreamProfile(userId, profileId, updates) {
 function deleteStreamProfile(userId, profileId) {
   const profiles = getUserStreamProfiles(userId);
   const index = profiles.findIndex(p => p.id === profileId);
-  
+
   if (index === -1) {
     return { success: false, error: "Stream profile tidak ditemukan" };
   }
@@ -335,7 +535,6 @@ function deleteStreamProfile(userId, profileId) {
   profiles.splice(index, 1);
   saveStreamProfiles();
 
-  // If deleted profile was current, switch to first available
   if (currentStreamProfileId === profileId) {
     currentStreamProfileId = profiles.length > 0 ? profiles[0].id : null;
   }
@@ -378,7 +577,6 @@ function getDefaultAlertsSettings() {
   };
 }
 
-// ══ Profile Data Export/Import ════════════════════════
 function exportStreamProfile(userId, profileId) {
   const profiles = getUserStreamProfiles(userId);
   const profile = profiles.find(p => p.id === profileId);
@@ -387,17 +585,15 @@ function exportStreamProfile(userId, profileId) {
 }
 
 function importStreamProfile(userId, profileData) {
-  // Remove ID to create new profile
   const { id, createdAt, updatedAt, ...data } = profileData;
   return createStreamProfile(userId, data);
 }
 
 // ══ Initialize ═══════════════════════════════════════
 function initAuth() {
-  loadAuth();
-  
-  // Validate existing session on startup
-  const session = validateSession();
+  loadSession();
+
+  const session = validateLocalSession();
   if (session.valid) {
     console.log("[AUTH] ✅ Valid session restored for user:", session.userId);
   } else {
@@ -412,11 +608,12 @@ module.exports = {
   loginGoogle,
   logout,
   getCurrentUser,
+  getCurrentUserSync,
   validateSession,
-  createSession,
+  createSession: createLocalSession,
   clearSession,
-  
-  // Stream Profiles
+
+  // Stream Profiles (local — unchanged)
   getProfileLimit,
   getUserStreamProfiles,
   createStreamProfile,
@@ -426,7 +623,7 @@ module.exports = {
   getCurrentStreamProfile,
   exportStreamProfile,
   importStreamProfile,
-  
+
   // Constants
   PROFILE_LIMITS,
 };

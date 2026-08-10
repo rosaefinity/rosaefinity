@@ -83,7 +83,7 @@ export interface OverlayContext {
 // ─── Events ───
 
 export type OverlayEvent =
-  | { type: 'gift'; username: string; giftName: string; diamonds: number }
+  | { type: 'gift'; username: string; giftName: string; diamonds: number; repeatCount?: number }
   | { type: 'follow'; username: string }
   | { type: 'like'; username: string; count: number }
   | { type: 'share'; username: string }

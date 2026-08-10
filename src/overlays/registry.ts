@@ -1,4 +1,5 @@
 import type { AnyOverlayModule } from './types';
+import { giftAlertOverlay } from './gift-alert';
 
 // ─── Registry Builder ───
 
@@ -59,8 +60,8 @@ export function registryBuilder(modules: AnyOverlayModule[]): RegistryResult {
 // Import and add overlay modules here as they are created.
 
 const _initialModules: AnyOverlayModule[] = [
-  // Gift Alert — added in Task 10
-  // Goals — added in Task 11
+  // Gift Alert
+  giftAlertOverlay,
 ];
 
 const { registry: overlayRegistry, byId, byCategory } = registryBuilder(_initialModules);

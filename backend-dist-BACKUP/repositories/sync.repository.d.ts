@@ -1,0 +1,167 @@
+export interface SyncData {
+    userId: string;
+    deviceId: string;
+    table: string;
+    recordId: string;
+    data: Record<string, unknown>;
+    version: number;
+}
+export interface SyncConflict {
+    table: string;
+    recordId: string;
+    localVersion: number;
+    remoteVersion: number;
+    localData: Record<string, unknown>;
+    remoteData: Record<string, unknown>;
+}
+export declare class SyncRepository {
+    getSyncableData(userId: string, table: string, since?: Date): Promise<{
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        name: string;
+        deviceId: string | null;
+        userId: string;
+        description: string | null;
+        thumbnailUrl: string | null;
+        isTemplate: boolean;
+        overlayType: import("@prisma/client").$Enums.OverlayTypes;
+        settings: import("@prisma/client/runtime/library").JsonValue | null;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        deviceId: string | null;
+        userId: string;
+        screenId: string;
+        isActive: boolean;
+        positionX: number;
+        positionY: number;
+        scaleX: number;
+        scaleY: number;
+        opacity: number;
+        zIndex: number;
+        sceneId: string | null;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        deviceId: string | null;
+        userId: string;
+        theme: import("@prisma/client").$Enums.Themes;
+        primaryColor: string;
+        secondaryColor: string;
+        transparency: number;
+        scale: number;
+        borderRadius: number;
+        animationSpeed: import("@prisma/client").$Enums.AnimationSpeeds;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        name: string;
+        userId: string;
+        description: string | null;
+        sortOrder: number;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        name: string;
+        deviceId: string | null;
+        userId: string;
+        soundEnabled: boolean;
+        screen: string;
+        duration: number;
+        enabled: boolean;
+        soundVolume: number;
+        soundFadeIn: number;
+        soundFadeOut: number;
+        soundLoop: boolean;
+        soundDelay: number;
+        videoEnabled: boolean;
+        videoAutoplay: boolean;
+        videoLoop: boolean;
+        videoSpeed: number;
+        videoFadeIn: number;
+        videoFadeOut: number;
+        imageEnabled: boolean;
+        imageOpacity: number;
+        imageScale: number;
+        imagePositionX: number;
+        imagePositionY: number;
+        imageAnimation: string | null;
+        keystrokeEnabled: boolean;
+        keystrokeKeys: string | null;
+        keystrokeHoldMs: number;
+        keystrokeDuration: number;
+        minecraftEnabled: boolean;
+        minecraftCommand: string | null;
+        minecraftQueue: boolean;
+        minecraftCooldown: number;
+        minecraftDelay: number;
+        minecraftRandom: boolean;
+        advancedSettings: import("@prisma/client/runtime/library").JsonValue | null;
+        groupId: string | null;
+        soundFileId: string | null;
+        videoFileId: string | null;
+        imageFileId: string | null;
+    }[] | {
+        type: import("@prisma/client").$Enums.GoalTypes;
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        name: string;
+        deviceId: string | null;
+        userId: string;
+        isActive: boolean;
+        targetValue: number;
+        currentValue: number;
+        resetOnComplete: boolean;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        name: string;
+        deviceId: string | null;
+        userId: string;
+        isActive: boolean;
+        url: string;
+        width: number;
+        height: number;
+        refreshInterval: number;
+    }[] | {
+        id: string;
+        createdAt: Date;
+        updatedAt: Date;
+        deletedAt: Date | null;
+        version: number;
+        deviceId: string | null;
+        userId: string;
+        language: string;
+        theme: import("@prisma/client").$Enums.Themes;
+        notificationsEnabled: boolean;
+        soundEnabled: boolean;
+        masterVolume: number;
+        debugMode: boolean;
+        tiktokLanguage: string;
+    }[]>;
+    getSyncMetadata(userId: string): Promise<Record<string, Date>>;
+    pullUpdates(userId: string, lastSync?: Date): Promise<Record<string, unknown[]>>;
+}
+export declare const syncRepository: SyncRepository;
+//# sourceMappingURL=sync.repository.d.ts.map

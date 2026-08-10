@@ -1,0 +1,78 @@
+// =============================================
+// RosaeFinity Server — Shared Types
+// =============================================
+
+import type { Request } from 'express';
+
+// ── API Response ──
+export interface ApiResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  code?: string;
+  requestId?: string;
+  pagination?: PaginationMeta;
+}
+
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+// ── Auth ──
+export interface JwtPayload {
+  sub: string;        // User ID
+  email: string;
+  planTier: string;
+  iat: number;
+  exp: number;
+}
+
+export interface AuthenticatedRequest extends Request {
+  user?: JwtPayload;
+  requestId?: string;
+}
+
+// ── Plan Tiers ──
+export type PlanTier = 'guest' | 'free' | 'pro' | 'enterprise';
+
+// ── Device ──
+export type DeviceStatus = 'active' | 'inactive' | 'revoked';
+
+// ── Sync ──
+export type SyncEntityType = 'action' | 'sound' | 'overlay' | 'settings' | 'alert' | 'goal' | 'preference';
+
+export interface SyncPayload {
+  entityType: SyncEntityType;
+  entityId: string;
+  data: Record<string, unknown>;
+  version: number;
+  checksum: string;
+  updatedAt: number;
+}
+
+export interface SyncResult {
+  accepted: SyncPayload[];
+  rejected: { entity: SyncPayload; reason: string }[];
+  serverVersion: number;
+}
+
+// ── Analytics ──
+export type AnalyticsEventType =
+  | 'app_start'
+  | 'feature_usage'
+  | 'crash_report'
+  | 'performance_metric'
+  | 'update_installed'
+  | 'license_activated'
+  | 'session_duration';
+
+// ── Pagination ──
+export interface PaginationQuery {
+  page?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}

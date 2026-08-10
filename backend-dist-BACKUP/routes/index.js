@@ -1,0 +1,35 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_routes_1 = __importDefault(require("./auth.routes"));
+const user_routes_1 = __importDefault(require("./user.routes"));
+const device_routes_1 = __importDefault(require("./device.routes"));
+const license_routes_1 = __importDefault(require("./license.routes"));
+const subscription_routes_1 = __importDefault(require("./subscription.routes"));
+const feature_flag_routes_1 = __importDefault(require("./feature-flag.routes"));
+const update_routes_1 = __importDefault(require("./update.routes"));
+const feedback_routes_1 = __importDefault(require("./feedback.routes"));
+const crash_report_routes_1 = __importDefault(require("./crash-report.routes"));
+const electron_routes_1 = __importDefault(require("./electron.routes"));
+const sync_routes_1 = __importDefault(require("./sync.routes"));
+const admin_routes_1 = __importDefault(require("./admin.routes"));
+const health_routes_1 = __importDefault(require("./health.routes"));
+const router = (0, express_1.Router)();
+router.use('/auth', auth_routes_1.default);
+router.use('/user', user_routes_1.default);
+router.use('/device', device_routes_1.default);
+router.use('/license', license_routes_1.default);
+router.use('/subscription', subscription_routes_1.default);
+router.use('/feature-flags', feature_flag_routes_1.default);
+router.use('/update', update_routes_1.default);
+router.use('/feedback', feedback_routes_1.default);
+router.use('/crash-reports', crash_report_routes_1.default);
+router.use('/electron', electron_routes_1.default);
+router.use('/sync', sync_routes_1.default);
+router.use('/admin', admin_routes_1.default);
+router.use('/', health_routes_1.default);
+exports.default = router;
+//# sourceMappingURL=index.js.map

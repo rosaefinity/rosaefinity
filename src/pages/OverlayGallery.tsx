@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { filterTabs } from "../services/api";
 import { cn } from "../lib/utils";
 import { useFavoritesStore } from "../store/favorites-store";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import type { OverlayCategory } from "../types";
-interface Overlay { id: string; name: string; description: string; thumbnail: string; category: string; tags: string[]; isPremium: boolean; isNew: boolean; isPopular: boolean; isActive: boolean; isFavorite: boolean; createdAt: string; updatedAt: string; previewUrl: string; config: any; }
+import { getOverlayModules, getOverlaysByCategory } from "../overlays/registry";
+import type { AnyOverlayModule, OverlayCategory } from "../overlays/types";
 import {
   Image as ImageIcon, Eye, Link2, FlaskConical, SlidersHorizontal,
   Star, StarOff, Play, CheckCircle2, Circle, Info, LayoutGrid,
@@ -14,35 +14,39 @@ import {
   TrendingUp, Crown, Search
 } from "lucide-react";
 
-// Mock data
-const overlayImages = [
-  "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1611532736597-de2d4265fba3?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1557683316-973673baf926?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=400&h=225&fit=crop",
-  "https://images.unsplash.com/photo-1552820728-8b83bb6b6414?w=400&h=225&fit=crop",
-];
-const names = ["Gift Rain Deluxe", "Stream Goal Pro", "Follower Milestone", "Subscriber Alert", "Donation Goal Bar", "Chat Rainbow", "Battle Arena", "Spin The Wheel"];
-const descs = ["Animated gift overlay with particle effects", "Track goals with elegant progress bars", "Celebrate followers with confetti", "Subscriber alert with custom animations", "Donation tracker with live updates", "Colorful chat overlay with animations", "Battle overlay for competitions", "Interactive wheel for engagement"];
-const categories: OverlayCategory[] = ["gift", "goal", "alert", "alert", "goal", "interactive", "game", "game"];
-
 const iconMap: Record<string, React.ElementType> = { "layout-grid": LayoutGrid, gift: Gift, bell: Bell, target: Target, "gamepad-2": Gamepad2, sparkles: Sparkles, trophy: Trophy, music: Music, "trending-up": TrendingUp, crown: Crown, star: Star };
 
-const overlays: Overlay[] = names.map((n, i) => ({
-  id: `ov-${i}`, name: n, description: descs[i], thumbnail: overlayImages[i],
-  category: categories[i], tags: [categories[i]], isPremium: i % 3 === 0,
-  isNew: i < 2, isPopular: i >= 3 && i <= 5, isActive: i % 3 === 0,
-  isFavorite: false, createdAt: "", updatedAt: "",
-  previewUrl: "", config: { theme: "dark", primaryColor: "#7C3AED", secondaryColor: "#EC4899", transparency: 0.9, scale: 1, borderRadius: 12, animationSpeed: "normal" as const }
-}));
+// Convert registry module to Gallery overlay format
+function moduleToOverlay(mod: AnyOverlayModule) {
+  return {
+    id: mod.id,
+    name: mod.name,
+    description: mod.description,
+    thumbnail: mod.thumbnail || "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=400&h=225&fit=crop",
+    category: mod.category,
+    tags: mod.tags,
+    isPremium: false,
+    isNew: false,
+    isPopular: false,
+    isActive: false,
+    isFavorite: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    previewUrl: "",
+    config: mod.defaultConfig || {},
+  };
+}
 
 export function OverlayGallery() {
   const [activeTab, setActiveTab] = useState<OverlayCategory>("all");
-  const [selectedOverlay, setSelectedOverlay] = useState<Overlay | null>(null);
+  const [selectedOverlay, setSelectedOverlay] = useState<any>(null);
   const { isFavorite, toggle } = useFavoritesStore();
+
+  // Get all modules from registry
+  const allModules = useMemo(() => getOverlayModules(), []);
+
+  // Convert modules to overlay format
+  const overlays = useMemo(() => allModules.map(moduleToOverlay), [allModules]);
 
   const filtered = overlays.filter(o => {
     if (activeTab === "all") return true;
@@ -52,7 +56,7 @@ export function OverlayGallery() {
     return o.category === activeTab;
   });
 
-  const previewOverlay = selectedOverlay || overlays[0];
+  const previewOverlay = selectedOverlay || overlays[0] || null;
 
   return (
     <div className="flex h-full">
@@ -91,7 +95,7 @@ export function OverlayGallery() {
             <div className="flex flex-col items-center justify-center py-20">
               <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-4"><Search className="w-6 h-6 text-white/20" /></div>
               <h3 className="text-sm font-semibold text-white mb-1">No overlays found</h3>
-              <p className="text-xs text-white/40 text-center max-w-xs">Try a different filter category.</p>
+              <p className="text-xs text-white/40 text-center max-w-xs">Try a different filter category or check if overlay modules are registered.</p>
             </div>
           ) : (
             <AnimatePresence mode="popLayout">
@@ -164,25 +168,38 @@ export function OverlayGallery() {
               <Button variant="ghost" size="icon-sm"><Eye className="w-3.5 h-3.5" /></Button>
             </div>
           </div>
-          <p className="text-xs text-white/60 truncate">{previewOverlay.name}</p>
+          {previewOverlay ? (
+            <p className="text-xs text-white/60 truncate">{previewOverlay.name}</p>
+          ) : (
+            <p className="text-xs text-white/30">No overlay selected</p>
+          )}
         </div>
 
         {/* Preview Box */}
         <div className="flex-1 flex items-center justify-center p-4 bg-[#050505] border-b border-white/[0.04]">
-          <motion.div key={previewOverlay.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-            className="relative w-[280px] h-[158px] rounded-xl border border-white/[0.08] shadow-2xl bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center overflow-hidden">
-            <div className="text-center px-4">
-              <Play className="w-8 h-8 text-primary/30 mx-auto mb-2" />
-              <p className="text-sm font-medium text-white/70">{previewOverlay.name}</p>
-              <p className="text-xs text-white/30 mt-1">Preview Window</p>
+          {previewOverlay ? (
+            <motion.div key={previewOverlay.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+              className="relative w-[280px] h-[158px] rounded-xl border border-white/[0.08] shadow-2xl bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center overflow-hidden">
+              <div className="text-center px-4">
+                <Play className="w-8 h-8 text-primary/30 mx-auto mb-2" />
+                <p className="text-sm font-medium text-white/70">{previewOverlay.name}</p>
+                <p className="text-xs text-white/30 mt-1">Preview Window</p>
+              </div>
+            </motion.div>
+          ) : (
+            <div className="w-[280px] h-[158px] rounded-xl border border-white/[0.08] bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center">
+              <div className="text-center px-4 text-white/30">
+                <p className="text-sm font-medium mb-1">No overlay available</p>
+                <p className="text-xs">Register overlay modules to see previews</p>
+              </div>
             </div>
-          </motion.div>
+          )}
         </div>
 
         {/* Quick Settings */}
         <div className="p-4 space-y-3 overflow-y-auto">
           <p className="text-xs font-medium text-white/40 uppercase tracking-wider mb-3">Quick Settings</p>
-          {[
+          {previewOverlay ? [
             { label: "Transparency", value: "90%" },
             { label: "Scale", value: "100%" },
             { label: "Border Radius", value: "12px" },
@@ -192,7 +209,9 @@ export function OverlayGallery() {
               <span className="text-xs text-white/40">{s.label}</span>
               <span className="text-xs text-white/60">{s.value}</span>
             </div>
-          ))}
+          )) : (
+            <p className="text-xs text-white/30">Select an overlay to customize</p>
+          )}
         </div>
       </div>
     </div>
