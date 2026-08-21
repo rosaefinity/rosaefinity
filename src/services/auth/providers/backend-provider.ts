@@ -10,7 +10,7 @@ import type { AuthProvider, AuthUser, AuthSession, AuthResult, AuthProviderType 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
 
 if (!API_URL && !import.meta.env.DEV) {
-  console.error('[RosaeFinity] VITE_API_URL is not set. Please configure your environment variables.');
+  console.error('[RosaeFinity] VITE_API_URL is not set. Authentication will not work without a backend URL.');
 }
 const ACCESS_TOKEN_KEY = 'rf_access_token';
 const REFRESH_TOKEN_KEY = 'rf_refresh_token';

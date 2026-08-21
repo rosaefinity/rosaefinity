@@ -23,7 +23,7 @@ export const authRepository = {
     });
   },
 
-  async createUser(data: { email?: string; displayName?: string; authProvider: string; providerId?: string; isAnonymous?: boolean }) {
+  async createUser(data: { email?: string; passwordHash?: string; displayName?: string; authProvider: string; providerId?: string; isAnonymous?: boolean }) {
     return prisma.user.create({ data });
   },
 

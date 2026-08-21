@@ -23,7 +23,7 @@ export const analyticsRepository = {
       by: ['eventType'],
       _count: true,
     });
-    return results.map(r => ({ eventType: r.eventType, count: r._count }));
+    return results.map((r: { eventType: string; _count: number }) => ({ eventType: r.eventType, count: r._count }));
   },
 
   async getVersionDistribution() {
@@ -32,7 +32,7 @@ export const analyticsRepository = {
       _count: true,
       where: { appVersion: { not: null } },
     });
-    return results.map(r => ({ version: r.appVersion, count: r._count }));
+    return results.map((r: { appVersion: string | null; _count: number }) => ({ version: r.appVersion, count: r._count }));
   },
 
   async getPlatformDistribution() {
@@ -41,6 +41,6 @@ export const analyticsRepository = {
       _count: true,
       where: { platform: { not: null } },
     });
-    return results.map(r => ({ platform: r.platform, count: r._count }));
+    return results.map((r: { platform: string | null; _count: number }) => ({ platform: r.platform, count: r._count }));
   },
 };

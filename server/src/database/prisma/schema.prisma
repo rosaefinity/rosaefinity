@@ -16,6 +16,7 @@ datasource db {
 model User {
   id            String    @id @default(uuid())
   email         String?   @unique
+  passwordHash  String?   // bcrypt hashed password (null for OAuth/anonymous users)
   displayName   String?
   avatarUrl     String?
   authProvider  String    @default("email") // email | google | github | discord | microsoft | anonymous

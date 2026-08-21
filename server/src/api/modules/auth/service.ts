@@ -3,19 +3,24 @@
 // Business logic for authentication.
 // =============================================
 
+import bcrypt from 'bcrypt';
 import { authRepository } from './repository.js';
 import { generateTokens, verifyRefreshToken } from '../../middleware/auth.js';
 import { BadRequestError, UnauthorizedError, NotFoundError, ConflictError } from '../../middleware/error-handler.js';
 import { generateId } from '../../../utils/helpers.js';
+
+const BCRYPT_ROUNDS = 12;
 
 export const authService = {
   async register(email: string, password: string, displayName?: string) {
     const existing = await authRepository.findUserByEmail(email);
     if (existing) throw new ConflictError('Email already registered');
 
-    // In production: hash password with bcrypt
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
     const user = await authRepository.createUser({
       email,
+      passwordHash,
       displayName: displayName || email.split('@')[0],
       authProvider: 'email',
     });
@@ -41,7 +46,15 @@ export const authService = {
     const user = await authRepository.findUserByEmail(email);
     if (!user) throw new UnauthorizedError('Invalid credentials');
 
-    // In production: verify password with bcrypt
+    // Verify password with bcrypt
+    if (!user.passwordHash) {
+      // User registered via OAuth or guest - cannot login with email/password
+      throw new UnauthorizedError('Invalid credentials');
+    }
+
+    const validPassword = await bcrypt.compare(password, user.passwordHash);
+    if (!validPassword) throw new UnauthorizedError('Invalid credentials');
+
     const tokens = generateTokens({
       sub: user.id,
       email: user.email || '',

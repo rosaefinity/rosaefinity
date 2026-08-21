@@ -22,7 +22,7 @@ export const adminController = {
   },
 
   async user(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const data = await adminService.getUser(id);
     const response: ApiResponse = { success: true, data };
     res.json(response);

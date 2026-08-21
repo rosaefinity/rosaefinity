@@ -52,17 +52,36 @@ export function requireRole(...roles: string[]) {
 export function generateTokens(payload: Omit<JwtPayload, 'iat' | 'exp'>): { accessToken: string; refreshToken: string } {
   const config = getConfig();
 
+  // Convert string expiresIn to number (seconds)
+  const accessExpiresIn = parseExpiresIn(config.JWT_EXPIRES_IN);
+  const refreshExpiresIn = parseExpiresIn(config.JWT_REFRESH_EXPIRES_IN);
+
   const accessToken = jwt.sign(payload, config.JWT_SECRET, {
-    expiresIn: config.JWT_EXPIRES_IN,
+    expiresIn: accessExpiresIn,
   });
 
   const refreshToken = jwt.sign(
     { ...payload, type: 'refresh' },
     config.JWT_SECRET,
-    { expiresIn: config.JWT_REFRESH_EXPIRES_IN },
+    { expiresIn: refreshExpiresIn },
   );
 
   return { accessToken, refreshToken };
+}
+
+function parseExpiresIn(value: string): number {
+  // Parse "15m", "7d", "1h", etc. to seconds
+  const match = value.match(/^(\d+)([smhd])$/);
+  if (!match) return 900; // default 15 minutes
+  const num = parseInt(match[1], 10);
+  const unit = match[2];
+  switch (unit) {
+    case 's': return num;
+    case 'm': return num * 60;
+    case 'h': return num * 3600;
+    case 'd': return num * 86400;
+    default: return 900;
+  }
 }
 
 export function verifyRefreshToken(token: string): JwtPayload {
