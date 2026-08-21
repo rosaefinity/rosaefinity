@@ -21,7 +21,12 @@ import { analyticsRouter } from './api/modules/analytics/routes.js';
 import { adminRouter } from './api/modules/admin/routes.js';
 
 async function main(): Promise<void> {
+  console.log('[STARTUP] Loading configuration...');
   const config = getConfig();
+  console.log(`[STARTUP] Config loaded. PORT=${config.PORT}, HOST=${config.HOST}, NODE_ENV=${config.NODE_ENV}`);
+  console.log(`[STARTUP] DATABASE_URL set: ${!!config.DATABASE_URL}`);
+  console.log(`[STARTUP] JWT_SECRET set: ${!!config.JWT_SECRET}`);
+  console.log(`[STARTUP] CORS_ORIGINS: ${config.CORS_ORIGINS}`);
   const app = express();
 
   // ── Security ──
@@ -87,12 +92,14 @@ async function main(): Promise<void> {
   app.use(errorHandler);
 
   // ── Start Server ──
+  console.log(`[STARTUP] Starting server on ${config.HOST}:${config.PORT}...`);
   app.listen(config.PORT, config.HOST, () => {
     console.log(`\n🌹 RosaeFinity Server v1.0.0`);
     console.log(`   Environment: ${config.NODE_ENV}`);
     console.log(`   Listening:   http://${config.HOST}:${config.PORT}`);
     console.log(`   API:         http://${config.HOST}:${config.PORT}/api/v1`);
     console.log(`   Health:      http://${config.HOST}:${config.PORT}/health\n`);
+    console.log('[STARTUP] Server ready to accept connections');
   });
 }
 
