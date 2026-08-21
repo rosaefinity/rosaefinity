@@ -18,3 +18,4 @@ export function AuthPage() {
     </AnimatePresence>
   );
 }
+export default AuthPage;

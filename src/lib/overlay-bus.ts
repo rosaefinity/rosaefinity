@@ -2,6 +2,8 @@
 // Overlay Event Bus — BroadcastChannel + SSE relay
 // ═══════════════════════════════════════════════
 
+import { getSSEBaseUrl } from './browser-source-url';
+
 const CHANNEL_NAME = "rosaefinity-overlay";
 let channel: BroadcastChannel | null = null;
 
@@ -9,8 +11,11 @@ let channel: BroadcastChannel | null = null;
 let sseConnected = false;
 let sseRetryCount = 0;
 let sseRetryTimer: ReturnType<typeof setTimeout> | null = null;
-const SSE_URL = "http://127.0.0.1:18890";
+let sseMonitorTimer: ReturnType<typeof setInterval> | null = null;
 const MAX_SSE_RETRIES = 5;
+const SSE_MONITOR_INTERVAL = 15_000; // 15 seconds
+
+const SSE_URL = getSSEBaseUrl();
 
 function getChannel(): BroadcastChannel | null {
   if (!channel) {
@@ -113,13 +118,22 @@ export function getSSEConnectionState() {
 export function testOverlayAlert(eventType: string = "gift") {
   sendToOverlay({
     eventType,
-    user: "TestUser",
-    nickname: "Test User",
-    giftName: "Rose",
-    repeatCount: 1,
-    diamondCount: 1,
-    likeCount: 100,
-    comment: "Test comment from RosaeFinity!",
+    actionName: "Test Alert",
     timestamp: Date.now(),
   });
+}
+
+// ─── Periodic SSE health monitor ────────────
+export function startSSEMonitor() {
+  if (sseMonitorTimer) return; // already running
+  sseMonitorTimer = setInterval(() => {
+    checkSSEHealth();
+  }, SSE_MONITOR_INTERVAL);
+}
+
+export function stopSSEMonitor() {
+  if (sseMonitorTimer) {
+    clearInterval(sseMonitorTimer);
+    sseMonitorTimer = null;
+  }
 }

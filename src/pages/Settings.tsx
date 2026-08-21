@@ -1,13 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { useAuthStore } from "../store/auth-store";
+import { useTikTokStore, selectScreenStatus, selectScreenUsername, selectScreenViewerCount, selectScreenStats, selectScreenRoomId, selectScreenIsReconnecting, selectScreenReconnectAttempts, selectScreenLastError } from "../store/tiktok-store";
 import { api } from "../services/electron-service";
+import { toast } from "../components/Toast";
 import { Button } from "../components/ui/button";
-import { SCREEN_IDS } from "../types";
-import { Settings, Save, Download, Upload, RefreshCw, CheckCircle2, XCircle, Zap } from "lucide-react";
+import { Settings, Save, Download, Upload, CheckCircle2, XCircle, Copy } from "lucide-react";
+import { getOverlayWidgetUrl } from "../lib/browser-source-url";
 
-type Section = "tiktok" | "points" | "levels" | "obs" | "streamerbot" | "minecraft" | "spotify" | "songrequest" | "reset" | "account" | "importexport" | "advanced" | "license";
+type Section = "tiktok" | "points" | "levels" | "obs" | "streamerbot" | "minecraft" | "spotify" | "songrequest" | "overlayscreens" | "reset" | "account" | "importexport" | "advanced" | "license";
 
 const SECTIONS: { id: Section; label: string; icon: string }[] = [
   { id: "tiktok", label: "TikTok Connection", icon: "🎵" },
@@ -18,6 +20,7 @@ const SECTIONS: { id: Section; label: string; icon: string }[] = [
   { id: "minecraft", label: "Minecraft", icon: "⛏️" },
   { id: "spotify", label: "Spotify", icon: "🎵" },
   { id: "songrequest", label: "Song Request", icon: "🎶" },
+  { id: "overlayscreens", label: "Overlay Screens", icon: "📺" },
   { id: "reset", label: "Reset Points", icon: "🔄" },
   { id: "account", label: "Account", icon: "👤" },
   { id: "importexport", label: "Import/Export", icon: "📦" },
@@ -26,15 +29,28 @@ const SECTIONS: { id: Section; label: string; icon: string }[] = [
 ];
 
 export function SettingsPage() {
-  const { setupConfig, updateSetupConfig, pointsConfig, updatePointsConfig, screenConnections, screenTikTokNames, setScreenTikTokName } = useAppStore();
+  // ══ Zustand — all settings live here and auto-persist via persist middleware ══
+  const setupConfig = useAppStore(s => s.setupConfig);
+  const updateSetupConfig = useAppStore(s => s.updateSetupConfig);
+  const pointsConfig = useAppStore(s => s.pointsConfig);
+  const updatePointsConfig = useAppStore(s => s.updatePointsConfig);
+  const actions = useAppStore(s => s.actions);
   const { user } = useAuthStore();
-  // Baca hash dari URL untuk langsung ke section tertentu
-  const getInitialSection = (): Section => {
-    const hash = window.location.hash.replace("#", "") as Section;
-    return SECTIONS.find(s => s.id === hash) ? hash : "tiktok";
-  };
+
+  // TikTok store for connection management
+  const tikTokStatus = useTikTokStore(selectScreenStatus("screen-0"));
+  const tikTokUsername = useTikTokStore(selectScreenUsername("screen-0"));
+  const tikTokViewerCount = useTikTokStore(selectScreenViewerCount("screen-0"));
+  const tikTokStats = useTikTokStore(selectScreenStats("screen-0"));
+  const tikTokRoomId = useTikTokStore(selectScreenRoomId("screen-0"));
+  const tikTokIsReconnecting = useTikTokStore(selectScreenIsReconnecting("screen-0"));
+  const tikTokReconnectAttempts = useTikTokStore(selectScreenReconnectAttempts("screen-0"));
+  const tikTokLastError = useTikTokStore(selectScreenLastError("screen-0"));
+
+  // Section navigation is managed by activeSection state, not URL hash.
+  // HashRouter uses the hash for route matching, so we cannot use it for sub-navigation.
+  const getInitialSection = (): Section => "tiktok";
   const [activeSection, setActiveSection] = useState<Section>(getInitialSection);
-  const [local, setLocal] = useState({ ...setupConfig });
   const [saved, setSaved] = useState(false);
   const [obsStatus, setObsStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [sbStatus, setSbStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
@@ -45,47 +61,97 @@ export function SettingsPage() {
   const [licenseMsg, setLicenseMsg] = useState("");
   const [showLevels, setShowLevels] = useState(false);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
-  const [halvingPercent, setHalvingPercent] = useState(50);
-  const [importFile, setImportFile] = useState<File | null>(null);
 
   const showPw = (key: string) => showPasswords[key] || false;
   const togglePw = (key: string) => setShowPasswords(p => ({ ...p, [key]: !p[key] }));
 
-  // Save all settings
-  const handleSave = () => {
-    updateSetupConfig(local);
+  /** Helper: update a single field in setupConfig — auto-persists via Zustand persist middleware */
+  const setField = <K extends keyof typeof setupConfig>(key: K, value: (typeof setupConfig)[K]) => {
+    updateSetupConfig({ [key]: value });
+  };
+
+  // ══ Backend Sync — called by "Save Changes" button ══
+  const handleSave = async () => {
+    // Validate required fields
+    if (!setupConfig.tikTokName.trim()) {
+      toast("TikTok username is required", "error");
+      return;
+    }
+    if (setupConfig.pointsGift < 1 || setupConfig.pointsLike < 1 || setupConfig.pointsFollow < 1 ||
+        setupConfig.pointsComment < 1 || setupConfig.pointsShare < 1 || setupConfig.pointsSubscribe < 1) {
+      toast("Points values must be at least 1", "error");
+      return;
+    }
+    if (setupConfig.levelPoints < 1) {
+      toast("Base points must be at least 1", "error");
+      return;
+    }
+    if (setupConfig.levelMultiplier < 1) {
+      toast("Level multiplier must be at least 1", "error");
+      return;
+    }
+    if (setupConfig.obsPort && (setupConfig.obsPort < 1 || setupConfig.obsPort > 65535)) {
+      toast("OBS port must be between 1 and 65535", "error");
+      return;
+    }
+    if (setupConfig.sbPort && (setupConfig.sbPort < 1 || setupConfig.sbPort > 65535)) {
+      toast("Streamer.bot port must be between 1 and 65535", "error");
+      return;
+    }
+    if (setupConfig.mcPort && (setupConfig.mcPort < 1 || setupConfig.mcPort > 65535)) {
+      toast("Minecraft port must be between 1 and 65535", "error");
+      return;
+    }
+
+    // Sync points config
     updatePointsConfig({
-      currencyName: local.currencyName,
-      pointsGift: local.pointsGift,
-      pointsLike: local.pointsLike,
-      pointsFollow: local.pointsFollow,
-      pointsComment: local.pointsComment,
-      pointsShare: local.pointsShare,
-      subBonus: local.subBonus,
-      levelPoints: local.levelPoints,
-      levelMultiplier: local.levelMultiplier,
+      currencyName: setupConfig.currencyName,
+      pointsGift: setupConfig.pointsGift,
+      pointsLike: setupConfig.pointsLike,
+      pointsFollow: setupConfig.pointsFollow,
+      pointsComment: setupConfig.pointsComment,
+      pointsShare: setupConfig.pointsShare,
+      subBonus: setupConfig.subBonus,
+      levelPoints: setupConfig.levelPoints,
+      levelMultiplier: setupConfig.levelMultiplier,
     });
+
     // Sync config to backend modules
     const a = api();
     if (a) {
-      a.syncPointsConfig(local);
-      a.obsSetConfig({ obsIp: local.obsIp, obsPort: local.obsPort, obsPassword: local.obsPassword });
-      a.sbSetConfig({ sbAddress: local.sbAddress, sbPort: local.sbPort, sbEndpoint: local.sbEndpoint });
-      a.mcSetConfig({ mcMode: local.mcMode, mcPlayer: local.mcPlayer, mcIp: local.mcIp, mcPort: local.mcPort, mcPassword: local.mcPassword });
-      if (local.spotifyClientId) {
-        a.spotifySetConfig({ clientId: local.spotifyClientId, redirectUri: "http://127.0.0.1:8890/callback" });
+      try {
+        a.syncPointsConfig(setupConfig);
+        a.obsSetConfig({ obsIp: setupConfig.obsIp, obsPort: setupConfig.obsPort, obsPassword: setupConfig.obsPassword });
+        a.sbSetConfig({ sbAddress: setupConfig.sbAddress, sbPort: setupConfig.sbPort, sbEndpoint: setupConfig.sbEndpoint });
+        a.mcSetConfig({ mcMode: setupConfig.mcMode, mcPlayer: setupConfig.mcPlayer, mcIp: setupConfig.mcIp, mcPort: setupConfig.mcPort, mcPassword: setupConfig.mcPassword });
+        if (setupConfig.spotifyClientId) {
+          a.spotifySetConfig({ clientId: setupConfig.spotifyClientId, redirectUri: `http://127.0.0.1:18890/callback` });
+        }
+      } catch {
+        // Backend sync failed — settings are still saved in Zustand
       }
     }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+    toast("Settings synced to backend!", "success");
+
+    // Connect to TikTok LIVE (non-blocking, runs in main process)
+    if (setupConfig.tikTokName.trim()) {
+      const username = setupConfig.tikTokName.trim();
+      console.log(`[TIKTOK-UI] Settings connect requested for screen-0: ${username}`);
+      const a = api();
+      a?.connectTikTokScreen("screen-0", username).catch((err: unknown) => {
+        console.error(`[TIKTOK-UI] connect failed:`, err);
+      });
+    }
   };
 
   // Level preview
   const levelPreview: { level: number; required: number; cumulative: number }[] = [];
-  if (local.levelPoints > 0) {
+  if (setupConfig.levelPoints > 0) {
     let cumulative = 0;
     for (let lv = 1; lv <= 20; lv++) {
-      const req = lv === 1 ? 0 : Math.round(local.levelPoints * Math.pow(local.levelMultiplier, lv - 2));
+      const req = lv === 1 ? 0 : Math.round(setupConfig.levelPoints * Math.pow(setupConfig.levelMultiplier, lv - 2));
       cumulative += req;
       levelPreview.push({ level: lv, required: req, cumulative });
     }
@@ -94,76 +160,115 @@ export function SettingsPage() {
   // Test OBS
   const testOBS = async () => {
     setObsStatus("testing");
-    updateSetupConfig(local);
     const a = api();
     if (a) {
       try {
-        a.obsSetConfig({ obsIp: local.obsIp, obsPort: local.obsPort, obsPassword: local.obsPassword });
-        const result = await a.obsTest({ ip: local.obsIp, port: local.obsPort, password: local.obsPassword });
+        a.obsSetConfig({ obsIp: setupConfig.obsIp, obsPort: setupConfig.obsPort, obsPassword: setupConfig.obsPassword });
+        const result = await a.obsTest({ ip: setupConfig.obsIp, port: setupConfig.obsPort, password: setupConfig.obsPassword });
         setObsStatus(result?.success ? "ok" : "fail");
-      } catch { setObsStatus("fail"); }
+        if (result?.success) {
+          toast("OBS connected successfully!", "success");
+        } else {
+          toast(result?.error || "OBS connection failed", "error");
+        }
+      } catch (e) {
+        setObsStatus("fail");
+        toast("OBS connection error: " + (e instanceof Error ? e.message : "Unknown error"), "error");
+      }
     } else {
-      setObsStatus(Math.random() > 0.3 ? "ok" : "fail");
+      setObsStatus("fail");
+      toast("Electron API not available — run in Electron to test OBS", "error");
     }
   };
 
   // Test Streamer.bot
   const testSB = async () => {
     setSbStatus("testing");
-    updateSetupConfig(local);
     const a = api();
     if (a) {
       try {
-        a.sbSetConfig({ sbAddress: local.sbAddress, sbPort: local.sbPort, sbEndpoint: local.sbEndpoint });
-        const result = await a.sbTest({ address: local.sbAddress, port: local.sbPort, endpoint: local.sbEndpoint });
+        a.sbSetConfig({ sbAddress: setupConfig.sbAddress, sbPort: setupConfig.sbPort, sbEndpoint: setupConfig.sbEndpoint });
+        const result = await a.sbTest({ address: setupConfig.sbAddress, port: setupConfig.sbPort, endpoint: setupConfig.sbEndpoint });
         setSbStatus(result?.success ? "ok" : "fail");
-      } catch { setSbStatus("fail"); }
+        if (result?.success) {
+          toast("Streamer.bot connected successfully!", "success");
+        } else {
+          toast(result?.error || "Streamer.bot connection failed", "error");
+        }
+      } catch (e) {
+        setSbStatus("fail");
+        toast("Streamer.bot connection error: " + (e instanceof Error ? e.message : "Unknown error"), "error");
+      }
     } else {
-      setSbStatus(Math.random() > 0.3 ? "ok" : "fail");
+      setSbStatus("fail");
+      toast("Electron API not available — run in Electron to test Streamer.bot", "error");
     }
   };
 
   // Test Minecraft
   const testMC = async () => {
     setMcStatus("testing");
-    updateSetupConfig(local);
     const a = api();
     if (a) {
       try {
-        a.mcSetConfig({ mcMode: local.mcMode, mcPlayer: local.mcPlayer, mcIp: local.mcIp, mcPort: local.mcPort, mcPassword: local.mcPassword });
-        const result = await a.mcTest({ ip: local.mcIp, port: local.mcPort, password: local.mcPassword, mode: local.mcMode });
+        a.mcSetConfig({ mcMode: setupConfig.mcMode, mcPlayer: setupConfig.mcPlayer, mcIp: setupConfig.mcIp, mcPort: setupConfig.mcPort, mcPassword: setupConfig.mcPassword });
+        const result = await a.mcTest({ ip: setupConfig.mcIp, port: setupConfig.mcPort, password: setupConfig.mcPassword, mode: setupConfig.mcMode });
         setMcStatus(result?.success ? "ok" : "fail");
-      } catch { setMcStatus("fail"); }
+        if (result?.success) {
+          toast("Minecraft connected successfully!", "success");
+        } else {
+          toast(result?.error || "Minecraft connection failed", "error");
+        }
+      } catch (e) {
+        setMcStatus("fail");
+        toast("Minecraft connection error: " + (e instanceof Error ? e.message : "Unknown error"), "error");
+      }
     } else {
-      setMcStatus(Math.random() > 0.3 ? "ok" : "fail");
+      setMcStatus("fail");
+      toast("Electron API not available — run in Electron to test Minecraft", "error");
     }
   };
 
   // Connect Spotify
   const connectSpotify = async () => {
     setSpotifyStatus("connecting");
-    updateSetupConfig(local);
     const a = api();
     if (a) {
       try {
-        a.spotifySetConfig({ clientId: local.spotifyClientId, redirectUri: "http://127.0.0.1:8890/callback" });
-        const result = await a.spotifyAuth({ clientId: local.spotifyClientId });
+        a.spotifySetConfig({ clientId: setupConfig.spotifyClientId, redirectUri: `http://127.0.0.1:18890/callback` });
+        const result = await a.spotifyAuth({ clientId: setupConfig.spotifyClientId });
         setSpotifyStatus(result?.success ? "ok" : "fail");
-      } catch { setSpotifyStatus("fail"); }
+        if (result?.success) {
+          toast("Connected to Spotify!", "success");
+        } else {
+          toast(result?.error || "Spotify connection failed", "error");
+        }
+      } catch (e) {
+        setSpotifyStatus("fail");
+        toast("Spotify connection error: " + (e instanceof Error ? e.message : "Unknown error"), "error");
+      }
     } else {
-      setSpotifyStatus(Math.random() > 0.4 ? "ok" : "fail");
+      setSpotifyStatus("fail");
+      toast("Electron API not available — run in Electron to connect Spotify", "error");
     }
   };
 
   // Activate License
   const activateLicense = async () => {
+    const pattern = /^ROSAE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+    if (!pattern.test(licenseKey.toUpperCase())) {
+      setLicenseMsg("Invalid format. Use: ROSAE-XXXX-XXXX-XXXX");
+      return;
+    }
+
     const a = api();
     if (a) {
       try {
+        setLicenseMsg("Activating...");
         const result = await a.licenseActivate({ key: licenseKey.toUpperCase(), email: licenseEmail });
         if (result?.success) {
           setLicenseMsg("✅ Pro activated!");
-          // Refresh license status
+          toast("License activated successfully!", "success");
           const status = await a.licenseStatus();
           if (status) {
             useAppStore.getState().setLicenseInfo({
@@ -174,51 +279,92 @@ export function SettingsPage() {
           }
         } else {
           setLicenseMsg("❌ " + (result?.error || "Activation failed"));
+          toast(result?.error || "License activation failed", "error");
         }
-      } catch {
+      } catch (e) {
         setLicenseMsg("❌ Activation failed");
+        toast("License activation error: " + (e instanceof Error ? e.message : "Unknown error"), "error");
       }
     } else {
-      const pattern = /^ROSAE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
-      if (!pattern.test(licenseKey.toUpperCase())) {
-        setLicenseMsg("Format: ROSAE-XXXX-XXXX-XXXX");
-        return;
-      }
-      setLicenseMsg("✅ Pro activated! (demo)");
+      setLicenseMsg("Electron API not available — run in Electron to activate license");
+      toast("Electron API not available", "error");
     }
   };
 
   // Reset points
   const resetPoints = () => {
-    const { resetAllPoints, halvePoints } = useAppStore.getState();
-    if (confirm("Reset all points to 0?")) resetAllPoints();
+    if (confirm("⚠️ Are you sure you want to reset ALL points to 0? This cannot be undone.")) {
+      const { resetAllPoints } = useAppStore.getState();
+      resetAllPoints();
+      toast("All points have been reset to 0", "success");
+    }
   };
 
   const applyHalving = () => {
-    const { halvePoints } = useAppStore.getState();
-    halvePoints(halvingPercent);
+    const percent = setupConfig.halvingPercent;
+    if (percent < 1 || percent > 100) {
+      toast("Halving percentage must be between 1 and 100", "error");
+      return;
+    }
+    if (confirm(`Reduce all points by ${percent}%? This cannot be undone.`)) {
+      const { halvePoints } = useAppStore.getState();
+      halvePoints(percent);
+      toast(`Points reduced by ${percent}%`, "success");
+    }
   };
 
   // Import
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (!file.name.endsWith(".json")) {
+      toast("Please select a JSON file", "error");
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target?.result as string);
-        if (data.setupConfig) updateSetupConfig(data.setupConfig);
-        if (data.pointsConfig) updatePointsConfig(data.pointsConfig);
-        alert("Settings imported!");
-      } catch { alert("Invalid file"); }
+
+        if (!data.setupConfig && !data.pointsConfig) {
+          toast("Invalid settings file — missing setupConfig or pointsConfig", "error");
+          return;
+        }
+
+        if (data.setupConfig) {
+          if (typeof data.setupConfig.tikTokName !== "string") {
+            toast("Invalid settings file — tikTokName must be a string", "error");
+            return;
+          }
+          updateSetupConfig(data.setupConfig);
+        }
+
+        if (data.pointsConfig) {
+          if (typeof data.pointsConfig.pointsGift !== "number" || data.pointsConfig.pointsGift < 1) {
+            toast("Invalid settings file — pointsGift must be a positive number", "error");
+            return;
+          }
+          updatePointsConfig(data.pointsConfig);
+        }
+
+        toast("Settings imported successfully!", "success");
+      } catch {
+        toast("Invalid JSON file format", "error");
+      }
+    };
+    reader.onerror = () => {
+      toast("Failed to read file", "error");
     };
     reader.readAsText(file);
+    e.target.value = "";
   };
 
   // Export
   const handleExport = () => {
     const data = {
-      setupConfig: local,
+      setupConfig,
       pointsConfig,
       exportedAt: new Date().toISOString(),
     };
@@ -235,78 +381,106 @@ export function SettingsPage() {
     switch (activeSection) {
       // ═══ TIKTOK ════════════════════════════════════════════
       case "tiktok": {
-        const [globalTikTokName, setGlobalTikTokName] = useState("");
-        const connectAll = () => {
-          const a = api();
-          if (a && globalTikTokName) {
-            SCREEN_IDS.forEach(id => a.connectTikTokScreen(id, globalTikTokName));
-          }
-        };
+        const isConnected = tikTokStatus === "connected";
+        const isReconnecting = tikTokIsReconnecting;
         return (
-          <div className="space-y-4">
-            {/* Global connect-all section */}
-            <div className="p-4 rounded-xl bg-primary/10 border border-primary/30">
-              <h4 className="text-sm font-semibold text-primary-light mb-2">🌐 Connect All Screens at Once</h4>
-              <p className="text-xs text-white/40 mb-3">Enter one username to connect all 8 screens simultaneously.</p>
-              <div className="flex gap-2">
-                <input type="text" value={globalTikTokName} onChange={(e) => setGlobalTikTokName(e.target.value)}
-                  placeholder="tiktok_username"
-                  className="flex-1 h-9 px-3 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
-                <Button size="sm" variant="default" onClick={connectAll} disabled={!globalTikTokName}>
-                  <Zap className="w-4 h-4" /> Connect All 8 Screens
-                </Button>
-              </div>
-              <p className="text-[10px] text-white/40 mt-1">Connects the same username to all 8 screens simultaneously.</p>
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-lg font-bold text-white">🎵 TikTok LIVE Connection</h3>
+              <p className="text-sm text-white/50 mt-1">Connect to a TikTok LIVE session to receive events</p>
             </div>
 
-            <div className="h-px bg-white/[0.06] my-4" />
-
-            <h3 className="text-lg font-bold text-white">📺 Per-Screen Connections</h3>
-            <p className="text-sm text-white/40">Or configure each screen independently.</p>
-            {SCREEN_IDS.map((screenId) => {
-              const conn = screenConnections[screenId];
-              const localName = screenTikTokNames[screenId] || "";
-              return (
-                <div key={screenId} className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-white">Screen {screenId.split('-')[1]}</span>
-                    {conn?.isLive ? (
-                      <span className="text-xs font-medium px-2 py-0.5 rounded bg-green/20 text-green border border-green/30">
-                        LIVE @{conn.username}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-white/30">Offline</span>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <input type="text" value={localName}
-                      onChange={(e) => setScreenTikTokName(screenId, e.target.value)}
-                      placeholder="tiktok_username"
-                      disabled={conn?.isLive}
-                      className="flex-1 h-9 px-3 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40 disabled:opacity-50" />
-                    {conn?.isLive ? (
-                      <Button size="sm" variant="danger"
-                        onClick={() => api()?.disconnectTikTokScreen(screenId)}>
-                        Disconnect
-                      </Button>
-                    ) : (
-                      <Button size="sm"
-                        onClick={() => {
-                          const a = api();
-                          if (a && localName) a.connectTikTokScreen(screenId, localName);
-                        }}
-                        disabled={!localName}>
-                        Connect
-                      </Button>
-                    )}
-                  </div>
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5 space-y-4">
+              <label className="block text-sm font-medium text-white/70">TikTok Username</label>
+              <input
+                type="text"
+                value={setupConfig.tikTokName}
+                onChange={e => setField("tikTokName", e.target.value)}
+                placeholder="Enter TikTok username (without @)"
+                className="w-full px-4 py-2.5 bg-white/[0.04] border border-white/[0.08] rounded-lg text-white/90 placeholder:text-white/25 focus:outline-none focus:border-primary/40 transition-colors"
+              />
+              <div className="flex items-center gap-3">
+                {isConnected ? (
+                  <Button size="sm" variant="danger"
+                    onClick={() => {
+                      console.log(`[TIKTOK-UI] Disconnect clicked`);
+                      const a = api();
+                      a?.disconnectTikTokScreen("screen-0");
+                    }}>
+                    Disconnect
+                  </Button>
+                ) : (
+                  <Button size="sm"
+                    onClick={() => {
+                      console.log(`[TIKTOK-UI] Connect clicked`);
+                      const username = setupConfig.tikTokName.trim();
+                      if (!username) return;
+                      console.log(`[TIKTOK-UI] calling connectTikTokScreen("screen-0", "${username}")`);
+                      const a = api();
+                      a?.connectTikTokScreen("screen-0", username);
+                    }}
+                    disabled={!setupConfig.tikTokName.trim()}>
+                    Connect
+                  </Button>
+                )}
+                <div className="flex items-center gap-2 text-sm">
+                  <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.6)]" : isReconnecting ? "bg-amber animate-pulse" : "bg-white/20"}`} />
+                  <span className="text-white/50">
+                    {isConnected
+                      ? `Connected${tikTokUsername ? ` as ${tikTokUsername}` : ""}`
+                      : isReconnecting
+                        ? `Reconnecting... (attempt ${tikTokReconnectAttempts})`
+                        : tikTokLastError
+                          ? `Error: ${tikTokLastError}`
+                          : "Offline"}
+                  </span>
                 </div>
-              );
-            })}
+              </div>
+            </div>
+
+            {/* Connection Status Details */}
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-5">
+              <h4 className="text-sm font-semibold text-white/70 mb-3">Connection Status</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Status</span>
+                  <span className={`text-xs font-medium ${isConnected ? "text-green" : "text-white/30"}`}>
+                    {isConnected ? "● Connected" : "● Offline"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Room ID</span>
+                  <span className="text-xs font-mono text-white/60">{tikTokRoomId || "—"}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Viewer Count</span>
+                  <span className="text-xs text-white/70">{tikTokViewerCount.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Gift Count</span>
+                  <span className="text-xs text-white/70">{tikTokStats.gifts.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Like Count</span>
+                  <span className="text-xs text-white/70">{tikTokStats.likes.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Follow Count</span>
+                  <span className="text-xs text-white/70">{tikTokStats.follows.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Share Count</span>
+                  <span className="text-xs text-white/70">{tikTokStats.shares.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
+                  <span className="text-xs text-white/40">Comment Count</span>
+                  <span className="text-xs text-white/70">{tikTokStats.comments.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
           </div>
         );
-
-      } // close case "tiktok" block
+      }
 
       // ═══ POINTS ════════════════════════════════════════════
       case "points":
@@ -314,38 +488,38 @@ export function SettingsPage() {
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-white">⭐ Points System</h3>
             <SettingRow label="Currency Name" desc="Nama poin kamu">
-              <input type="text" value={local.currencyName} onChange={e => setLocal({ ...local, currencyName: e.target.value })}
+              <input type="text" value={setupConfig.currencyName} onChange={e => setField("currencyName", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
             </SettingRow>
             <SettingRow label="Points per Gift" desc="Poin setiap gift">
-              <input type="number" value={local.pointsGift} onChange={e => setLocal({ ...local, pointsGift: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsGift} onChange={e => setField("pointsGift", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Points per Like" desc="Poin setiap like">
-              <input type="number" value={local.pointsLike} onChange={e => setLocal({ ...local, pointsLike: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsLike} onChange={e => setField("pointsLike", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Points per Follow" desc="Poin setiap follow">
-              <input type="number" value={local.pointsFollow} onChange={e => setLocal({ ...local, pointsFollow: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsFollow} onChange={e => setField("pointsFollow", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Points per Comment" desc="Poin setiap komentar">
-              <input type="number" value={local.pointsComment} onChange={e => setLocal({ ...local, pointsComment: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsComment} onChange={e => setField("pointsComment", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Points per Share" desc="Poin setiap share">
-              <input type="number" value={local.pointsShare} onChange={e => setLocal({ ...local, pointsShare: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsShare} onChange={e => setField("pointsShare", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Points per Subscribe" desc="Poin setiap subscription">
-              <input type="number" value={local.pointsSubscribe} onChange={e => setLocal({ ...local, pointsSubscribe: Number(e.target.value) })}
+              <input type="number" value={setupConfig.pointsSubscribe} onChange={e => setField("pointsSubscribe", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Subscriber Bonus" desc="Bonus % untuk subscriber (0 = no bonus)">
               <div className="flex items-center gap-3">
-                <input type="range" min={0} max={200} value={local.subBonus} onChange={e => setLocal({ ...local, subBonus: Number(e.target.value) })}
+                <input type="range" min={0} max={200} value={setupConfig.subBonus} onChange={e => setField("subBonus", Number(e.target.value))}
                   className="w-32" />
-                <span className="text-sm text-white w-12">{local.subBonus}%</span>
+                <span className="text-sm text-white w-12">{setupConfig.subBonus}%</span>
               </div>
             </SettingRow>
           </div>
@@ -357,12 +531,12 @@ export function SettingsPage() {
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-white">📈 Level Settings</h3>
             <SettingRow label="Base Points" desc="Poin dasar untuk naik ke level 2">
-              <input type="number" value={local.levelPoints} onChange={e => setLocal({ ...local, levelPoints: Number(e.target.value) })}
+              <input type="number" value={setupConfig.levelPoints} onChange={e => setField("levelPoints", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <SettingRow label="Level Multiplier" desc="Faktor kenaikan tiap level (ex: 1.03 = +3%)">
-              <input type="number" value={local.levelMultiplier} step={0.01}
-                onChange={e => setLocal({ ...local, levelMultiplier: Number(e.target.value) })}
+              <input type="number" value={setupConfig.levelMultiplier} step={0.01}
+                onChange={e => setField("levelMultiplier", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} />
             </SettingRow>
             <div>
@@ -400,17 +574,17 @@ export function SettingsPage() {
             <h3 className="text-lg font-bold text-white">🎬 OBS Connection</h3>
             <p className="text-sm text-white/50">Control OBS via WebSocket. OBS 28+ required.</p>
             <SettingRow label="IP Address">
-              <input type="text" value={local.obsIp} onChange={e => setLocal({ ...local, obsIp: e.target.value })}
+              <input type="text" value={setupConfig.obsIp} onChange={e => setField("obsIp", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
             </SettingRow>
             <SettingRow label="Port">
-              <input type="number" value={local.obsPort} onChange={e => setLocal({ ...local, obsPort: Number(e.target.value) })}
+              <input type="number" value={setupConfig.obsPort} onChange={e => setField("obsPort", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} max={65535} />
             </SettingRow>
             <SettingRow label="Password">
               <div className="flex gap-2">
-                <input type={showPw("obs") ? "text" : "password"} value={local.obsPassword}
-                  onChange={e => setLocal({ ...local, obsPassword: e.target.value })}
+                <input type={showPw("obs") ? "text" : "password"} value={setupConfig.obsPassword}
+                  onChange={e => setField("obsPassword", e.target.value)}
                   className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
                 <button onClick={() => togglePw("obs")} className="text-white/40 hover:text-white/70 text-xl">{showPw("obs") ? "🙈" : "👁️"}</button>
               </div>
@@ -432,15 +606,15 @@ export function SettingsPage() {
             <h3 className="text-lg font-bold text-white">🤖 Streamer.bot</h3>
             <p className="text-sm text-white/50">Trigger Streamer.bot actions from TikTok events.</p>
             <SettingRow label="Address">
-              <input type="text" value={local.sbAddress} onChange={e => setLocal({ ...local, sbAddress: e.target.value })}
+              <input type="text" value={setupConfig.sbAddress} onChange={e => setField("sbAddress", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
             </SettingRow>
             <SettingRow label="Port">
-              <input type="number" value={local.sbPort} onChange={e => setLocal({ ...local, sbPort: Number(e.target.value) })}
+              <input type="number" value={setupConfig.sbPort} onChange={e => setField("sbPort", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} max={65535} />
             </SettingRow>
             <SettingRow label="Endpoint">
-              <input type="text" value={local.sbEndpoint} onChange={e => setLocal({ ...local, sbEndpoint: e.target.value })}
+              <input type="text" value={setupConfig.sbEndpoint} onChange={e => setField("sbEndpoint", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
             </SettingRow>
             <div className="flex items-center gap-4">
@@ -460,29 +634,29 @@ export function SettingsPage() {
             <h3 className="text-lg font-bold text-white">⛏️ Minecraft Connection</h3>
             <p className="text-sm text-white/50">Execute Minecraft commands via ServerTap plugin or mod.</p>
             <SettingRow label="Mode">
-              <select value={local.mcMode} onChange={e => setLocal({ ...local, mcMode: e.target.value })}
+              <select value={setupConfig.mcMode} onChange={e => setField("mcMode", e.target.value)}
                 className="w-44 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40">
                 <option value="servertap">ServerTap Plugin</option>
                 <option value="mod">TikFinity Mod</option>
               </select>
             </SettingRow>
             <SettingRow label="Player Name">
-              <input type="text" value={local.mcPlayer} onChange={e => setLocal({ ...local, mcPlayer: e.target.value })}
+              <input type="text" value={setupConfig.mcPlayer} onChange={e => setField("mcPlayer", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
                 placeholder="Optional" />
             </SettingRow>
             <SettingRow label="IP Address">
-              <input type="text" value={local.mcIp} onChange={e => setLocal({ ...local, mcIp: e.target.value })}
+              <input type="text" value={setupConfig.mcIp} onChange={e => setField("mcIp", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
             </SettingRow>
             <SettingRow label="Port">
-              <input type="number" value={local.mcPort} onChange={e => setLocal({ ...local, mcPort: Number(e.target.value) })}
+              <input type="number" value={setupConfig.mcPort} onChange={e => setField("mcPort", Number(e.target.value))}
                 className="w-24 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" min={1} max={65535} />
             </SettingRow>
             <SettingRow label="Password">
               <div className="flex gap-2">
-                <input type={showPw("mc") ? "text" : "password"} value={local.mcPassword}
-                  onChange={e => setLocal({ ...local, mcPassword: e.target.value })}
+                <input type={showPw("mc") ? "text" : "password"} value={setupConfig.mcPassword}
+                  onChange={e => setField("mcPassword", e.target.value)}
                   className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
                 <button onClick={() => togglePw("mc")} className="text-white/40 hover:text-white/70 text-xl">{showPw("mc") ? "🙈" : "👁️"}</button>
               </div>
@@ -527,31 +701,85 @@ export function SettingsPage() {
             <h3 className="text-lg font-bold text-white">🎶 Song Request Settings</h3>
             <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
               <div><p className="text-sm text-white/70">Enable Song Requests</p><p className="text-xs text-white/40">Aktifkan fitur song requests dari chat</p></div>
-              <label className="switch"><input type="checkbox" checked={local.spotifyEnabled} onChange={e => setLocal({ ...local, spotifyEnabled: e.target.checked })} /><span className="slider" /></label>
+              <label className="switch"><input type="checkbox" checked={setupConfig.spotifyEnabled} onChange={e => setField("spotifyEnabled", e.target.checked)} /><span className="slider" /></label>
             </div>
             <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-              <div><p className="text-sm text-white/70">!play command</p><p className="text-xs text-white/40">Biaya: {local.playCost} points</p></div>
+              <div><p className="text-sm text-white/70">!play command</p><p className="text-xs text-white/40">Biaya: {setupConfig.playCost} points</p></div>
               <div className="flex items-center gap-3">
-                <input type="number" value={local.playCost} onChange={e => setLocal({ ...local, playCost: Number(e.target.value) })} className="w-20 h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={0} />
-                <label className="switch"><input type="checkbox" checked={local.playEnabled} onChange={e => setLocal({ ...local, playEnabled: e.target.checked })} /><span className="slider" /></label>
+                <input type="number" value={setupConfig.playCost} onChange={e => setField("playCost", Number(e.target.value))} className="w-20 h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={0} />
+                <label className="switch"><input type="checkbox" checked={setupConfig.playEnabled} onChange={e => setField("playEnabled", e.target.checked)} /><span className="slider" /></label>
               </div>
             </div>
             <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-              <div><p className="text-sm text-white/70">!skip command</p><p className="text-xs text-white/40">Biaya: {local.skipCost} points</p></div>
+              <div><p className="text-sm text-white/70">!skip command</p><p className="text-xs text-white/40">Biaya: {setupConfig.skipCost} points</p></div>
               <div className="flex items-center gap-3">
-                <input type="number" value={local.skipCost} onChange={e => setLocal({ ...local, skipCost: Number(e.target.value) })} className="w-20 h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={0} />
-                <label className="switch"><input type="checkbox" checked={local.skipEnabled} onChange={e => setLocal({ ...local, skipEnabled: e.target.checked })} /><span className="slider" /></label>
+                <input type="number" value={setupConfig.skipCost} onChange={e => setField("skipCost", Number(e.target.value))} className="w-20 h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={0} />
+                <label className="switch"><input type="checkbox" checked={setupConfig.skipEnabled} onChange={e => setField("skipEnabled", e.target.checked)} /><span className="slider" /></label>
               </div>
             </div>
-            <ToggleRow label="Allow !skip requested tracks" desc="Izinkan viewer skip lagu request" value={local.skipRequestedEnabled} onChange={v => setLocal({ ...local, skipRequestedEnabled: v })} />
-            <ToggleRow label="Allow explicit content" desc="Izinkan lagu dengan konten eksplisit" value={local.explicitEnabled} onChange={v => setLocal({ ...local, explicitEnabled: v })} />
+            <ToggleRow label="Allow !skip requested tracks" desc="Izinkan viewer skip lagu request" value={setupConfig.skipRequestedEnabled} onChange={v => setField("skipRequestedEnabled", v)} />
+            <ToggleRow label="Allow explicit content" desc="Izinkan lagu dengan konten eksplisit" value={setupConfig.explicitEnabled} onChange={v => setField("explicitEnabled", v)} />
             <SettingRow label="Max Queue Overall" desc="Maksimal antrian total">
-              <input type="number" value={local.maxQueueOverall} onChange={e => setLocal({ ...local, maxQueueOverall: Number(e.target.value) })} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={50} />
+              <input type="number" value={setupConfig.maxQueueOverall} onChange={e => setField("maxQueueOverall", Number(e.target.value))} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={50} />
             </SettingRow>
             <SettingRow label="Max Queue Per User" desc="Maksimal antrian per user">
-              <input type="number" value={local.maxQueuePerUser} onChange={e => setLocal({ ...local, maxQueuePerUser: Number(e.target.value) })} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={10} />
+              <input type="number" value={setupConfig.maxQueuePerUser} onChange={e => setField("maxQueuePerUser", Number(e.target.value))} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={10} />
             </SettingRow>
-            <ToggleRow label="Display Overlay Permanently" desc="Tampilkan overlay lagu terus menerus" value={local.overlayPermanent} onChange={v => setLocal({ ...local, overlayPermanent: v })} />
+            <ToggleRow label="Display Overlay Permanently" desc="Tampilkan overlay lagu terus menerus" value={setupConfig.overlayPermanent} onChange={v => setField("overlayPermanent", v)} />
+          </div>
+        );
+
+      // ═══ OVERLAY SCREENS ═══════════════════════════════════════════
+      case "overlayscreens":
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-lg font-bold text-white">📺 Overlay Screens</h3>
+              <p className="text-sm text-white/50 mt-1">
+                Configure overlay widget URLs for OBS or Live Studio. Add at least one screen as a Browser Source.
+              </p>
+            </div>
+            <div className="divide-y divide-white/[0.04] rounded-xl border border-white/[0.06] overflow-hidden">
+              {[1,2,3,4,5,6,7,8].map((n, i) => {
+                const screenActions = actions.filter(a => (a.overlayScreen || a.screen || "Screen 1") === `Screen ${n}`);
+                const url = getOverlayWidgetUrl(n);
+                return (
+                  <motion.div key={n} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
+                    className="flex items-center gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
+                    <div className="w-20 shrink-0">
+                      <span className="text-sm font-semibold text-white">Screen {n}</span>
+                    </div>
+                    <div className="flex-1 min-w-0 flex items-center gap-2">
+                      <code className="text-xs text-accent/80 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06] truncate font-mono select-all flex-1 min-w-0">
+                        {url}
+                      </code>
+                      <div className="flex gap-1 shrink-0">
+                        <button onClick={() => { navigator.clipboard.writeText(url); toast("URL copied!", "success"); }}
+                          className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-accent/20 hover:text-accent text-white/50 transition-all font-medium"
+                          title="Copy overlay URL">
+                          <Copy className="w-3 h-3 inline mr-1" />Copy
+                        </button>
+                        <button onClick={() => window.open(url, '_blank')}
+                          className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-primary/20 hover:text-primary text-white/50 transition-all font-medium"
+                          title="Open overlay in new tab to test">
+                          🔗 Test
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-12 h-7 px-2 rounded-lg bg-white/[0.02] border border-white/[0.04] text-xs text-white/50 text-center flex items-center justify-center">8</span>
+                        <span className="text-[10px] text-white/30">max</span>
+                      </div>
+                      <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-green/10 text-green border border-green/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green" />
+                        {screenActions.length > 0 ? `${screenActions.length} actions` : "Ready"}
+                      </span>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
           </div>
         );
 
@@ -569,7 +797,7 @@ export function SettingsPage() {
               <p className="text-sm text-white/70 mb-2">Halving</p>
               <p className="text-xs text-white/40 mb-3">Kurangi semua poin berdasarkan persentase</p>
               <div className="flex items-center gap-3">
-                <input type="number" value={halvingPercent} onChange={e => setHalvingPercent(Number(e.target.value))} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={100} />
+                <input type="number" value={setupConfig.halvingPercent} onChange={e => setField("halvingPercent", Number(e.target.value))} className="w-20 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none" min={1} max={100} />
                 <span className="text-sm text-white/50">%</span>
                 <Button onClick={applyHalving} variant="secondary">Apply Halving</Button>
               </div>
@@ -630,10 +858,10 @@ export function SettingsPage() {
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-white">⚙️ Advanced Settings</h3>
             <SettingRow label="TikTok Language" desc="Language code for gifts localization">
-              <input type="text" value={local.tikTokLang} onChange={e => setLocal({ ...local, tikTokLang: e.target.value })}
+              <input type="text" value={setupConfig.tikTokLang} onChange={e => setField("tikTokLang", e.target.value)}
                 className="w-32 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" placeholder="id-ID" />
             </SettingRow>
-            <ToggleRow label="Debug Mode" desc="Aktifkan logging debug untuk support" value={local.debugMode} onChange={v => setLocal({ ...local, debugMode: v })} />
+            <ToggleRow label="Debug Mode" desc="Aktifkan logging debug untuk support" value={setupConfig.debugMode} onChange={v => setField("debugMode", v)} />
           </div>
         );
 
@@ -686,31 +914,6 @@ export function SettingsPage() {
               </div>
               {licenseMsg && <p className="text-sm text-yellow-400">{licenseMsg}</p>}
             </div>
-
-            {/* Indonesian Payments */}
-            <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-              <p className="text-sm font-bold text-white mb-3">🇮🇩 Pembayaran Indonesia</p>
-              <div className="grid grid-cols-4 gap-3 mb-3">
-                {[{ emoji: "💳", label: "DANA" }, { emoji: "📱", label: "QRIS" }, { emoji: "🏦", label: "BCA/Mandiri" }, { emoji: "🛍️", label: "Tokopedia" }].map(p => (
-                  <div key={p.label} className="p-3 rounded-xl bg-white/[0.04] border border-white/[0.06] text-center cursor-pointer hover:bg-white/[0.08]">
-                    <div className="text-2xl mb-1">{p.emoji}</div>
-                    <div className="text-[11px] font-semibold text-white">{p.label}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="p-3 rounded-xl bg-amber/10 border border-amber/20">
-                <p className="text-sm font-semibold text-amber">💰 Harga Pro: <strong>Rp 50.000</strong> / bulan</p>
-                <p className="text-xs text-white/50 mt-1">Pembayaran via DANA / QRIS / Bank Transfer</p>
-                <div className="flex gap-2 mt-3">
-                  <Button size="sm" style={{ background: "#3b82f6" }}>💳 DANA</Button>
-                  <Button size="sm" style={{ background: "#22c55e" }}>📱 QRIS</Button>
-                  <Button size="sm" style={{ background: "#eab308" }}>🏦 Transfer</Button>
-                </div>
-              </div>
-              <div className="mt-2 p-2 rounded-lg bg-white/[0.02] text-xs text-white/40">
-                💬 Punya kode referral? Diskon 20%! Pakai kode: <strong className="text-amber">ROSAE20</strong>
-              </div>
-            </div>
           </div>
         );
     }
@@ -725,7 +928,7 @@ export function SettingsPage() {
             <h1 className="text-xl font-bold text-white">Setup</h1>
           </div>
           <div className="flex items-center gap-3">
-            {saved && <span className="text-sm text-green flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Saved!</span>}
+            {saved && <span className="text-sm text-green flex items-center gap-1"><CheckCircle2 className="w-4 h-4" /> Synced!</span>}
             <Button onClick={handleSave} className="gap-2"><Save className="w-4 h-4" /> Save Changes</Button>
           </div>
         </div>
@@ -735,7 +938,7 @@ export function SettingsPage() {
         {/* Sidebar Navigation */}
         <div className="w-52 shrink-0 space-y-1">
           {SECTIONS.map(s => (
-            <button key={s.id} onClick={() => { setActiveSection(s.id); window.location.hash = s.id; }}
+            <button key={s.id} onClick={() => setActiveSection(s.id)}
               className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
                 activeSection === s.id
                   ? "bg-primary/20 border border-primary/30 text-primary-light"
@@ -786,3 +989,4 @@ function ToggleRow({ label, desc, value, onChange }: { label: string; desc: stri
     </div>
   );
 }
+export default SettingsPage;

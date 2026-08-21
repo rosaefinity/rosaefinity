@@ -1,0 +1,47 @@
+import type { SettingsField } from '../../types';
+
+export const giftAlertSchema: SettingsField[] = [
+  { key: 'alertStyle', label: 'Alert Style', type: 'select', section: 'Display', options: [
+    { value: 'banner', label: 'Banner' }, { value: 'toast', label: 'Toast' }, { value: 'fullscreen', label: 'Fullscreen' },
+  ]},
+  { key: 'showAvatar', label: 'Show Avatar', type: 'switch', section: 'Display' },
+  { key: 'showUsername', label: 'Show Username', type: 'switch', section: 'Display' },
+  { key: 'showGiftImage', label: 'Show Gift Image', type: 'switch', section: 'Display' },
+  { key: 'showGiftName', label: 'Show Gift Name', type: 'switch', section: 'Display' },
+  { key: 'showDiamonds', label: 'Show Diamonds', type: 'switch', section: 'Display' },
+  { key: 'showCombo', label: 'Show Combo', type: 'switch', section: 'Display' },
+  { key: 'duration', label: 'Duration (seconds)', type: 'duration', section: 'Timing', min: 1, max: 30 },
+  { key: 'alertAnimation', label: 'Animation', type: 'animation', section: 'Animation' },
+  { key: 'soundEnabled', label: 'Sound', type: 'switch', section: 'Sound' },
+  { key: 'soundUrl', label: 'Sound URL', type: 'audio', section: 'Sound', dependsOn: { key: 'soundEnabled', value: true } },
+  { key: 'soundVolume', label: 'Volume', type: 'slider', section: 'Sound', min: 0, max: 100, dependsOn: { key: 'soundEnabled', value: true } },
+  { key: 'colors.primary', label: 'Primary Color', type: 'color', section: 'Theme' },
+  { key: 'colors.background', label: 'Background', type: 'color', section: 'Theme' },
+  { key: 'colors.text', label: 'Text Color', type: 'color', section: 'Theme' },
+  { key: 'fontFamily', label: 'Font', type: 'font', section: 'Theme' },
+  { key: 'fontSize', label: 'Font Size', type: 'slider', section: 'Theme', min: 10, max: 48 },
+  { key: 'border.radius', label: 'Border Radius', type: 'slider', section: 'Theme', min: 0, max: 24 },
+  { key: 'opacity', label: 'Opacity', type: 'slider', section: 'Theme', min: 0, max: 1, step: 0.05 },
+];
+
+export const giftAlertDefaults = {
+  alertStyle: 'banner' as const,
+  showAvatar: true,
+  showUsername: true,
+  showGiftImage: true,
+  showGiftName: true,
+  showDiamonds: true,
+  showCombo: true,
+  duration: 5,
+  alertAnimation: 'entry-pop',
+  soundEnabled: false,
+  soundUrl: '',
+  soundVolume: 80,
+  colors: { primary: '#e0306a', secondary: '#4e7bff', background: 'rgba(0,0,0,0.8)', text: '#ffffff', accent: '#f0a020' },
+  fontFamily: "'Segoe UI', system-ui, sans-serif",
+  fontSize: 18,
+  fontWeight: 700,
+  border: { width: 0, color: 'transparent', radius: 12 },
+  shadow: { enabled: true, color: 'rgba(0,0,0,0.4)', blur: 16, offsetX: 0, offsetY: 4 },
+  opacity: 1,
+};

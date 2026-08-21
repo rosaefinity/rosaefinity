@@ -7,6 +7,17 @@ import Dexie from "dexie";
 class RosaeFinityDB extends Dexie {
   sounds!: Dexie.Table<{ id: string; name: string; file: string; fileName: string }, string>;
   mediaFiles!: Dexie.Table<{ id: string; actionId: string; type: "sound" | "video" | "image"; file: string; fileName: string }, string>;
+  overlays!: Dexie.Table<{
+    id: string;
+    name: string;
+    updatedAt: string;
+    moduleId: string;
+    enabled: number;
+    browserSourceId: string;
+    config: string;
+    configVersion: number;
+    createdAt: string;
+  }, string>;
 
   constructor() {
     super("rosaefinity-db");
@@ -14,10 +25,16 @@ class RosaeFinityDB extends Dexie {
       sounds: "id",
       mediaFiles: "id, actionId, type",
     });
+    this.version(2).stores({
+      overlays: "id, name, updatedAt, moduleId, enabled",
+    });
+    this.version(3).stores({
+      overlays: "id, name, updatedAt, moduleId, enabled, browserSourceId, config, configVersion, createdAt",
+    });
   }
 }
 
-const db = new RosaeFinityDB();
+export const db = new RosaeFinityDB();
 
 // ── Sound persistence ──
 export async function saveSound(id: string, name: string, file: string, fileName: string) {
@@ -54,4 +71,56 @@ export async function getActionMediaArray(actionId: string) {
 
 export async function deleteActionMedia(actionId: string) {
   await db.mediaFiles.where({ actionId }).delete();
+}
+
+// ── Overlay Instance persistence ──
+import type { OverlayInstance } from '../overlays/types';
+
+export async function saveOverlayInstance(instance: OverlayInstance) {
+  await db.overlays.put({
+    id: instance.id,
+    name: instance.name,
+    updatedAt: instance.updatedAt.toString(),
+    moduleId: instance.moduleId,
+    enabled: instance.enabled,
+    browserSourceId: instance.browserSourceId,
+    config: JSON.stringify(instance.config),
+    configVersion: instance.configVersion,
+    createdAt: instance.createdAt.toString(),
+  });
+}
+
+export async function getOverlayInstance(id: string) {
+  const row = await db.overlays.get(id);
+  if (!row) return null;
+  return {
+    id: row.id,
+    moduleId: row.moduleId,
+    name: row.name,
+    enabled: row.enabled,
+    browserSourceId: row.browserSourceId,
+    config: JSON.parse(row.config),
+    configVersion: row.configVersion,
+    createdAt: parseInt(row.createdAt),
+    updatedAt: parseInt(row.updatedAt),
+  } as OverlayInstance;
+}
+
+export async function getAllOverlayInstances() {
+  const rows = await db.overlays.toArray();
+  return rows.map(row => ({
+    id: row.id,
+    moduleId: row.moduleId,
+    name: row.name,
+    enabled: row.enabled,
+    browserSourceId: row.browserSourceId,
+    config: JSON.parse(row.config),
+    configVersion: row.configVersion,
+    createdAt: parseInt(row.createdAt),
+    updatedAt: parseInt(row.updatedAt),
+  })) as OverlayInstance[];
+}
+
+export async function deleteOverlayInstanceFromDB(id: string) {
+  await db.overlays.delete(id);
 }

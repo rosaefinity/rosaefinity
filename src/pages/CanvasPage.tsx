@@ -12,6 +12,7 @@ import type { PointerState } from "../engine/interactions/interaction-types";
 import { InspectorPanel } from "../components/inspector/InspectorPanel";
 
 export function CanvasPage() {
+  // ─── ALL hooks MUST be declared before any early return (Rules of Hooks) ───
   const { instance, snapshot, refreshSnapshot } = useEditor();
   const canvasRef = useRef<HTMLDivElement>(null);
   const [hoveredWidgetId, setHoveredWidgetId] = useState<string | null>(null);
@@ -21,15 +22,15 @@ export function CanvasPage() {
   const [activeGuides, setActiveGuides] = useState<any[]>([]);
   const lastPointerRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  if (!instance) return <div className="flex items-center justify-center h-full text-white/40">Loading editor...</div>;
-
-  const { interaction, keyboard, editorState, viewport, engine } = instance;
+  // Destructure instance properties (null-safe on first render when instance is null)
+  const interaction = instance?.interaction ?? null;
+  const keyboard = instance?.keyboard ?? null;
   const { editorState: es, activeScene } = snapshot;
 
   // Set active context when overlay/scene changes
   useEffect(() => {
-    interaction.setActiveContext(es.selectedOverlayId, es.selectedSceneId);
-    keyboard.setActiveContext(es.selectedOverlayId, es.selectedSceneId);
+    interaction?.setActiveContext(es.selectedOverlayId, es.selectedSceneId);
+    keyboard?.setActiveContext(es.selectedOverlayId, es.selectedSceneId);
   }, [es.selectedOverlayId, es.selectedSceneId, interaction, keyboard]);
 
   // ─── Pointer Event Handlers ──────────────────
@@ -61,21 +62,21 @@ export function CanvasPage() {
     if (e.button !== 0) return;
     const ptr = toPointerState(e);
     const widgetId = findWidgetAtPoint(ptr.x, ptr.y);
-    interaction.mouseDown(ptr, widgetId, null, es.activeTool);
+    interaction?.mouseDown(ptr, widgetId, null, es.activeTool);
     lastPointerRef.current = { x: e.clientX, y: e.clientY };
     refreshSnapshot();
   }, [toPointerState, findWidgetAtPoint, interaction, es.activeTool, refreshSnapshot]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const ptr = toPointerState(e);
-    interaction.mouseMove(ptr);
+    interaction?.mouseMove(ptr);
     lastPointerRef.current = { x: e.clientX, y: e.clientY };
     refreshSnapshot();
   }, [toPointerState, interaction, refreshSnapshot]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     const ptr = toPointerState(e);
-    interaction.mouseUp(ptr);
+    interaction?.mouseUp(ptr);
     setActiveHandle(null);
     setIsRotating(false);
     setRotationAngle(null);
@@ -85,7 +86,7 @@ export function CanvasPage() {
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    interaction.zoomWheel(e.deltaY, e.clientX, e.clientY);
+    interaction?.zoomWheel(e.deltaY, e.clientX, e.clientY);
     refreshSnapshot();
   }, [interaction, refreshSnapshot]);
 
@@ -105,7 +106,7 @@ export function CanvasPage() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      keyboard.keyDown(e.key, e.code, {
+      keyboard?.keyDown(e.key, e.code, {
         ctrl: e.ctrlKey || e.metaKey,
         shift: e.shiftKey,
         alt: e.altKey,
@@ -115,7 +116,7 @@ export function CanvasPage() {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      keyboard.keyUp(e.key, e.code);
+      keyboard?.keyUp(e.key, e.code);
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -125,6 +126,9 @@ export function CanvasPage() {
       window.removeEventListener("keyup", handleKeyUp);
     };
   }, [keyboard, refreshSnapshot]);
+
+  // ─── Early return AFTER all hooks (Rules of Hooks) ─────────────────
+  if (!instance) return <div className="flex items-center justify-center h-full text-white/40">Loading editor...</div>;
 
   return (
     <div className="flex h-full">
@@ -149,7 +153,7 @@ export function CanvasPage() {
           rotationAngle={rotationAngle}
           onWidgetMouseDown={(id, e) => {
             const ptr = toPointerState(e);
-            interaction.mouseDown(ptr, id, null, es.activeTool);
+            interaction?.mouseDown(ptr, id, null, es.activeTool);
             refreshSnapshot();
           }}
           onCanvasMouseDown={handleMouseDown}
@@ -175,3 +179,4 @@ export function CanvasPage() {
     </div>
   );
 }
+export default CanvasPage;

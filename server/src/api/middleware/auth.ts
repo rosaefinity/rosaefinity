@@ -40,7 +40,7 @@ export function requireRole(...roles: string[]) {
       return;
     }
 
-    if (!roles.includes(req.user.planTier)) {
+    if (!roles.includes(req.user.planTier) && !roles.includes((req.user as any).role)) {
       next(new UnauthorizedError('Insufficient permissions'));
       return;
     }

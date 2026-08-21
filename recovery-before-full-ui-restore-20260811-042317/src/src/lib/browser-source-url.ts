@@ -1,0 +1,87 @@
+// ═══════════════════════════════════════════════════════════════════
+// Browser Source URL Helper
+// Handles Electron file:// protocol where window.location.hostname is empty
+// ═══════════════════════════════════════════════════════════════════
+
+const SSE_PORT = 18890;
+
+/**
+ * Returns the correct host for Browser Source URLs.
+ * In Electron (file:// protocol), window.location.hostname is empty,
+ * so we must default to 127.0.0.1.
+ */
+export function getBrowserSourceHost(): string {
+  if (typeof window === 'undefined') {
+    return '127.0.0.1';
+  }
+
+  // In Electron file:// protocol, hostname is empty string
+  // In browser (http://localhost:5173), hostname is 'localhost'
+  // In production browser access, hostname could be actual host
+  const hostname = window.location.hostname;
+
+  // If hostname is empty or we're in file:// protocol, use 127.0.0.1
+  if (!hostname || window.location.protocol === 'file:') {
+    return '127.0.0.1';
+  }
+
+  return hostname;
+}
+
+/**
+ * Returns the base SSE server URL for Browser Source connections.
+ * Always uses 127.0.0.1 in Electron/production contexts.
+ */
+export function getSSEBaseUrl(): string {
+  if (typeof window === 'undefined') {
+    return `http://127.0.0.1:${SSE_PORT}`;
+  }
+
+  const protocol = window.location.protocol === 'file:' ? 'http:' : window.location.protocol;
+  const host = getBrowserSourceHost();
+
+  return `${protocol}//${host}:${SSE_PORT}`;
+}
+
+/**
+ * Generates the Browser Source URL for an overlay instance.
+ * Used in OBS Browser Source configuration.
+ */
+export function getBrowserSourceUrl(browserSourceId: string): string {
+  return `${getSSEBaseUrl()}/overlay/${browserSourceId}`;
+}
+
+/**
+ * Generates the overlay widget URL with screen parameter.
+ * Used for direct overlay-widget.html access with screen filtering.
+ */
+export function getOverlayWidgetUrl(screen?: string | number): string {
+  const baseUrl = `${getSSEBaseUrl()}/overlay-widget.html`;
+  if (screen !== undefined && screen !== null && screen !== '') {
+    return `${baseUrl}?screen=${screen}`;
+  }
+  return baseUrl;
+}
+
+/**
+ * Generates the SSE events URL for a specific browser source.
+ */
+export function getSSEEventsUrl(browserSourceId: string): string {
+  return `${getSSEBaseUrl()}/overlay/${browserSourceId}/events`;
+}
+
+/**
+ * Generates the SSE config URL for a specific browser source.
+ */
+export function getSSEConfigUrl(browserSourceId: string): string {
+  return `${getSSEBaseUrl()}/overlay/${browserSourceId}/config`;
+}
+
+/**
+ * Generates the Browser Source URL for an overlay module.
+ * Uses moduleId (deterministic) instead of instanceId.
+ * This allows showing a URL even before an instance is created.
+ */
+export function getBrowserSourceUrlForModule(moduleId: string): string {
+  return `${getSSEBaseUrl()}/overlay/${moduleId}`;
+}

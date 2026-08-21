@@ -18,6 +18,7 @@ const iconMap: Record<string, React.ElementType> = { "layout-grid": LayoutGrid, 
 
 // Convert registry module to Gallery overlay format
 function moduleToOverlay(mod: AnyOverlayModule) {
+  const meta = (mod as any).metadata;
   return {
     id: mod.id,
     name: mod.name,
@@ -25,9 +26,9 @@ function moduleToOverlay(mod: AnyOverlayModule) {
     thumbnail: mod.thumbnail || "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=400&h=225&fit=crop",
     category: mod.category,
     tags: mod.tags,
-    isPremium: false,
-    isNew: false,
-    isPopular: false,
+    isPremium: meta?.premium ?? false,
+    isNew: meta?.beta ?? false,
+    isPopular: meta?.featured ?? false,
     isActive: false,
     isFavorite: false,
     createdAt: new Date().toISOString(),
@@ -217,3 +218,5 @@ export function OverlayGallery() {
     </div>
   );
 }
+
+export default OverlayGallery;

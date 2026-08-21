@@ -67,9 +67,11 @@ describe('Overlay Registry', () => {
   });
 
   it('getOverlaysByCategory returns only overlays matching the category', () => {
-    // With empty registry, any category returns empty
+    // goals category should now have coin-jar-pro
     const result = getOverlaysByCategory('goals');
-    expect(result).toHaveLength(0);
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    expect(result.some(m => m.id === 'coin-jar-pro')).toBe(true);
   });
 });
 

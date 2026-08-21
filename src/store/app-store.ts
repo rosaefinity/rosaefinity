@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Action, Event, CustomSound, Stats, LiveEvent, TikTokGift, SetupConfig, LicenseInfo, StreamProfile, ScreenId, ScreenConnectionState } from "../types";
+import type { Action, Event, CustomSound, Stats, LiveEvent, TikTokGift, SetupConfig, LicenseInfo, StreamProfile, ScreenId, ScreenConnectionState, TikTokConnectionState } from "../types";
 import { SCREEN_IDS } from "../types";
 import { getActionMedia, getActionMediaArray, deleteActionMedia } from "../lib/db";
 
@@ -138,6 +138,7 @@ const DEFAULT_SETUP: SetupConfig = {
   skipEnabled: true, skipCost: 200, skipRequestedEnabled: true,
   explicitEnabled: false, maxQueueOverall: 5, maxQueuePerUser: 2,
   overlayPermanent: false,
+  halvingPercent: 50,
 };
 
 const DEFAULT_LICENSE: LicenseInfo = {

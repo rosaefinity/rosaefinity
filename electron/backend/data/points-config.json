@@ -1,0 +1,12 @@
+{
+  "currencyName": "Points",
+  "pointsGift": 3,
+  "pointsLike": 1,
+  "pointsFollow": 5,
+  "pointsComment": 1,
+  "pointsShare": 2,
+  "pointsSubscribe": 10,
+  "subBonus": 0,
+  "levelPoints": 50,
+  "levelMultiplier": 1.03
+}

@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../store/app-store";
+import { useLicenseStore } from "../store/license-store";
 import { saveSound, getAllSounds, deleteSoundFromDB } from "../lib/db";
 import { Button } from "../components/ui/button";
+import { toast } from "../components/Toast";
 import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
 import {
@@ -19,14 +21,15 @@ const builtInSounds = [
 ];
 
 export function SoundsPage() {
-  const { customSounds, addSound, updateSound, deleteSound, licenseInfo, licenseInfo: { isPro } } = useAppStore();
+  const { customSounds, addSound, updateSound, deleteSound } = useAppStore();
+  const { plan } = useLicenseStore();
   const [showModal, setShowModal] = useState(false);
   const [editingSound, setEditingSound] = useState<any>(null);
   const [formData, setFormData] = useState<{ name: string; file: string | null; fileName: string }>({ name: "", file: null, fileName: "" });
   const [masterVolume, setMasterVolume] = useState(80);
   const [playingId, setPlayingId] = useState<string | null>(null);
 
-  const canAddSound = isPro || customSounds.length < (licenseInfo.limits?.customSounds || 3);
+  const canAddSound = plan === 'pro' || customSounds.length < 3;
   const allSounds = [...builtInSounds, ...customSounds];
 
   // Load sounds from Dexie on mount (restores media blobs lost by partialize)
@@ -65,12 +68,12 @@ export function SoundsPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.file) { alert("Name and file required"); return; }
+    if (!formData.name || !formData.file) { toast("Name and file are required"); return; }
     if (editingSound) {
       updateSound(editingSound.id, { name: formData.name, file: formData.file || "", fileName: formData.fileName });
       await saveSound(editingSound.id, formData.name, formData.file || "", formData.fileName);
     } else {
-      if (!canAddSound) { alert(`Free plan limited to ${licenseInfo.limits?.customSounds || 3} custom sounds`); return; }
+      if (!canAddSound) { toast(`Free plan limited to ${licenseInfo.limits?.customSounds || 3} custom sounds`); return; }
       addSound({ ...formData, file: formData.file || (formData as any).fileName || '', enabled: true } as any);
       // The store auto-generates the id; we'll grab it from the latest entry
       const latest = useAppStore.getState().customSounds.slice(-1)[0];
@@ -262,4 +265,4 @@ export function SoundsPage() {
       </AnimatePresence>
     </div>
   );
-}
+}export default SoundsPage;

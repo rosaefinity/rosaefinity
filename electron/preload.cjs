@@ -52,6 +52,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("tiktok:error", listener);
     return () => ipcRenderer.removeListener("tiktok:error", listener);
   },
+  onStats: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("tiktok:stats", listener);
+    return () => ipcRenderer.removeListener("tiktok:stats", listener);
+  },
+  onReconnecting: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("tiktok:reconnecting", listener);
+    return () => ipcRenderer.removeListener("tiktok:reconnecting", listener);
+  },
 
   // ── Overlay ──
   openOverlay: () => ipcRenderer.send("overlay:open"),
@@ -160,6 +170,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   licenseValidateSound: (count) => ipcRenderer.invoke("license:validateSound", count),
   licenseUserData: () => ipcRenderer.invoke("license:userData"),
 
+  // ── License V2 (backend-backed) ──
+  licenseV2Status: (userId) => ipcRenderer.invoke("license:status", userId),
+  licenseV2Activate: (userId, opts) => ipcRenderer.invoke("license:activate", { userId, ...opts }),
+  licenseV2Deactivate: (userId) => ipcRenderer.invoke("license:deactivate", userId),
+
   // ── Authentication ──
   authRegister: (opts) => ipcRenderer.invoke("auth:register", opts),
   authLogin: (opts) => ipcRenderer.invoke("auth:login", opts),
@@ -176,6 +191,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   authGetCurrentProfile: () => ipcRenderer.invoke("auth:getCurrentProfile"),
   authExportProfile: (opts) => ipcRenderer.invoke("auth:exportProfile", opts),
   authImportProfile: (opts) => ipcRenderer.invoke("auth:importProfile", opts),
+
+  // ── Admin ──
+  adminSearchUsers: (query) => ipcRenderer.invoke("admin:searchUsers", query),
+  adminUserDetail: (userId) => ipcRenderer.invoke("admin:userDetail", userId),
+  adminExtendLicense: (userId, days) => ipcRenderer.invoke("admin:extendLicense", userId, days),
+  adminDowngradeUser: (userId) => ipcRenderer.invoke("admin:downgradeUser", userId),
 
   // ── Spotify ──
   spotifySetConfig: (config) => ipcRenderer.send("spotify:setConfig", config),

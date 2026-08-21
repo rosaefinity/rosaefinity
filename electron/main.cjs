@@ -10,6 +10,16 @@ const http = require("http");
 const fs = require("fs");
 const { muatGiftTikTok } = require("./backend/gift-api.cjs");
 
+// ── STEP 11: Main process error handlers (top-level) ──
+process.on("uncaughtException", error => {
+  console.error("[MAIN-FATAL] uncaughtException", error);
+  console.error("[MAIN-FATAL] stack:", error.stack);
+});
+
+process.on("unhandledRejection", reason => {
+  console.error("[MAIN-FATAL] unhandledRejection", reason);
+});
+
 // ── Backend Modules ─────────────────────────
 const pointsSystem  = require("./backend/points-system.cjs");
 const obsController = require("./backend/obs-controller.cjs");
@@ -19,6 +29,7 @@ const licenseSystem = require("./backend/license-system.cjs");
 const spotify       = require("./backend/spotify.cjs");
 const authSystem    = require("./backend/auth-system.cjs");
 const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/global-input-hook.cjs");
+const { getTikTokService } = require("./backend/tiktok-service.cjs");
 
 // ── Phase 2: Stability Modules ──────────────
 const { Logger } = require("./logger.cjs");
@@ -41,6 +52,8 @@ const CRASH_RESET_MS    = 5 * 60 * 1000; // Reset crash count after 5 min stabil
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 // ── Per-screen connections (keyed by screenId) ──
+// Now managed by TikTokService in electron/backend/tiktok-service.cjs
+// This Map is kept for backwards compatibility with disconnectAllScreens()
 const connections = new Map();
 function getOrCreateScreenState(screenId) {
   if (!connections.has(screenId)) {
@@ -57,7 +70,8 @@ function getOrCreateScreenState(screenId) {
   return connections.get(screenId);
 }
 function disconnectAllScreens() {
-  for (const [screenId] of connections) disconnectTikTok(screenId);
+  const service = getTikTokServiceInstance();
+  service.shutdown();
 }
 
 // ── Capture ────────────────────────────────
@@ -255,6 +269,116 @@ function createMainWindow() {
     show: false,
   });
 
+  // ── Diagnostics ──
+  mainWindow.webContents.on("did-start-loading", () => {
+    console.log("[ELECTRON] did-start-loading");
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    console.log("[ELECTRON] did-finish-load");
+
+    // Step 6: Verify the actual DOM
+    mainWindow.webContents.executeJavaScript(`
+      JSON.stringify({
+        readyState: document.readyState,
+        title: document.title,
+        rootExists: !!document.getElementById("root"),
+        rootHTML: document.getElementById("root")?.innerHTML?.slice(0, 2000),
+        bodyHTML: document.body?.innerHTML?.slice(0, 2000),
+        bodyText: document.body?.innerText?.slice(0, 1000)
+      })
+    `).then(result => {
+      console.log("[ELECTRON-DOM]", result);
+    }).catch(error => {
+      console.error("[ELECTRON-DOM-ERROR]", error);
+    });
+
+    // Step 7: Check computed visibility
+    mainWindow.webContents.executeJavaScript(`
+      (() => {
+        const root = document.getElementById("root");
+        if (root) {
+          const style = getComputedStyle(root);
+          const rootStyle = {
+            display: style.display,
+            visibility: style.visibility,
+            opacity: style.opacity,
+            height: style.height,
+            width: style.width,
+            position: style.position,
+            overflow: style.overflow
+          };
+          const rootRect = root.getBoundingClientRect().toJSON();
+
+          let firstDescendant = null;
+          if (root.firstElementChild) {
+            const descStyle = getComputedStyle(root.firstElementChild);
+            firstDescendant = {
+              tagName: root.firstElementChild.tagName,
+              display: descStyle.display,
+              visibility: descStyle.visibility,
+              opacity: descStyle.opacity,
+              rect: root.firstElementChild.getBoundingClientRect().toJSON()
+            };
+          }
+
+          return JSON.stringify({ rootStyle, rootRect, firstDescendant });
+        }
+        return "root-not-found";
+      })()
+    `).then(result => {
+      console.log("[ROOT-VISIBILITY]", result);
+    }).catch(error => {
+      console.error("[ROOT-VISIBILITY-ERROR]", error);
+    });
+  });
+
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    console.error("[ELECTRON] did-fail-load", {
+      errorCode,
+      errorDescription,
+      validatedURL
+    });
+    if (!isDev) {
+      loadErrorPage(`load-failed-${errorCode}`);
+    }
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    rendererCrashCount++;
+    console.error("[ELECTRON] render-process-gone", details);
+
+    if (rendererCrashCount < MAX_RENDERER_CRASHES) {
+      console.log(`[RF] Auto-restarting renderer in 2s (attempt ${rendererCrashCount}/${MAX_RENDERER_CRASHES})`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.reload();
+        }
+      }, 2000);
+    } else {
+      console.error("[RF] Max renderer crashes reached — showing error page");
+      loadErrorPage("max-crashes-reached");
+    }
+  });
+
+  mainWindow.webContents.on("unresponsive", () => {
+    console.error("[ELECTRON] renderer UNRESPONSIVE");
+    console.error("[RENDERER] UNRESPONSIVE");
+  });
+
+  mainWindow.webContents.on("responsive", () => {
+    console.log("[ELECTRON] renderer responsive");
+  });
+
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    console.log("[RENDERER-CONSOLE]", {
+      level,
+      message,
+      line,
+      sourceId
+    });
+  });
+
   // ── Load content ──
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
@@ -272,37 +396,6 @@ function createMainWindow() {
   // ── Show when ready (prevent white flash) ──
   mainWindow.once("ready-to-show", () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
-  });
-
-  // ── Phase 1: did-fail-load handler ──
-  mainWindow.webContents.on("did-fail-load", (e, errorCode, errorDescription, validatedURL) => {
-    console.error(`[RF] Page load failed: ${errorCode} ${errorDescription} ${validatedURL}`);
-    if (!isDev) {
-      loadErrorPage(`load-failed-${errorCode}`);
-    }
-  });
-
-  // ── Phase 1: Renderer crash recovery ──
-  mainWindow.webContents.on("render-process-gone", (e, details) => {
-    rendererCrashCount++;
-    console.error(`[RF] Renderer crashed (attempt ${rendererCrashCount}):`, details.reason);
-
-    if (rendererCrashCount < MAX_RENDERER_CRASHES) {
-      console.log(`[RF] Auto-restarting renderer in 2s (attempt ${rendererCrashCount}/${MAX_RENDERER_CRASHES})`);
-      setTimeout(() => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.reload();
-        }
-      }, 2000);
-    } else {
-      console.error("[RF] Max renderer crashes reached — showing error page");
-      loadErrorPage("max-crashes-reached");
-    }
-  });
-
-  // ── Phase 1: Unresponsive handler ──
-  mainWindow.on("unresponsive", () => {
-    console.warn("[RF] Window became unresponsive");
   });
 
   // ── Phase 1: Close handler (graceful shutdown) ──
@@ -576,198 +669,62 @@ async function sendKeystroke(keys, holdMs = 100, eventData) {
 }
 
 // =============================================
-//  TIKTOK LIVE CONNECTION (per-screen)
+//  TIKTOK SERVICE ADAPTER (per-screen)
 // =============================================
+let tiktokService = null;
+
+function getTikTokServiceInstance() {
+  if (!tiktokService) {
+    tiktokService = getTikTokService();
+    // Forward service events to renderer and overlay
+    tiktokService.on("event", (event) => {
+      const { type, screenId, ...data } = event;
+      if (type === "connected") {
+        sendToRenderer("tiktok:connected", { screenId, ...data });
+        sendToOverlay("overlay:connected", { screenId, username: data.username });
+      } else if (type === "disconnected") {
+        sendToRenderer("tiktok:disconnected", { screenId, reason: data.reason });
+        sendToOverlay("overlay:disconnected", { screenId });
+      } else if (type === "error") {
+        sendToRenderer("tiktok:error", { screenId, message: data.message });
+      } else if (type === "reconnecting") {
+        sendToRenderer("tiktok:reconnecting", { screenId, attempt: data.attempt });
+      } else if (type === "viewer-update") {
+        sendToRenderer("tiktok:viewers", { screenId, viewerCount: data.viewerCount });
+      } else {
+        // All other events (gift, like, comment, follow, share, subscribe, member)
+        sendToRenderer("tiktok:event", { type, screenId, ...data });
+        sendToOverlay("overlay:event", { type, screenId, ...data });
+      }
+    });
+  }
+  return tiktokService;
+}
+
 async function connectTikTok(screenId, username) {
-  const state = getOrCreateScreenState(screenId);
-  disconnectTikTok(screenId);
-
-  if (state.reconnectAttempts > MAX_RECONNECT_ATTEMPTS && !state._reconnectLocked) {
-    state._reconnectLocked = true;
-    sendToRenderer("tiktok:error", { screenId, message: 'Gagal connect. Klik "Connect" untuk coba lagi.' });
-    return;
-  }
-
-  state.lastConnectedUser = username;
-  const clean = username.replace(/^@/, "").trim();
-  if (!clean) return;
-
-  let TikTokLiveConnection, WebcastEvent, ControlEvent;
   try {
-    const mod = await import("tiktok-live-connector");
-    TikTokLiveConnection = mod.TikTokLiveConnection;
-    WebcastEvent = mod.WebcastEvent;
-    ControlEvent = mod.ControlEvent;
-  } catch (e) {
-    sendToRenderer("tiktok:error", { screenId, message: "tiktok-live-connector tidak ditemukan. Jalankan: npm install" });
-    return;
+    const service = getTikTokServiceInstance();
+    await service.connect(screenId, username);
+  } catch (err) {
+    console.error(`[TIKTOK] connect failed for ${screenId}:`, err.message);
   }
-
-  try {
-    state.tiktokConnection = new TikTokLiveConnection(clean, {
-      enableExtendedGiftInfo: true,
-      requestPollingIntervalMs: 2000,
-    });
-  } catch (e) {
-    sendToRenderer("tiktok:error", { screenId, message: friendlyError(e.message, clean) });
-    return;
-  }
-
-  state.tiktokConnection.connect()
-    .then((viewerState) => {
-      state.isConnected = true;
-      resetReconnectCounter(state);
-      sendToRenderer("tiktok:connected", { screenId, username: clean, roomId: viewerState.roomId, viewerCount: viewerState.viewerCount || 0 });
-      sendToOverlay("overlay:connected", { screenId, username: clean });
-    })
-    .catch((err) => {
-      state.isConnected = false;
-      const msg = friendlyError(err, clean);
-      if (!err._handledByErrorEvent) sendToRenderer("tiktok:error", { screenId, message: msg });
-    });
-
-  // ── GIFT ──
-  state.tiktokConnection.on(WebcastEvent.GIFT, (data) => {
-    if (data.giftType === 1 && !data.repeatEnd) return;
-    const payload = {
-      type: "gift", screenId,
-      user: data.user?.uniqueId || data.uniqueId || "someone",
-      nickname: data.user?.nickname || data.nickname || "",
-      giftName: data.giftDetails?.giftName || data.giftName || "Gift",
-      giftId: data.giftId,
-      repeatCount: data.repeatCount || 1,
-      diamondCount: data.giftDetails?.diamondCount || data.diamondCount || 0,
-      timestamp: Date.now(),
-    };
-    if (payload.user !== "someone") {
-      const r = pointsSystem.awardPoints("gift", payload.user, payload.nickname, false);
-      payload.pointsAwarded = r.points; payload.userLevel = r.level; payload.leveledUp = r.leveledUp;
-    }
-    sendToRenderer("tiktok:event", payload);
-    sendToOverlay("overlay:event", payload);
-  });
-
-  // ── LIKE ──
-  state.tiktokConnection.on(WebcastEvent.LIKE, (data) => {
-    const p = {
-      type: "like", screenId,
-      user: data.user?.uniqueId || data.uniqueId || "someone",
-      nickname: data.user?.nickname || data.nickname || "",
-      likeCount: data.likeCount || 1, totalLikeCount: data.totalLikeCount || 0,
-      timestamp: Date.now(),
-    };
-    if (p.user !== "someone") { const r = pointsSystem.awardPoints("like", p.user, p.nickname, false); p.pointsAwarded = r.points; p.userLevel = r.level; }
-    sendToRenderer("tiktok:event", p);
-  });
-
-  // ── ROOM_USER ──
-  state.tiktokConnection.on(WebcastEvent.ROOM_USER, (data) => {
-    sendToRenderer("tiktok:viewers", { screenId, viewerCount: data.viewerCount || 0 });
-  });
-
-  // ── SUBSCRIBE ──
-  state.tiktokConnection.on(WebcastEvent.SUBSCRIBE, (data) => {
-    const p = { type: "subscribe", screenId, user: data.user?.uniqueId || "someone", nickname: data.user?.nickname || "", timestamp: Date.now() };
-    if (p.user !== "someone") { const r = pointsSystem.awardPoints("subscribe", p.user, p.nickname, true); p.pointsAwarded = r.points; p.userLevel = r.level; }
-    sendToRenderer("tiktok:event", p);
-  });
-
-  // ── COMMENT ──
-  if (WebcastEvent.COMMENT) {
-    state.tiktokConnection.on(WebcastEvent.COMMENT, (data) => {
-      const p = {
-        type: "comment", screenId,
-        user: data.user?.uniqueId || data.uniqueId || "someone",
-        nickname: data.user?.nickname || data.nickname || "",
-        comment: data.comment || data.message || "", timestamp: Date.now(),
-      };
-      if (p.user !== "someone") { const r = pointsSystem.awardPoints("comment", p.user, p.nickname, false); p.pointsAwarded = r.points; p.userLevel = r.level; }
-      sendToRenderer("tiktok:event", p);
-    });
-  }
-
-  // ── FOLLOW ──
-  if (WebcastEvent.FOLLOW) {
-    state.tiktokConnection.on(WebcastEvent.FOLLOW, (data) => {
-      const p = { type: "follow", screenId, user: data.user?.uniqueId || "someone", nickname: data.user?.nickname || "", timestamp: Date.now() };
-      if (p.user !== "someone") { const r = pointsSystem.awardPoints("follow", p.user, p.nickname, false); p.pointsAwarded = r.points; p.userLevel = r.level; }
-      sendToRenderer("tiktok:event", p);
-    });
-  }
-
-  // ── SHARE ──
-  if (WebcastEvent.SHARE) {
-    state.tiktokConnection.on(WebcastEvent.SHARE, (data) => {
-      const p = { type: "share", screenId, user: data.user?.uniqueId || "someone", nickname: data.user?.nickname || "", timestamp: Date.now() };
-      if (p.user !== "someone") { const r = pointsSystem.awardPoints("share", p.user, p.nickname, false); p.pointsAwarded = r.points; p.userLevel = r.level; }
-      sendToRenderer("tiktok:event", p);
-    });
-  }
-
-  // ── CONTROL ──
-  if (ControlEvent) {
-    state.tiktokConnection.on(ControlEvent.STREAM_END, () => {
-      state.isConnected = false;
-      sendToRenderer("tiktok:disconnected", { screenId, reason: "Stream ended" });
-      sendToOverlay("overlay:disconnected", { screenId });
-    });
-    state.tiktokConnection.on(ControlEvent.DISCONNECTED, () => {
-      state.isConnected = false;
-      sendToRenderer("tiktok:disconnected", { screenId });
-      sendToOverlay("overlay:disconnected", { screenId });
-      if (state.lastConnectedUser) scheduleReconnect(screenId, state.lastConnectedUser);
-    });
-  }
-
-  // ── ERROR ──
-  state.tiktokConnection.on("error", (err) => {
-    err._handledByErrorEvent = true;
-    const msg = friendlyError(err, clean);
-    sendToRenderer("tiktok:error", { screenId, message: typeof msg === "string" ? msg : "Koneksi gagal." });
-    const lower = typeof msg === "string" ? msg.toLowerCase() : "";
-    if (lower.includes("falling back") || lower.includes("no more sources") || lower.includes("error while connecting")) return;
-    if (lower.includes("sedang tidak live") || lower.includes("tidak ditemukan") || lower.includes("tidak ada koneksi")) return;
-    if (state.lastConnectedUser) scheduleReconnect(screenId, state.lastConnectedUser);
-  });
 }
 
 function disconnectTikTok(screenId) {
-  const state = connections.get(screenId);
-  if (!state) return;
-  if (state.tiktokConnection) { try { state.tiktokConnection.disconnect(); } catch (_) {} state.tiktokConnection = null; }
-  state.isConnected = false;
-  clearReconnectTimeout(state);
+  const service = getTikTokServiceInstance();
+  service.disconnect(screenId).catch((err) => {
+    console.error(`[TIKTOK] disconnect failed for ${screenId}:`, err.message);
+  });
 }
 
 function manualReconnect(screenId, username) {
-  const state = getOrCreateScreenState(screenId);
-  state._reconnectLocked = false;
-  state.reconnectAttempts = 0;
-  connectTikTok(screenId, username);
-}
-
-function clearReconnectTimeout(state) {
-  if (state.reconnectTimeout) { clearTimeout(state.reconnectTimeout); state.reconnectTimeout = null; }
-}
-
-function scheduleReconnect(screenId, username) {
-  const state = getOrCreateScreenState(screenId);
-  if (state.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    sendToRenderer("tiktok:error", { screenId, message: `Gagal connect setelah ${MAX_RECONNECT_ATTEMPTS} percobaan.` });
-    state.reconnectAttempts = MAX_RECONNECT_ATTEMPTS + 1;
-    state.isReconnecting = false;
-    return;
-  }
-  if (state.isReconnecting) return;
-  state.reconnectAttempts++;
-  state.isReconnecting = true;
-  clearReconnectTimeout(state);
-  state.reconnectTimeout = setTimeout(() => { state.isReconnecting = false; connectTikTok(screenId, username); }, RECONNECT_DELAY_MS);
-}
-
-function resetReconnectCounter(state) {
-  state.reconnectAttempts = 0;
-  state.isReconnecting = false;
+  const service = getTikTokServiceInstance();
+  // Reset any lock and reconnect
+  service.disconnect(screenId).then(() => {
+    service.connect(screenId, username).catch((err) => {
+      console.error(`[TIKTOK] manual reconnect failed for ${screenId}:`, err.message);
+    });
+  });
 }
 
 // =============================================
@@ -911,6 +868,42 @@ ipcMain.handle("auth:google", (_, googleData) => authSystem.loginGoogle(googleDa
 ipcMain.handle("auth:logout", () => authSystem.logout());
 ipcMain.handle("auth:currentUser", () => authSystem.getCurrentUser());
 ipcMain.handle("auth:validateSession", () => authSystem.validateSession());
+
+// ── Admin (proxied to backend API) ──
+const { apiUrl } = require("./backend/api-config.cjs");
+async function adminApiRequest(method, endpoint, body) {
+  // Use validateSession which handles token refresh automatically
+  let token = null;
+  try {
+    const session = await authSystem.validateSession();
+    if (session && session.valid && session.token) token = session.token;
+  } catch {}
+  return new Promise((resolve) => {
+    const url = new URL(`${apiUrl}${endpoint}`);
+    const postData = body ? JSON.stringify(body) : null;
+    const headers = {
+      "Content-Type": "application/json",
+      ...(postData ? { "Content-Length": Buffer.byteLength(postData) } : {}),
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+    };
+    const req = http.request({ hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, headers, timeout: 15000 }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        try { resolve({ success: res.statusCode >= 200 && res.statusCode < 300, data: JSON.parse(data) }); }
+        catch { resolve({ success: false, error: "Invalid response" }); }
+      });
+    });
+    req.on("timeout", () => { req.destroy(); resolve({ success: false, error: "Request timeout" }); });
+    req.on("error", (err) => { resolve({ success: false, error: err.message }); });
+    if (postData) req.write(postData);
+    req.end();
+  });
+}
+ipcMain.handle("admin:searchUsers", (_, query) => adminApiRequest("GET", `/admin/users?q=${encodeURIComponent(query || "")}`));
+ipcMain.handle("admin:userDetail", (_, userId) => adminApiRequest("GET", `/admin/users/${userId}`));
+ipcMain.handle("admin:extendLicense", (_, userId, days) => adminApiRequest("POST", `/admin/users/${userId}/extend`, { days }));
+ipcMain.handle("admin:downgradeUser", (_, userId) => adminApiRequest("POST", `/admin/users/${userId}/downgrade`));
 
 // ── Stream Profiles ──
 ipcMain.handle("auth:profileLimit", () => {

@@ -1,0 +1,41 @@
+import { defineOverlay } from '../defineOverlay';
+import { KeystrokeOverlay } from './KeystrokeOverlay';
+import { Keyboard } from 'lucide-react';
+
+export const keystrokeOverlayModule = defineOverlay({
+  metadata: {
+    id: 'keystroke-overlay',
+    name: 'Keystroke Overlay',
+    description: 'Visual keyboard and mouse input display for tutorials',
+    category: 'utilities',
+    tags: ['keyboard', 'mouse', 'keystroke', 'tutorial', 'input', 'visual'],
+    author: 'RosaeFinity',
+    version: '1.0.0',
+    icon: Keyboard,
+    thumbnail: '',
+    previewImage: '',
+    beta: false,
+    featured: false,
+    hidden: false,
+    premium: false,
+    deprecated: false,
+    requiresLicense: false,
+    licenseTier: 'free',
+    supportsOBS: true,
+    supportsBrowserSource: true,
+    supportsMultiScreen: true,
+    supportsThemes: true,
+    supportsTikTokLiveStudio: true,
+    minimumVersion: '1.0.0',
+    maximumVersion: null,
+    platform: 'all',
+    configVersion: 1,
+  },
+  renderer: KeystrokeOverlay,
+  settingsSchema: [],
+  defaultConfig: {},
+  validateConfig: (c): c is Record<string, unknown> => typeof c === 'object' && c !== null,
+  sanitizeConfig: (c) => c as Record<string, unknown>,
+  migrateConfig: (raw) => raw as Record<string, unknown>,
+  eventTypes: ['hotkey', 'custom'],
+});

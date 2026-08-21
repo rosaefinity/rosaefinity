@@ -8,6 +8,7 @@ import {
   MessageSquare, Trash2, Gift, Heart,
   Share2, UserPlus, Filter
 } from "lucide-react";
+import { BrowserSourceBar } from "../components/BrowserSourceBar";
 
 const EVENT_ICONS = {
   gift: "🎁", follow: "👤", comment: "💬",
@@ -188,6 +189,11 @@ export function ChatPage() {
           </div>
         )}
       </div>
+
+      {/* Browser Source URL */}
+      <div className="mt-4">
+        <BrowserSourceBar overlayPath="chat" label="Chat Feed Overlay" />
+      </div>
     </div>
   );
-}
+}export default ChatPage;

@@ -1,4 +1,5 @@
 import React, { Component, type ReactNode } from "react";
+import { AlertTriangle, RefreshCw, RotateCcw, Copy, Activity } from "lucide-react";
 
 interface Props {
   children: ReactNode;
@@ -9,20 +10,23 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  errorInfo: React.ErrorInfo | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { hasError: true, error, errorInfo: null };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // Log to Electron crash reporter if available
+    this.setState({ errorInfo });
+    console.error(`[ErrorBoundary${this.props.pageName ? `:${this.props.pageName}` : ""}]`, error, errorInfo);
+    console.error('[AUTH-TRACE] ErrorBoundary caught error - page may remount:', error.message);
     const electronAPI = (window as any).electronAPI;
     if (electronAPI?.logError) {
       electronAPI.logError({
@@ -32,61 +36,57 @@ export class ErrorBoundary extends Component<Props, State> {
         page: this.props.pageName || "unknown",
       });
     }
-    console.error(`[ErrorBoundary${this.props.pageName ? `:${this.props.pageName}` : ""}]`, error, errorInfo);
   }
 
-  handleReload = () => {
-    // Try to recover by reloading the app
-    window.location.href = "/";
+  handleReload = () => { window.location.href = "/"; };
+  handleRetry = () => { this.setState({ hasError: false, error: null, errorInfo: null }); };
+  handleCopyError = () => {
+    const { error, errorInfo } = this.state;
+    const text = `Error: ${error?.message}\n\nStack: ${error?.stack}\n\nComponent Stack: ${errorInfo?.componentStack || 'N/A'}`;
+    navigator.clipboard.writeText(text);
   };
-
-  handleRetry = () => {
-    this.setState({ hasError: false, error: null });
-  };
+  handleOpenDiagnostics = () => { window.location.href = "/diagnostics"; };
 
   render() {
     if (this.state.hasError) {
-      if (this.props.fallback) {
-        return this.props.fallback;
-      }
+      if (this.props.fallback) return this.props.fallback;
 
       return (
         <div className="flex flex-col items-center justify-center min-h-[400px] p-8 text-center">
-          <div className="text-4xl mb-4">⚠️</div>
-          <h2 className="text-xl font-bold text-white mb-2">
-            Something went wrong
-          </h2>
-          <p className="text-gray-400 mb-6 max-w-md">
+          <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-5">
+            <AlertTriangle className="w-8 h-8 text-red-400" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Something went wrong</h2>
+          <p className="text-gray-400 mb-6 max-w-md text-sm">
             {this.props.pageName
               ? `The ${this.props.pageName} page encountered an error.`
               : "An unexpected error occurred."}
             {" "}Your stream is not affected — alerts continue to work.
           </p>
-          <div className="flex gap-3">
-            <button
-              onClick={this.handleRetry}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              Try Again
+          <div className="flex flex-wrap gap-2 justify-center">
+            <button onClick={this.handleRetry} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors">
+              <RefreshCw className="w-4 h-4" /> Try Again
             </button>
-            <button
-              onClick={this.handleReload}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              Reload App
+            <button onClick={this.handleReload} className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 rounded-lg text-sm font-medium transition-colors">
+              <RotateCcw className="w-4 h-4" /> Reload App
+            </button>
+            <button onClick={this.handleCopyError} className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 rounded-lg text-sm font-medium transition-colors">
+              <Copy className="w-4 h-4" /> Copy Error
+            </button>
+            <button onClick={this.handleOpenDiagnostics} className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 rounded-lg text-sm font-medium transition-colors">
+              <Activity className="w-4 h-4" /> Diagnostics
             </button>
           </div>
           {import.meta.env.DEV && this.state.error && (
-            <pre className="mt-6 text-xs text-red-400 bg-gray-900 p-4 rounded-lg max-w-2xl overflow-auto text-left">
+            <pre className="mt-6 text-xs text-red-400 bg-black/40 border border-red-500/20 p-4 rounded-xl max-w-2xl w-full overflow-auto text-left scrollbar-thin">
               {this.state.error.message}
-              {"\n"}
+              {"\n\n"}
               {this.state.error.stack}
             </pre>
           )}
         </div>
       );
     }
-
     return this.props.children;
   }
 }

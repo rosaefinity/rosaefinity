@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { api } from "../services/electron-service";
 import { Button } from "../components/ui/button";
+import { BrowserSourceBar } from "../components/BrowserSourceBar";
 
 export function SongPage() {
   const { spotifyConnected, spotifyNowPlaying, spotifyQueue, setSpotifyConnected, setSpotifyNowPlaying, setSpotifyQueue, setupConfig } = useAppStore();
@@ -220,6 +221,12 @@ export function SongPage() {
         )}
       </motion.div>
 
+      {/* Browser Source URL */}
+      <div className="mt-2">
+        <BrowserSourceBar overlayPath="song" label="Song Request Overlay" />
+      </div>
+
     </div>
   );
 }
+export default SongPage;

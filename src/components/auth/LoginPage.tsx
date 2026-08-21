@@ -8,6 +8,9 @@ import {
   Globe, AlertCircle, Loader2
 } from "lucide-react";
 
+// Admin users stay in same app, go to admin users page
+const ADMIN_URL = '/admin/users';
+
 interface LoginPageProps {
   onSwitchToRegister: () => void;
 }
@@ -23,17 +26,36 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     clearError();
-    await login({ email, password, rememberMe });
-    if (useAuthStore.getState().isAuthenticated) {
-      navigate("/");
+    try {
+      await login(email, password);
+      const state = useAuthStore.getState();
+      if (state.isAuthenticated && state.currentUser) {
+        // Role-based routing: admin goes to admin dashboard, user goes to app
+        if (state.currentUser.accountType === 'admin') {
+          window.location.href = ADMIN_URL;
+        } else {
+          navigate("/");
+        }
+      }
+    } catch {
+      // Error is handled by the store and displayed in the UI
     }
   };
 
   const handleGoogleLogin = async () => {
     clearError();
-    await loginWithGoogle();
-    if (useAuthStore.getState().isAuthenticated) {
-      navigate("/");
+    try {
+      await loginWithGoogle();
+      const state = useAuthStore.getState();
+      if (state.isAuthenticated && state.currentUser) {
+        if (state.currentUser.accountType === 'admin') {
+          window.location.href = ADMIN_URL;
+        } else {
+          navigate("/");
+        }
+      }
+    } catch {
+      // Error is handled by the store
     }
   };
 

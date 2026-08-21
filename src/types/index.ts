@@ -17,6 +17,7 @@ export interface User {
 
 export interface AuthState {
   user: User | null;
+  token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   error: string | null;
@@ -54,17 +55,39 @@ export interface Action {
   sound: boolean;
   soundFile?: string;
   soundFileName?: string;
+  soundVolume?: number;
+  soundFadeIn?: number;
+  soundFadeOut?: number;
+  soundLoop?: boolean;
+  soundDelay?: number;
   video: boolean;
   videoFile?: string;
   videoFileName?: string;
+  videoAutoplay?: boolean;
+  videoLoop?: boolean;
+  videoSpeed?: number;
+  videoFadeIn?: number;
+  videoFadeOut?: number;
   image: boolean;
   imageFile?: string;
   imageFileName?: string;
+  imageOpacity?: number;
+  imageScale?: number;
+  imagePosition?: { x: number; y: number };
+  imageAnimation?: string;
   keystroke: boolean;
   keystrokeKeys?: string;
   keystrokeHoldMs?: number;
+  keystrokeDuration?: number;
+  keystrokeOpacity?: number;
+  keystrokeScale?: number;
+  keystrokeAnimation?: string;
   minecraft: boolean;
   minecraftCommand?: string;
+  minecraftQueue?: boolean;
+  minecraftCooldown?: number;
+  minecraftDelay?: number;
+  minecraftRandom?: boolean;
   enabled: boolean;
   displayDuration?: number;
   mediaVolume?: number;
@@ -191,7 +214,6 @@ export interface TikTokConnectionState {
 // ===== Settings / Setup Config =====
 export interface SetupConfig {
   tikTokName: string;
-  screenTikTokNames: Record<ScreenId, string>;
   currencyName: string;
   pointsGift: number;
   pointsLike: number;
@@ -226,6 +248,8 @@ export interface SetupConfig {
   maxQueueOverall: number;
   maxQueuePerUser: number;
   overlayPermanent: boolean;
+  halvingPercent: number;
+  screenTikTokNames: Record<ScreenId, string>;
 }
 
 // ===== License =====

@@ -409,3 +409,5 @@ export function CapturePage() {
     </div>
   );
 }
+
+export default CapturePage;

@@ -2,11 +2,18 @@ import type React from 'react';
 
 // ─── Settings Schema (schema-driven UI) ───
 
-export type SettingsFieldType = 'text' | 'number' | 'boolean' | 'range' | 'color' | 'select';
+export type SettingsFieldType = 'text' | 'number' | 'boolean' | 'range' | 'color' | 'select' | 'switch' | 'slider' | 'animation' | 'duration' | 'font';
 
 export interface SettingsFieldOption {
   value: string;
   label: string;
+}
+
+export interface ValidationRule {
+  type: 'required' | 'min' | 'max' | 'pattern' | 'custom';
+  value?: unknown;
+  message: string;
+  validator?: (value: unknown) => boolean;
 }
 
 export interface SettingsField {
@@ -19,6 +26,9 @@ export interface SettingsField {
   options?: SettingsFieldOption[];
   placeholder?: string;
   description?: string;
+  section?: string;
+  dependsOn?: { key: string; value: unknown; operator?: string };
+  validation?: ValidationRule[];
 }
 
 export interface SettingsSection {
@@ -28,9 +38,134 @@ export interface SettingsSection {
 
 export type SettingsSchema = SettingsSection[];
 
+// ─── Base Overlay Config (runtime config shape) ───
+
+/** Point position (x, y) */
+export interface OverlayPosition {
+  x: number;
+  y: number;
+}
+
+/** Size (width, height) */
+export interface OverlaySize {
+  width: number;
+  height: number;
+}
+
+/** Border configuration */
+export interface BaseOverlayBorder {
+  width: number;
+  color: string;
+  radius: number;
+}
+
+/** Shadow configuration */
+export interface BaseOverlayShadow {
+  enabled: boolean;
+  color: string;
+  blur: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/** Spacing (padding / margin) */
+export interface BaseOverlaySpacing {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/** Color palette for overlays */
+export interface BaseOverlayColors {
+  primary: string;
+  secondary: string;
+  background: string;
+  text: string;
+  accent: string;
+}
+
+/** Text shadow configuration */
+export interface TextShadowConfig {
+  enabled: boolean;
+  color: string;
+  blur: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/**
+ * Complete base configuration for all overlays.
+ * Every overlay renderer receives a config extending this shape.
+ * Created at runtime by createOverlayConfig() from module defaults.
+ */
+export interface BaseOverlayConfig {
+  // ── Visibility ──
+  enabled: boolean;
+  visible: boolean;
+
+  // ── Layout ──
+  position: OverlayPosition;
+  size: OverlaySize;
+  scale: number;
+  rotation: number;
+  opacity: number;
+  zIndex?: number;
+
+  // ── Animation ──
+  animationSpeed: number;
+  animationDuration: number;
+  animationDelay: number;
+  animationEasing: string;
+  animationLoop: boolean;
+  transition: string;
+
+  // ── Typography ──
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  letterSpacing: number;
+  lineHeight: number;
+  textAlign: 'left' | 'center' | 'right';
+  textTransform: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
+  textShadow: TextShadowConfig;
+
+  // ── Colors ──
+  colors: BaseOverlayColors;
+
+  // ── Border ──
+  border: BaseOverlayBorder;
+
+  // ── Shadow ──
+  shadow: BaseOverlayShadow;
+
+  // ── Spacing ──
+  padding: BaseOverlaySpacing;
+  margin: BaseOverlaySpacing;
+
+  // ── Behavior ──
+  duration: number;
+  maxItems: number;
+  cooldown: number;
+  hiddenWhenInactive: boolean;
+  autoHide: boolean;
+  autoHideDelay: number;
+  autoPlay: boolean;
+  clickThrough: boolean;
+  lockPosition: boolean;
+
+  // ── Audio ──
+  soundEnabled: boolean;
+  soundUrl: string;
+  soundVolume: number;
+
+  // ── Screen ──
+  screenId: string;
+}
+
 // ─── Overlay Module ───
 
-export interface OverlayModule<TConfig extends Record<string, unknown>> {
+export interface OverlayModule<TConfig extends object = Record<string, unknown>> {
   // Metadata
   id: string;
   name: string;
@@ -47,7 +182,7 @@ export interface OverlayModule<TConfig extends Record<string, unknown>> {
   renderer: React.ComponentType<RendererProps<TConfig>>;
 
   // Schema-driven settings
-  settingsSchema: SettingsSchema;
+  settingsSchema: SettingsSchema | SettingsField[];
 
   // Configuration
   defaultConfig: TConfig;
@@ -85,11 +220,12 @@ export interface OverlayContext {
 export type OverlayEvent =
   | { type: 'gift'; username: string; giftName: string; diamonds: number; repeatCount?: number }
   | { type: 'follow'; username: string }
-  | { type: 'like'; username: string; count: number }
+  | { type: 'like'; username: string; count: number; totalLikes?: number }
   | { type: 'share'; username: string }
   | { type: 'comment'; username: string; message: string }
   | { type: 'subscribe'; username: string }
-  | { type: 'goal-progress'; current: number; target: number }
+  | { type: 'goal-progress'; current: number; target: number; goalType?: string }
+  | { type: 'hotkey'; keys: string }
   | { type: 'custom'; data: Record<string, unknown> };
 
 export interface OverlayEventSource {
@@ -113,3 +249,8 @@ export interface OverlayInstance {
   createdAt: number;
   updatedAt: number;
 }
+
+// ─── Transport Types ───
+
+/** Callback type for overlay transport message handlers. */
+export type MessageHandler = (data: unknown) => void;

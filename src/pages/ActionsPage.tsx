@@ -1,16 +1,22 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../store/app-store";
+import { useLicenseStore } from "../store/license-store";
+import { UpgradeDialog } from "../components/UpgradeDialog";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
+import { showTestNotification } from "../components/TestNotification";
+import { toast } from "../components/Toast";
 import { getGifts, getGiftEmoji, getGiftImageUrl, type TikTokGift } from "../services/gift-service";
 import { sendToOverlay } from "../lib/overlay-bus";
 import { saveActionMedia, deleteActionMedia } from "../lib/db";
+import { getOverlayWidgetUrl } from "../lib/browser-source-url";
 import {
   Plus, Search, Play, Edit, Trash2, X, Copy, CheckCircle2,
   Music, Video, Image, Keyboard, Monitor, Gift, Heart, Bell,
   MessageSquare, Share2, UserPlus, Star, Zap, Globe,
-  AlertTriangle, Volume2
+  AlertTriangle, Volume2, Lock, ArrowRight, Sparkles
 } from "lucide-react";
 
 // ── SPECIAL KEYS & MODIFIERS (sama persis kaya Electron) ──────
@@ -110,7 +116,8 @@ function GiftCard({ gift, selected, onSelect }: { gift: TikTokGift; selected: bo
 // ── GIFT DATA — diambil live dari StreamToEarn ────────────────
 
 export function ActionsPage() {
-  const { actions, addAction, updateAction, deleteAction, duplicateAction, events, addEvent, updateEvent, deleteEvent, licenseInfo } = useAppStore();
+  const { actions, addAction, updateAction, deleteAction, duplicateAction, events, addEvent, updateEvent, deleteEvent } = useAppStore();
+  const { plan, features } = useLicenseStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [allGifts, setAllGifts] = useState<TikTokGift[]>([]);
   const [loadingGifts, setLoadingGifts] = useState(true);
@@ -147,7 +154,12 @@ export function ActionsPage() {
 
   // Filter
   const filteredActions = actions.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()));
-  const canCreate = licenseInfo.isPro || actions.length < (licenseInfo.limits?.actions || 5);
+  const maxActions = features?.maxActions ?? 5;
+  const canCreate = plan === 'pro' || actions.length < maxActions;
+
+  // Upgrade dialog state
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const navigate = useNavigate();
 
   // Preview state
   const [showPreview, setShowPreview] = useState(false);
@@ -157,10 +169,15 @@ export function ActionsPage() {
   function getDefaultActionForm() {
     return {
       name: "", sound: false, soundFile: null, soundFileName: null,
+      soundVolume: 80, soundFadeIn: 0, soundFadeOut: 0, soundLoop: false, soundDelay: 0,
       video: false, videoFile: null, videoFileName: null,
+      videoAutoplay: true, videoLoop: false, videoSpeed: 1, videoFadeIn: 0, videoFadeOut: 0,
       image: false, imageFile: null, imageFileName: null,
+      imageOpacity: 100, imageScale: 100, imagePosition: { x: 50, y: 50 }, imageAnimation: "none",
       keystroke: false, keystrokeKeys: "", keystrokeHoldMs: 100,
+      keystrokeDuration: 5, keystrokeOpacity: 100, keystrokeScale: 100, keystrokeAnimation: "fade",
       minecraft: false, minecraftCommand: "",
+      minecraftQueue: false, minecraftCooldown: 0, minecraftDelay: 0, minecraftRandom: false,
       screen: "Screen 1", duration: 20,
       displayDuration: 20, mediaVolume: 80, overlayScreen: "Screen 1",
       globalCooldown: 0, userCooldown: 0,
@@ -178,6 +195,10 @@ export function ActionsPage() {
   }
 
   function openCreateAction() {
+    if (!canCreate) {
+      setShowUpgradeModal(true);
+      return;
+    }
     setActionForm(getDefaultActionForm());
     setKeystrokeBuffer([]);
     setPendingModifier("");
@@ -196,8 +217,8 @@ export function ActionsPage() {
   function saveAction(e: React.FormEvent) {
     e.preventDefault();
     const hasMedia = actionForm.sound || actionForm.video || actionForm.image || actionForm.keystroke || actionForm.minecraft;
-    if (!hasMedia) { alert("Centang minimal satu aksi: Sound / Video / Image / Keystroke / Minecraft"); return; }
-    if (!actionForm.name.trim()) { alert("Masukkan nama action"); return; }
+    if (!hasMedia) { toast("Select at least one media type: Sound, Video, Image, Keystroke, or Minecraft"); return; }
+    if (!actionForm.name.trim()) { toast("Enter an action name"); return; }
 
     // keystrokeBuffer is already in sync with actionForm.keystrokeKeys via handleKeystrokeInputChange
     const ksStr = keystrokeBuffer.join(" ");
@@ -208,7 +229,7 @@ export function ActionsPage() {
       // Persist media to Dexie (stripped by Zustand partialize)
       persistActionMedia(editingAction.id, payload);
     } else {
-      if (!canCreate) { alert(`Free plan limited to ${licenseInfo.limits?.actions || 5} actions. Upgrade to Pro!`); return; }
+      if (!canCreate) { setShowUpgradeModal(true); return; }
       addAction(payload as any);
       // Persist media to Dexie — get the new ID from the latest action
       const latest = useAppStore.getState().actions.slice(-1)[0];
@@ -253,7 +274,7 @@ export function ActionsPage() {
     e.preventDefault();
     e.stopPropagation();
     try {
-      if (!eventForm.actionName) { alert("Pilih action"); return; }
+      if (!eventForm.actionName) { toast("Select an action to trigger"); return; }
       const payload = { ...eventForm };
       if (editingEvent) {
         updateEvent(editingEvent.id, payload);
@@ -302,103 +323,51 @@ export function ActionsPage() {
   }
 
   // ── TEST ACTION ──────────────────────────────────────────
-  // Randomized test data to make notifications less monotonous
-  const testUsers = [
-    { user: "PixelPioneer", nickname: "Pixel Pioneer" },
-    { user: "NeonNinja", nickname: "Neon Ninja" },
-    { user: "CyberSamurai", nickname: "Cyber Samurai" },
-    { user: "GlitchGamer", nickname: "Glitch Gamer" },
-    { user: "VoidVoyager", nickname: "Void Voyager" },
-    { user: "QuantumQueen", nickname: "Quantum Queen" },
-    { user: "RetroRacer", nickname: "Retro Racer" },
-    { user: "SynthSorcerer", nickname: "Synth Sorcerer" },
-    { user: "ByteBard", nickname: "Byte Bard" },
-    { user: "FluxPhantom", nickname: "Flux Phantom" },
-  ];
-
-  const testMessages = [
-    "Just tested this action! 🎉",
-    "Testing 1, 2, 3... working! ✅",
-    "Action triggered successfully! 🚀",
-    "Boom! That worked perfectly! 💥",
-    "Smooth like butter! 🧈",
-    "Level up achieved! ⬆️",
-    "Critical hit on that test! 🎯",
-    "Deployed and verified! 📦",
-    "All systems green! 🟢",
-    "Test complete - no bugs found! 🐛❌",
-  ];
-
-  const testKeystrokes = [
-    "Ctrl+Shift+K",
-    "Alt+F4",
-    "Ctrl+Alt+Del",
-    "Win+R",
-    "Ctrl+Shift+Esc",
-    "F12",
-    "Ctrl+Z",
-    "Alt+Tab",
-    "Win+D",
-    "Ctrl+Shift+N",
-  ];
-
   function testAction(action: any) {
-    // Pick random test data for variety
-    const randomUser = testUsers[Math.floor(Math.random() * testUsers.length)];
-    const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)];
-    const randomKeystroke = testKeystrokes[Math.floor(Math.random() * testKeystrokes.length)];
+    const screen = action.overlayScreen || "Screen 1";
+    const screenNum = screen.replace("Screen ", "");
+    const effects: string[] = [];
+    if (action.sound) effects.push("Sound");
+    if (action.video) effects.push("Video");
+    if (action.image) effects.push("Image");
+    if (action.keystroke) effects.push("Keystroke");
+    if (action.minecraft) effects.push("Minecraft");
 
-    let info = `📋 ${action.name}`;
-    info += ` | ${action.overlayScreen || "Screen 1"}`;
-    info += ` | ${action.displayDuration || action.duration || 20}s`;
-    if (action.sound) info += ` | 🔊 Sound`;
-    if (action.video) info += ` | 🎬 Video`;
-    if (action.image) info += ` | 🖼️ Image`;
-    if (action.keystroke) info += ` | ⌨️ ${action.keystrokeKeys || randomKeystroke}`;
-    if (action.minecraft) info += ` | ⛏️ ${action.minecraftCommand}`;
-
-    // Kirim action content asli ke overlay widget
-    const overlayData: any = {
-      user: randomUser.user,
-      nickname: randomUser.nickname,
+    // Send overlay event to the target screen
+    const overlayData: Record<string, unknown> = {
       actionName: action.name,
       timestamp: Date.now(),
-      // Include the target screen so only that overlay widget receives it
-      screen: action.overlayScreen ? action.overlayScreen.replace("Screen ", "") : "1",
-      // Add randomized test message
-      testMessage: randomMessage,
-      // Add randomized keystroke for testing if not provided
-      testKeystroke: randomKeystroke,
+      screen: screenNum,
+      isTest: true,
+      duration: action.displayDuration || action.duration || 5,
+      videoFile: action.video ? action.videoFile : undefined,
+      imageFile: action.image ? action.imageFile : undefined,
+      keystrokeKeys: action.keystroke ? action.keystrokeKeys : undefined,
+      keystrokeHoldMs: action.keystroke ? action.keystrokeHoldMs : 100,
     };
 
     if (action.video && action.videoFile) {
       overlayData.type = "video";
-      overlayData.videoFile = action.videoFile;
-      overlayData.duration = action.displayDuration || action.duration || 5;
     } else if (action.image && action.imageFile) {
       overlayData.type = "image";
-      overlayData.imageFile = action.imageFile;
-      overlayData.duration = action.displayDuration || action.duration || 5;
     } else if (action.keystroke) {
-      // Include keystroke data for testing - use action's keystroke or random one for variety
       overlayData.type = "keystroke";
-      overlayData.keystrokeKeys = action.keystrokeKeys || randomKeystroke;
-      overlayData.keystrokeHoldMs = action.keystrokeHoldMs || 100;
-
-      // Also try to send actual keystroke via Electron if available
       if (typeof window !== 'undefined' && (window as any).electronAPI?.sendKeystroke) {
-        (window as any).electronAPI.sendKeystroke(action.keystrokeKeys || randomKeystroke, action.keystrokeHoldMs || 100);
+        (window as any).electronAPI.sendKeystroke(action.keystrokeKeys, action.keystrokeHoldMs || 100);
       }
     } else {
-      overlayData.type = "gift";
-      overlayData.eventType = "gift";
-      overlayData.giftName = action.name || "Test Action";
-      overlayData.repeatCount = 1;
+      overlayData.type = "action";
     }
 
     sendToOverlay(overlayData);
-    console.log("[Action Test]", info, "→ dikirim ke overlay:", overlayData.type, "| screen:", overlayData.screen, "| user:", overlayData.user);
-    alert("🚀 Action Test: " + action.name + "\n" + info + "\n\n👤 Test User: @" + overlayData.user + " (" + overlayData.nickname + ")\n💬 " + overlayData.testMessage);
+
+    // Show test notification (NOT during live TikTok events)
+    showTestNotification({
+      actionName: action.name,
+      screen,
+      duration: action.displayDuration || action.duration || 5,
+      effects,
+    });
   }
 
   // ── GET TRIGGER TEXT ──────────────────────────
@@ -415,6 +384,15 @@ export function ActionsPage() {
   return (
     <div className="p-6 h-full overflow-y-auto">
 
+      {/* ══ UPGRADE DIALOG ════════════════════════ */}
+      <UpgradeDialog
+        open={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        reason="action_limit"
+        currentUsage={actions.length}
+        limit={maxActions}
+      />
+
       {/* ── HEADER ─────────────────────────────── */}
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
         <div className="flex items-center justify-between mb-6">
@@ -424,8 +402,8 @@ export function ActionsPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-white/40">
-              {actions.length} / {licenseInfo.isPro ? "∞" : licenseInfo.limits?.actions || 5} actions
-            </span>
+                {actions.length} / {plan === 'pro' ? "∞" : maxActions} actions
+              </span>
             <Button onClick={openCreateAction} disabled={!canCreate} className="gap-2">
               <Plus className="w-4 h-4" /> Create New Action
             </Button>
@@ -593,9 +571,7 @@ export function ActionsPage() {
         <div className="divide-y divide-white/[0.04]">
           {[1,2,3,4,5,6,7,8].map((n, i) => {
             const screenActions = actions.filter(a => (a.overlayScreen || a.screen || "Screen 1") === `Screen ${n}`);
-            // Use local SSE server so overlay works in external apps like TikTok Live Studio
-            const baseUrl = `http://127.0.0.1:18890/overlay-widget.html?screen=${n}`;
-            const baseUrlLocalhost = `http://localhost:18890/overlay-widget.html?screen=${n}`;
+            const url = getOverlayWidgetUrl(n);
             return (
               <motion.div key={n} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
                 className="flex items-center gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
@@ -603,33 +579,14 @@ export function ActionsPage() {
                   <span className="text-sm font-semibold text-white">Screen {n}</span>
                 </div>
                 <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <div className="flex flex-col gap-1 flex-1 min-w-0">
-                    <code className="text-xs text-accent/80 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06] truncate font-mono select-all"
-                      title="Primary URL (127.0.0.1)">
-                      {baseUrl}
-                    </code>
-                    <code className="text-xs text-green/80 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06] truncate font-mono select-all"
-                      title="Alternative URL (localhost) — try this if 127.0.0.1 doesn't work in TikTok Studio">
-                      {baseUrlLocalhost}
-                    </code>
-                  </div>
-                  <div className="flex flex-col gap-1 shrink-0">
-                    <button onClick={() => { navigator.clipboard.writeText(baseUrl); }}
-                      className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-accent/20 hover:text-accent text-white/50 transition-all font-medium"
-                      title="Copy 127.0.0.1 URL">
-                      📋 Copy
-                    </button>
-                    <button onClick={() => { navigator.clipboard.writeText(baseUrlLocalhost); }}
-                      className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-green/20 hover:text-green text-white/50 transition-all font-medium"
-                      title="Copy localhost URL">
-                      📋 Copy
-                    </button>
-                    <button onClick={() => window.open(baseUrl, '_blank')}
-                      className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-primary/20 hover:text-primary text-white/50 transition-all font-medium"
-                      title="Open overlay in new tab to test">
-                      🔗 Test
-                    </button>
-                  </div>
+                  <code className="text-xs text-accent/80 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06] truncate font-mono select-all flex-1 min-w-0">
+                    {url}
+                  </code>
+                  <button onClick={() => { navigator.clipboard.writeText(url); toast("URL copied!", "success"); }}
+                    className="shrink-0 px-2 py-1.5 text-[10px] rounded-lg bg-white/[0.04] hover:bg-accent/20 hover:text-accent text-white/50 transition-all font-medium"
+                    title="Copy overlay URL">
+                    📋 Copy
+                  </button>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <div className="flex items-center gap-1.5">
@@ -723,10 +680,39 @@ export function ActionsPage() {
                         {actionForm.soundFileName && <p className="text-xs text-white/40 mt-1">{actionForm.soundFileName}</p>}
                       </div>
                       <div>
-                        <label className="block text-xs text-white/50 mb-1.5">Volume: {actionForm.mediaVolume || 80}%</label>
-                        <input type="range" min="0" max="100" value={actionForm.mediaVolume || 80}
-                          onChange={(e) => setActionForm({...actionForm, mediaVolume: Number(e.target.value)})}
+                        <label className="block text-xs text-white/50 mb-1.5">Volume: {actionForm.soundVolume ?? actionForm.mediaVolume ?? 80}%</label>
+                        <input type="range" min="0" max="100" value={actionForm.soundVolume ?? actionForm.mediaVolume ?? 80}
+                          onChange={(e) => setActionForm({...actionForm, soundVolume: Number(e.target.value), mediaVolume: Number(e.target.value)})}
                           className="w-full h-2 accent-green" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Fade In: {actionForm.soundFadeIn || 0}s</label>
+                          <input type="range" min="0" max="10" step="0.5" value={actionForm.soundFadeIn || 0}
+                            onChange={(e) => setActionForm({...actionForm, soundFadeIn: Number(e.target.value)})}
+                            className="w-full h-2 accent-green" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Fade Out: {actionForm.soundFadeOut || 0}s</label>
+                          <input type="range" min="0" max="10" step="0.5" value={actionForm.soundFadeOut || 0}
+                            onChange={(e) => setActionForm({...actionForm, soundFadeOut: Number(e.target.value)})}
+                            className="w-full h-2 accent-green" />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={actionForm.soundLoop || false}
+                            onChange={(e) => setActionForm({...actionForm, soundLoop: e.target.checked})}
+                            className="w-3.5 h-3.5 rounded border-white/20 bg-white/[0.04] accent-green" />
+                          <span className="text-[10px] text-white/50">Loop</span>
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-white/50">Delay:</span>
+                          <input type="number" min="0" max="30" value={actionForm.soundDelay || 0}
+                            onChange={(e) => setActionForm({...actionForm, soundDelay: Number(e.target.value)})}
+                            className="w-14 h-6 px-1.5 rounded bg-white/[0.04] border border-white/[0.08] text-[10px] text-white outline-none text-center" />
+                          <span className="text-[10px] text-white/30">s</span>
+                        </div>
                       </div>
                     </div>
                   </MediaToggle>
@@ -757,6 +743,40 @@ export function ActionsPage() {
                         />
                         {actionForm.videoFileName && <p className="text-xs text-white/40 mt-1">{actionForm.videoFileName}</p>}
                       </div>
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={actionForm.videoAutoplay !== false}
+                            onChange={(e) => setActionForm({...actionForm, videoAutoplay: e.target.checked})}
+                            className="w-3.5 h-3.5 rounded border-white/20 bg-white/[0.04] accent-blue" />
+                          <span className="text-[10px] text-white/50">Autoplay</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={actionForm.videoLoop || false}
+                            onChange={(e) => setActionForm({...actionForm, videoLoop: e.target.checked})}
+                            className="w-3.5 h-3.5 rounded border-white/20 bg-white/[0.04] accent-blue" />
+                          <span className="text-[10px] text-white/50">Loop</span>
+                        </label>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1">Speed: {actionForm.videoSpeed || 1}x</label>
+                        <input type="range" min="0.25" max="4" step="0.25" value={actionForm.videoSpeed || 1}
+                          onChange={(e) => setActionForm({...actionForm, videoSpeed: Number(e.target.value)})}
+                          className="w-full h-2 accent-blue" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Fade In: {actionForm.videoFadeIn || 0}s</label>
+                          <input type="range" min="0" max="10" step="0.5" value={actionForm.videoFadeIn || 0}
+                            onChange={(e) => setActionForm({...actionForm, videoFadeIn: Number(e.target.value)})}
+                            className="w-full h-2 accent-blue" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Fade Out: {actionForm.videoFadeOut || 0}s</label>
+                          <input type="range" min="0" max="10" step="0.5" value={actionForm.videoFadeOut || 0}
+                            onChange={(e) => setActionForm({...actionForm, videoFadeOut: Number(e.target.value)})}
+                            className="w-full h-2 accent-blue" />
+                        </div>
+                      </div>
                     </div>
                   </MediaToggle>
 
@@ -785,6 +805,34 @@ export function ActionsPage() {
                           className="w-full text-xs text-white/40 file:mr-4 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-primary/20 file:text-primary hover:file:bg-primary/30"
                         />
                         {actionForm.imageFileName && <p className="text-xs text-white/40 mt-1">{actionForm.imageFileName}</p>}
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1">Opacity: {actionForm.imageOpacity ?? 100}%</label>
+                        <input type="range" min="0" max="100" value={actionForm.imageOpacity ?? 100}
+                          onChange={(e) => setActionForm({...actionForm, imageOpacity: Number(e.target.value)})}
+                          className="w-full h-2 accent-purple" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1">Scale: {actionForm.imageScale ?? 100}%</label>
+                        <input type="range" min="10" max="300" value={actionForm.imageScale ?? 100}
+                          onChange={(e) => setActionForm({...actionForm, imageScale: Number(e.target.value)})}
+                          className="w-full h-2 accent-purple" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1.5">Animation</label>
+                        <select value={actionForm.imageAnimation || "none"}
+                          onChange={(e) => setActionForm({...actionForm, imageAnimation: e.target.value})}
+                          className="w-full h-8 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs text-white outline-none">
+                          <option value="none">None</option>
+                          <option value="fade">Fade In</option>
+                          <option value="slide-up">Slide Up</option>
+                          <option value="slide-down">Slide Down</option>
+                          <option value="slide-left">Slide Left</option>
+                          <option value="slide-right">Slide Right</option>
+                          <option value="zoom">Zoom In</option>
+                          <option value="bounce">Bounce</option>
+                          <option value="pulse">Pulse</option>
+                        </select>
                       </div>
                     </div>
                   </MediaToggle>
@@ -833,6 +881,29 @@ export function ActionsPage() {
                           onChange={(e) => setActionForm({...actionForm, keystrokeHoldMs: Number(e.target.value)})}
                           className="w-full h-2 accent-amber" />
                       </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1">Duration: {actionForm.keystrokeDuration || 5}s</label>
+                        <input type="range" min="1" max="30" value={actionForm.keystrokeDuration || 5}
+                          onChange={(e) => setActionForm({...actionForm, keystrokeDuration: Number(e.target.value)})}
+                          className="w-full h-2 accent-amber" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1">Overlay Opacity: {actionForm.keystrokeOpacity ?? 100}%</label>
+                        <input type="range" min="10" max="100" value={actionForm.keystrokeOpacity ?? 100}
+                          onChange={(e) => setActionForm({...actionForm, keystrokeOpacity: Number(e.target.value)})}
+                          className="w-full h-2 accent-amber" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1.5">Animation</label>
+                        <select value={actionForm.keystrokeAnimation || "fade"}
+                          onChange={(e) => setActionForm({...actionForm, keystrokeAnimation: e.target.value})}
+                          className="w-full h-8 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs text-white outline-none">
+                          <option value="fade">Fade</option>
+                          <option value="slide-up">Slide Up</option>
+                          <option value="zoom">Zoom</option>
+                          <option value="none">None</option>
+                        </select>
+                      </div>
                     </div>
                   </MediaToggle>
 
@@ -851,6 +922,35 @@ export function ActionsPage() {
                           value={actionForm.minecraftCommand}
                           onChange={(e) => setActionForm({...actionForm, minecraftCommand: e.target.value})}
                           className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/20 outline-none focus:border-primary/40 font-mono" />
+                        <p className="text-[10px] text-white/30 mt-1">{"Use {username} for viewer name"}</p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={actionForm.minecraftQueue || false}
+                            onChange={(e) => setActionForm({...actionForm, minecraftQueue: e.target.checked})}
+                            className="w-3.5 h-3.5 rounded border-white/20 bg-white/[0.04] accent-green" />
+                          <span className="text-[10px] text-white/50">Queue</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={actionForm.minecraftRandom || false}
+                            onChange={(e) => setActionForm({...actionForm, minecraftRandom: e.target.checked})}
+                            className="w-3.5 h-3.5 rounded border-white/20 bg-white/[0.04] accent-green" />
+                          <span className="text-[10px] text-white/50">Random</span>
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Cooldown: {actionForm.minecraftCooldown || 0}s</label>
+                          <input type="number" min="0" max="300" value={actionForm.minecraftCooldown || 0}
+                            onChange={(e) => setActionForm({...actionForm, minecraftCooldown: Number(e.target.value)})}
+                            className="w-full h-7 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[11px] text-white outline-none" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-white/50 mb-1">Delay: {actionForm.minecraftDelay || 0}s</label>
+                          <input type="number" min="0" max="60" value={actionForm.minecraftDelay || 0}
+                            onChange={(e) => setActionForm({...actionForm, minecraftDelay: Number(e.target.value)})}
+                            className="w-full h-7 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[11px] text-white outline-none" />
+                        </div>
                       </div>
                     </div>
                   </MediaToggle>
@@ -1044,4 +1144,6 @@ export function ActionsPage() {
               </AnimatePresence>
             </div>
         );
-      }
+}
+
+export default ActionsPage;

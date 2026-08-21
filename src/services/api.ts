@@ -1,7 +1,6 @@
 import type { FilterTab, Notification } from "../types";
 import { getOverlayModules, getOverlaysByCategory } from "../overlays/registry";
 import type { AnyOverlayModule } from "../overlays/types";
-import type { Overlay } from "../pages/OverlayGallery";
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface, @typescript-eslint/no-unused-vars
 type Overlay = any;
@@ -47,7 +46,7 @@ export async function fetchOverlays(category: Overlay["category"] = "all"): Prom
   await delay(200);
 
   // Get modules from registry
-  let modules: AnyOverlayModule[];
+  let modules: readonly AnyOverlayModule[];
   if (category === "all") {
     modules = getOverlayModules();
   } else {

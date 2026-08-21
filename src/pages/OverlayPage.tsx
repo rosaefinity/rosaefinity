@@ -296,3 +296,5 @@ export function OverlayPage() {
     </div>
   );
 }
+
+export default OverlayPage;

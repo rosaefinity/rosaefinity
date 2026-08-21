@@ -1,5 +1,6 @@
 import type { AnyOverlayModule } from './types';
 import { giftAlertOverlay } from './gift-alert';
+import { coinJarProOverlay } from './coin-jar-pro';
 
 // ─── Registry Builder ───
 
@@ -61,7 +62,9 @@ export function registryBuilder(modules: AnyOverlayModule[]): RegistryResult {
 
 const _initialModules: AnyOverlayModule[] = [
   // Gift Alert
-  giftAlertOverlay,
+  giftAlertOverlay as unknown as AnyOverlayModule,
+  // Coin Jar Pro
+  coinJarProOverlay as unknown as AnyOverlayModule,
 ];
 
 const { registry: overlayRegistry, byId, byCategory } = registryBuilder(_initialModules);
@@ -88,4 +91,13 @@ export function getOverlaysByCategory(category: string): readonly AnyOverlayModu
 /** Boolean check for whether an overlay id is registered. */
 export function hasOverlay(id: string): boolean {
   return byId.has(id);
+}
+
+/**
+ * Load a registered overlay module by ID.
+ * Returns a Promise resolving to the module, or null if not found.
+ * Used by BrowserSourceApp to dynamically resolve overlays.
+ */
+export async function loadModule(id: string): Promise<AnyOverlayModule | null> {
+  return byId.get(id) ?? null;
 }

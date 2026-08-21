@@ -65,7 +65,8 @@ describe('defineOverlay', () => {
     });
 
     expect(mod.settingsSchema).toHaveLength(1);
-    expect(mod.settingsSchema[0].title).toBe('Appearance');
-    expect(mod.settingsSchema[0].fields).toHaveLength(1);
+    const section = mod.settingsSchema[0] as { title: string; fields: unknown[] };
+    expect(section.title).toBe('Appearance');
+    expect(section.fields).toHaveLength(1);
   });
 });
