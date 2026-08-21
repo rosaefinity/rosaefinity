@@ -39,7 +39,9 @@ export const authService = {
       expiresAt,
     });
 
-    return { user, ...tokens };
+    // Strip sensitive fields from response
+    const { passwordHash: _, ...safeUser } = user;
+    return { user: safeUser, ...tokens };
   },
 
   async login(email: string, password: string, rememberMe = false) {
@@ -69,7 +71,9 @@ export const authService = {
       expiresAt,
     });
 
-    return { user, ...tokens };
+    // Strip sensitive fields from response
+    const { passwordHash: _ph, ...safeUser } = user;
+    return { user: safeUser, ...tokens };
   },
 
   async loginWithProvider(provider: string, providerId: string, email?: string, displayName?: string) {
@@ -172,7 +176,9 @@ export const authService = {
   async getCurrentUser(userId: string) {
     const user = await authRepository.findUserById(userId);
     if (!user) throw new NotFoundError('User not found');
-    return user;
+    // Strip sensitive fields from response
+    const { passwordHash: _ph, ...safeUser } = user;
+    return safeUser;
   },
 
   async getUserSessions(userId: string) {
