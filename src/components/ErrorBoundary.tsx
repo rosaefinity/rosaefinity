@@ -38,14 +38,14 @@ export class ErrorBoundary extends Component<Props, State> {
     }
   }
 
-  handleReload = () => { window.location.href = "/"; };
+  handleReload = () => { window.location.hash = "#/"; };
   handleRetry = () => { this.setState({ hasError: false, error: null, errorInfo: null }); };
   handleCopyError = () => {
     const { error, errorInfo } = this.state;
     const text = `Error: ${error?.message}\n\nStack: ${error?.stack}\n\nComponent Stack: ${errorInfo?.componentStack || 'N/A'}`;
     navigator.clipboard.writeText(text);
   };
-  handleOpenDiagnostics = () => { window.location.href = "/diagnostics"; };
+  handleOpenDiagnostics = () => { window.location.hash = "#/diagnostics"; };
 
   render() {
     if (this.state.hasError) {

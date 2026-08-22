@@ -1,11 +1,22 @@
 // =============================================
 // RosaeFinity Server — Database Seed
-// Creates default plans and initial system data.
+// Creates default plans, demo user, and initial system data.
 // =============================================
 
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
+
+const BCRYPT_ROUNDS = 12;
+
+const DEMO_USER = {
+  email: 'admin@rosaefinity.app',
+  password: 'demo123',
+  displayName: 'Admin',
+  accountType: 'enterprise' as const,
+  role: 'ADMIN' as const,
+};
 
 const DEFAULT_PLANS = [
   {
@@ -89,6 +100,31 @@ async function main() {
       create: plan,
     });
     console.log(`  ✓ Plan: ${plan.name} (${plan.id})`);
+  }
+
+  // Upsert demo user
+  const passwordHash = await bcrypt.hash(DEMO_USER.password, BCRYPT_ROUNDS);
+  const existingUser = await prisma.user.findUnique({ where: { email: DEMO_USER.email } });
+  if (!existingUser) {
+    await prisma.user.create({
+      data: {
+        email: DEMO_USER.email,
+        passwordHash,
+        displayName: DEMO_USER.displayName,
+        authProvider: 'email',
+        accountType: DEMO_USER.accountType,
+        role: DEMO_USER.role,
+        emailVerified: true,
+      },
+    });
+    console.log(`  ✓ Demo user: ${DEMO_USER.email} (enterprise, ADMIN)`);
+  } else {
+    // Update password hash if user already exists
+    await prisma.user.update({
+      where: { email: DEMO_USER.email },
+      data: { passwordHash, accountType: DEMO_USER.accountType, role: DEMO_USER.role },
+    });
+    console.log(`  ✓ Demo user updated: ${DEMO_USER.email}`);
   }
 
   console.log('✅ Database seeded successfully');

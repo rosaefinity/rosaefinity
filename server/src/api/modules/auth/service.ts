@@ -29,6 +29,7 @@ export const authService = {
       sub: user.id,
       email: user.email || '',
       planTier: user.accountType,
+      role: user.role || 'USER',
     });
 
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -61,6 +62,7 @@ export const authService = {
       sub: user.id,
       email: user.email || '',
       planTier: user.accountType,
+      role: user.role || 'USER',
     });
 
     const expiresAt = new Date(Date.now() + (rememberMe ? 30 : 7) * 24 * 60 * 60 * 1000);
@@ -92,6 +94,7 @@ export const authService = {
       sub: user.id,
       email: user.email || '',
       planTier: user.accountType,
+      role: user.role || 'USER',
     });
 
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -116,6 +119,7 @@ export const authService = {
       sub: user.id,
       email: '',
       planTier: 'guest',
+      role: 'USER',
     });
 
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -142,6 +146,7 @@ export const authService = {
         sub: user.id,
         email: user.email || '',
         planTier: user.accountType,
+        role: user.role || 'USER',
       });
 
       // Replace old session

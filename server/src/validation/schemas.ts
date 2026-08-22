@@ -38,6 +38,17 @@ export const deactivateLicenseSchema = z.object({
   deviceId: z.string().min(1),
 });
 
+// ── Payment ──
+export const submitPaymentSchema = z.object({
+  amount: z.number().int().positive(),
+  paymentMethod: z.enum(['qris', 'bank_transfer', 'e_wallet']).default('qris'),
+  proofUrl: z.string().url().optional(),
+});
+
+export const rejectPaymentSchema = z.object({
+  notes: z.string().max(500).optional(),
+});
+
 // ── Device ──
 export const registerDeviceSchema = z.object({
   deviceId: z.string().min(1),

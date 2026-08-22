@@ -19,7 +19,8 @@ interface BackendUser {
   id: string;
   email: string;
   username: string;
-  role: string;
+  role: string;       // USER | ADMIN (authorization)
+  accountType: string; // guest | free | pro | enterprise (plan tier)
   avatar: string | null;
 }
 
@@ -46,7 +47,9 @@ export class BackendAuthProvider implements AuthProvider {
 
   async signInWithEmail(email: string, password: string): Promise<AuthResult> {
     try {
-      const response = await fetch(`${API_URL}/auth/login`, {
+      const loginUrl = `${API_URL}/auth/login`;
+      console.log('[AUTH] signInWithEmail URL:', loginUrl);
+      const response = await fetch(loginUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -365,6 +368,9 @@ export class BackendAuthProvider implements AuthProvider {
   // â”€â”€ Internal â”€â”€
 
   private mapBackendUser(backendUser: BackendUser): AuthUser {
+    // Backend role (USER/ADMIN) maps to frontend accountType for authorization.
+    // Backend accountType (guest/free/pro/enterprise) is the plan tier.
+    const frontendAccountType = backendUser.role === 'ADMIN' ? 'admin' : 'free';
     return {
       id: backendUser.id,
       email: backendUser.email,
@@ -372,7 +378,7 @@ export class BackendAuthProvider implements AuthProvider {
       displayName: backendUser.username,
       avatarUrl: backendUser.avatar,
       provider: 'email',
-      accountType: backendUser.role === 'admin' ? 'admin' : 'free',
+      accountType: frontendAccountType,
       subscriptionStatus: 'none',
       licenseStatus: 'none',
       isAnonymous: false,

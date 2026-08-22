@@ -29,6 +29,7 @@ const SIDEBAR_ITEMS = [
   { id: "sync",       label: "Cloud Sync", icon: Cloud,      path: "/sync" },
   { id: "divider3",   label: "", icon: undefined, path: "", divider: true },
   { id: "admin-users", label: "Users", icon: Users, path: "/admin/users", adminOnly: true },
+  { id: "admin-payments", label: "Payments", icon: CreditCard, path: "/admin/payments", adminOnly: true },
 ];
 
 export function Sidebar() {

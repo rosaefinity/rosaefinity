@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { filterTabs } from "../services/api";
 import { cn } from "../lib/utils";
@@ -16,14 +16,46 @@ import {
 
 const iconMap: Record<string, React.ElementType> = { "layout-grid": LayoutGrid, gift: Gift, bell: Bell, target: Target, "gamepad-2": Gamepad2, sparkles: Sparkles, trophy: Trophy, music: Music, "trending-up": TrendingUp, crown: Crown, star: Star };
 
+// Category color mapping for thumbnail SVG data URIs
+const CATEGORY_COLORS: Record<string, { bg: string; fg: string }> = {
+  alerts:  { bg: '#7c3aed', fg: '#ffffff' },
+  goals:   { bg: '#059669', fg: '#ffffff' },
+  chat:    { bg: '#2563eb', fg: '#ffffff' },
+  events:  { bg: '#d97706', fg: '#ffffff' },
+  graphics:{ bg: '#db2777', fg: '#ffffff' },
+};
+
+/** Generate an inline SVG data URI thumbnail for an overlay module */
+function generateThumbnailSvg(mod: AnyOverlayModule): string {
+  const { bg, fg } = CATEGORY_COLORS[mod.category] ?? CATEGORY_COLORS.alerts;
+  // Use a simple icon shape per category
+  const iconPaths: Record<string, string> = {
+    alerts: '<rect x="18" y="8" width="24" height="24" rx="4" fill="' + fg + '" opacity="0.9"/><path d="M26 15l4 4 8-8" stroke="' + bg + '" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    goals:  '<circle cx="30" cy="20" r="12" fill="none" stroke="' + fg + '" stroke-width="2.5" opacity="0.9"/><path d="M30 12v8l5 5" stroke="' + fg + '" stroke-width="2.5" fill="none" stroke-linecap="round"/>',
+    chat:   '<rect x="12" y="10" width="36" height="22" rx="6" fill="' + fg + '" opacity="0.15"/><rect x="16" y="16" width="16" height="3" rx="1.5" fill="' + fg + '" opacity="0.7"/><rect x="16" y="22" width="10" height="3" rx="1.5" fill="' + fg + '" opacity="0.5"/>',
+    events: '<polygon points="30,8 36,22 50,24 39,34 42,48 30,41 18,48 21,34 10,24 24,22" fill="' + fg + '" opacity="0.85"/>',
+    graphics:'<rect x="14" y="12" width="32" height="24" rx="4" fill="none" stroke="' + fg + '" stroke-width="2.5" opacity="0.9"/><circle cx="24" cy="24" r="4" fill="' + fg + '" opacity="0.6"/><path d="M14 30l10-8 8 6 8-10 6 8" stroke="' + fg + '" stroke-width="1.5" fill="none" opacity="0.5"/>',
+  };
+  const icon = iconPaths[mod.category] ?? iconPaths.alerts;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="225" viewBox="0 0 60 34">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${bg}"/><stop offset="100%" stop-color="${bg}88"/></linearGradient></defs>
+    <rect width="60" height="34" rx="3" fill="url(#g)"/>
+    ${icon}
+    <text x="30" y="32" text-anchor="middle" font-family="sans-serif" font-size="4" fill="${fg}" opacity="0.5">${mod.name}</text>
+  </svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 // Convert registry module to Gallery overlay format
 function moduleToOverlay(mod: AnyOverlayModule) {
   const meta = (mod as any).metadata;
+  const thumbnail = mod.thumbnail || generateThumbnailSvg(mod);
+  console.log('[OVERLAY ASSET]', mod.id, { thumbnail: thumbnail.substring(0, 80) + '...' });
   return {
     id: mod.id,
     name: mod.name,
     description: mod.description,
-    thumbnail: mod.thumbnail || "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=400&h=225&fit=crop",
+    thumbnail,
     category: mod.category,
     tags: mod.tags,
     isPremium: meta?.premium ?? false,
@@ -34,6 +66,7 @@ function moduleToOverlay(mod: AnyOverlayModule) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     previewUrl: "",
+    module: mod,
     config: mod.defaultConfig || {},
   };
 }
@@ -109,7 +142,13 @@ export function OverlayGallery() {
                       className="group relative rounded-2xl border border-white/[0.06] bg-card overflow-hidden hover:border-primary/30 hover:shadow-[0_0_30px_rgba(124,58,237,0.15)] hover:scale-[1.005] transition-all duration-300">
                       <div className="flex">
                         <div className="relative w-48 shrink-0 overflow-hidden">
-                          <img src={overlay.thumbnail} alt={overlay.name} className="w-full h-full object-cover" loading="lazy" />
+                          <img src={overlay.thumbnail} alt={overlay.name} className="w-full h-full object-cover" loading="lazy"
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              console.error('[OVERLAY ASSET FAILED]', { overlayId: overlay.id, src: target.src, currentSrc: target.currentSrc });
+                              target.style.display = 'none';
+                            }}
+                          />
                           <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <button onClick={() => setSelectedOverlay(overlay)} className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/20">
                               <Play className="w-4 h-4 text-white ml-0.5" />
@@ -181,11 +220,27 @@ export function OverlayGallery() {
           {previewOverlay ? (
             <motion.div key={previewOverlay.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
               className="relative w-[280px] h-[158px] rounded-xl border border-white/[0.08] shadow-2xl bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center overflow-hidden">
-              <div className="text-center px-4">
-                <Play className="w-8 h-8 text-primary/30 mx-auto mb-2" />
-                <p className="text-sm font-medium text-white/70">{previewOverlay.name}</p>
-                <p className="text-xs text-white/30 mt-1">Preview Window</p>
-              </div>
+              {previewOverlay.module?.renderer ? (
+                <div className="w-full h-full overflow-hidden">
+                  <Suspense fallback={
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Play className="w-8 h-8 text-primary/30 animate-pulse" />
+                    </div>
+                  }>
+                    {(() => {
+                      const Renderer = previewOverlay.module.renderer;
+                      console.log('[OVERLAY ASSET] preview renderer', previewOverlay.id, 'mode=preview');
+                      return <Renderer config={previewOverlay.config} mode="preview" />;
+                    })()}
+                  </Suspense>
+                </div>
+              ) : (
+                <div className="text-center px-4">
+                  <Play className="w-8 h-8 text-primary/30 mx-auto mb-2" />
+                  <p className="text-sm font-medium text-white/70">{previewOverlay.name}</p>
+                  <p className="text-xs text-white/30 mt-1">No renderer available</p>
+                </div>
+              )}
             </motion.div>
           ) : (
             <div className="w-[280px] h-[158px] rounded-xl border border-white/[0.08] bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center">

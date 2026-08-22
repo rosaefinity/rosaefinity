@@ -3,7 +3,7 @@
 // QRIS-based payment flow with package selection
 // =============================================
 
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -13,8 +13,6 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { toast } from '../components/Toast';
-import { api } from '../services/electron-service';
-import { useAppStore } from '../store/app-store';
 
 // ── Constants ──
 
@@ -113,6 +111,7 @@ const item = {
 // ── Main Component ──
 
 export function PaymentPage() {
+  const navigate = useNavigate();
   const [selectedPlan, setSelectedPlan] = useState<'basic' | 'pro'>('pro');
   const [paymentId] = useState(() => generatePaymentId());
   const [copiedPaymentId, setCopiedPaymentId] = useState(false);
@@ -149,23 +148,24 @@ export function PaymentPage() {
     setIsSubmitting(true);
 
     try {
-      const a = api();
-      const userId = useAppStore.getState().currentUserId;
+      const token = localStorage.getItem('rf_access_token');
+      const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
 
-      if (a && userId) {
-        // Submit payment via backend IPC
-        const result = await a.paymentSubmit(userId, { amount: 150000 });
-        if (result.success) {
-          setPaymentStatus('submitted');
-          toast('Your payment has been submitted. Your license will be activated after verification.');
-        } else {
-          toast('Payment submission failed. Please try again.');
-        }
-      } else {
-        // Fallback: simulated submission (non-Electron or no user)
-        await new Promise(resolve => setTimeout(resolve, 1200));
+      const response = await fetch(`${API_URL}/v1/payment/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ amount: 150000, paymentMethod: 'qris' }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
         setPaymentStatus('submitted');
-        toast('Your payment has been submitted. Your license will be activated after verification.');
+        toast('Your payment has been submitted. Your Pro license will be activated after admin verification.');
+      } else {
+        toast(data.error || 'Payment submission failed. Please try again.');
       }
     } catch (err) {
       console.error('[Payment] Submission error:', err);

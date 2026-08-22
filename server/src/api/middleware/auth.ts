@@ -7,7 +7,7 @@ import type { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { getConfig } from '../../config/index.js';
 import type { AuthenticatedRequest, JwtPayload } from '../../types/index.js';
-import { UnauthorizedError } from './error-handler.js';
+import { UnauthorizedError, ForbiddenError } from './error-handler.js';
 
 export function authenticate(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
@@ -40,8 +40,9 @@ export function requireRole(...roles: string[]) {
       return;
     }
 
-    if (!roles.includes(req.user.planTier) && !roles.includes((req.user as any).role)) {
-      next(new UnauthorizedError('Insufficient permissions'));
+    // Check role field only — accountType/planTier is subscription tier, not authorization
+    if (!roles.includes(req.user.role)) {
+      next(new ForbiddenError('Insufficient permissions'));
       return;
     }
 

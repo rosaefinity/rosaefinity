@@ -11,7 +11,7 @@ const router = Router();
 
 // Admin-only routes
 router.use(authenticate);
-router.use(requireRole('admin', 'enterprise'));
+router.use(requireRole('ADMIN'));
 
 router.get('/dashboard', (req, res, next) => adminController.dashboard(req, res).catch(next));
 router.get('/users', (req, res, next) => adminController.users(req, res).catch(next));

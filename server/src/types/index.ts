@@ -25,7 +25,8 @@ export interface PaginationMeta {
 export interface JwtPayload {
   sub: string;        // User ID
   email: string;
-  planTier: string;
+  planTier: string;   // Subscription tier (guest/free/pro/enterprise)
+  role: string;       // Authorization role (USER | ADMIN)
   iat: number;
   exp: number;
 }

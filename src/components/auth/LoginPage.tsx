@@ -32,7 +32,7 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
       if (state.isAuthenticated && state.currentUser) {
         // Role-based routing: admin goes to admin dashboard, user goes to app
         if (state.currentUser.accountType === 'admin') {
-          window.location.href = ADMIN_URL;
+          navigate(ADMIN_URL);
         } else {
           navigate("/");
         }
@@ -49,7 +49,7 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
       const state = useAuthStore.getState();
       if (state.isAuthenticated && state.currentUser) {
         if (state.currentUser.accountType === 'admin') {
-          window.location.href = ADMIN_URL;
+          navigate(ADMIN_URL);
         } else {
           navigate("/");
         }
@@ -194,7 +194,7 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
           <div className="mt-4 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
             <p className="text-[10px] text-white/30 text-center mb-1">Demo Account</p>
             <p className="text-[10px] text-white/20 text-center">
-              Email: <span className="text-white/40">demo@rosaefinity.app</span> | Pass: <span className="text-white/40">demo123</span>
+              Email: <span className="text-white/40">admin@rosaefinity.app</span> | Pass: <span className="text-white/40">demo123</span>
             </p>
           </div>
         </div>

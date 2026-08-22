@@ -21,7 +21,8 @@ model User {
   avatarUrl     String?
   authProvider  String    @default("email") // email | google | github | discord | microsoft | anonymous
   providerId    String?   // OAuth provider user ID
-  accountType   String    @default("free") // guest | free | pro | enterprise
+  accountType   String    @default("free") // guest | free | pro | enterprise (subscription tier)
+  role          String    @default("USER") // USER | ADMIN (authorization)
   isAnonymous   Boolean   @default(false)
   emailVerified Boolean   @default(false)
   createdAt     DateTime  @default(now())
@@ -36,6 +37,8 @@ model User {
   apiKeys       ApiKey[]
   auditLogs     AuditLog[]
   notifications Notification[]
+  payments      Payment[]      @relation("UserPayments")
+  approvedPayments Payment[]   @relation("ApprovedPayments")
 
   @@index([email])
   @@index([authProvider, providerId])
@@ -105,6 +108,7 @@ model Plan {
 
   licenses        License[]
   subscriptions   Subscription[]
+  payments        Payment[]
 }
 
 // ── Licenses ──
@@ -152,6 +156,31 @@ model Subscription {
 
   @@index([userId])
   @@index([provider, providerId])
+}
+
+// ── Payments ──
+model Payment {
+  id              String    @id @default(uuid())
+  userId          String
+  planId          String    @default("pro")
+  amount          Int       // Amount in IDR (e.g. 150000)
+  paymentMethod   String    @default("qris") // qris | bank_transfer | e_wallet
+  status          String    @default("PENDING") // PENDING | PAID | REJECTED | EXPIRED
+  paymentProofUrl String?
+  adminNotes      String?
+  approvedById    String?
+  approvedAt      DateTime?
+  expiresAt       DateTime? // Payment expires if not approved within window
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy      User?     @relation("ApprovedPayments", fields: [approvedById], references: [id], onDelete: SetNull)
+  plan            Plan      @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 // ── Sync Records ──

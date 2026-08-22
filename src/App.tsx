@@ -45,6 +45,7 @@ const StressTestPage = lazy(() => import("./pages/StressTestPage"));
 const PerformancePage = lazy(() => import("./pages/PerformancePage"));
 const PaymentPage = lazy(() => import("./pages/PaymentPage"));
 const AdminUsersPage = lazy(() => import("./pages/AdminUsersPage"));
+const AdminPaymentsPage = lazy(() => import("./pages/AdminPaymentsPage"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30000, retry: 2, refetchOnWindowFocus: false } },
@@ -123,6 +124,7 @@ function App() {
                     <Route path="/performance" element={<ErrorBoundary pageName="Performance"><PerformancePage /></ErrorBoundary>} />
                     <Route path="/payment" element={<ErrorBoundary pageName="Payment"><PaymentPage /></ErrorBoundary>} />
                     <Route path="/admin/users" element={<ErrorBoundary pageName="User Management"><RouteGuard requiredRole="admin"><AdminUsersPage /></RouteGuard></ErrorBoundary>} />
+                    <Route path="/admin/payments" element={<ErrorBoundary pageName="Payment Management"><RouteGuard requiredRole="admin"><AdminPaymentsPage /></RouteGuard></ErrorBoundary>} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Route>
                 </Routes>

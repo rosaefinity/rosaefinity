@@ -61,6 +61,7 @@ async function setupApp(app: express.Express): Promise<void> {
   const { updateRouter } = await import('./api/modules/updates/routes.js');
   const { analyticsRouter } = await import('./api/modules/analytics/routes.js');
   const { adminRouter } = await import('./api/modules/admin/routes.js');
+  const { paymentRouter } = await import('./api/modules/payment/routes.js');
   const cors = (await import('cors')).default;
   const helmet = (await import('helmet')).default;
   const compression = (await import('compression')).default;
@@ -113,6 +114,7 @@ async function setupApp(app: express.Express): Promise<void> {
   apiV1.use('/updates', updateRouter);
   apiV1.use('/analytics', analyticsRouter);
   apiV1.use('/admin', adminRouter);
+  apiV1.use('/payment', paymentRouter);
 
   // ── Mount API router ──
   console.log('[ROUTER] Mounting API router at /api/v1');
