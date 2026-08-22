@@ -41,4 +41,19 @@ export const adminController = {
     const statusCode = data.status === 'healthy' ? 200 : 503;
     res.status(statusCode).json({ success: true, data });
   },
+
+  async extendLicense(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const id = req.params.id as string;
+    const days = Number(req.body?.days) || 30;
+    const data = await adminService.extendLicense(id, days);
+    const response: ApiResponse = { success: true, data };
+    res.json(response);
+  },
+
+  async downgradeUser(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const id = req.params.id as string;
+    const data = await adminService.downgradeUser(id);
+    const response: ApiResponse = { success: true, data };
+    res.json(response);
+  },
 };

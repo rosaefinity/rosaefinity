@@ -11,9 +11,25 @@ import {
   RefreshCw, Loader2, X, Check, ChevronDown,
   AlertTriangle, UserCheck, UserX, Plus, Minus,
 } from 'lucide-react';
-import { api, safeInvoke } from '../services/electron-service';
 import { useAuthStore } from '../store/auth-store';
 import { toast } from '../components/Toast';
+
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
+
+async function adminFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('rf_access_token');
+  const res = await fetch(`${API_URL}/v1${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options?.headers,
+    },
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || `HTTP ${res.status}`);
+  return json.data as T;
+}
 
 // ── Types ──
 
@@ -90,39 +106,18 @@ export function AdminUsersPage(): JSX.Element {
   const loadUsers = useCallback(async () => {
     setIsLoading(true);
     try {
-      const a = api();
-      if (!a) {
-        toast('Backend not available');
-        setIsLoading(false);
-        return;
-      }
-      const result = await safeInvoke(a.adminSearchUsers, '');
-      if (result.success && result.data) {
-        // adminApiRequest wraps backend response: { success, data: { success, data, pagination } }
-        // safeInvoke wraps again: { success, data: <adminApiRequest result> }
-        // So result.data.data is the actual users array
-        const apiResponse = result.data as { success: boolean; data: unknown; pagination?: unknown };
-        const rawUsers = Array.isArray(apiResponse.data)
-          ? apiResponse.data
-          : Array.isArray(apiResponse)
-            ? apiResponse
-            : [];
-        // Normalize field names: backend uses username/createdAt, frontend expects name/created_at
-        const normalizedUsers: AdminUser[] = rawUsers.map((u: Record<string, unknown>) => ({
-          id: String(u.id || ''),
-          email: String(u.email || ''),
-          name: String(u.name || u.username || ''),
-          role: String(u.role || 'free'),
-          created_at: String(u.created_at || u.createdAt || ''),
-          plan: (u.plan as string | null) || null,
-          status: (u.status as string | null) || null,
-          expires_at: (u.expires_at as string | null) || null,
-        }));
-        setUsers(normalizedUsers);
-      } else {
-        setUsers([]);
-        toast('Failed to load users');
-      }
+      const rawUsers = await adminFetch<Array<Record<string, unknown>>>('/admin/users');
+      const normalizedUsers: AdminUser[] = rawUsers.map((u) => ({
+        id: String(u.id || ''),
+        email: String(u.email || ''),
+        name: String(u.displayName || u.name || u.username || ''),
+        role: String(u.role || 'USER'),
+        created_at: String(u.createdAt || u.created_at || ''),
+        plan: (u.accountType as string | null) || null,
+        status: (u.status as string | null) || null,
+        expires_at: (u.expires_at as string | null) || null,
+      }));
+      setUsers(normalizedUsers);
     } catch (err) {
       console.error('[Admin] Failed to load users:', err);
       setUsers([]);
@@ -170,18 +165,9 @@ export function AdminUsersPage(): JSX.Element {
   // ── View User Detail ──
   const handleViewUser = async (userId: string) => {
     try {
-      const a = api();
-      if (!a) return;
-      const result = await safeInvoke(a.adminUserDetail, userId);
-      if (result.success && result.data) {
-        // adminApiRequest wraps: { success, data: { success, data: {...} } }
-        const apiResponse = result.data as { success: boolean; data: unknown };
-        const detail = (typeof apiResponse === 'object' && apiResponse !== null && 'data' in apiResponse)
-          ? (apiResponse as { data: unknown }).data
-          : apiResponse;
-        setSelectedUser(detail as UserDetail);
-        setShowDetailModal(true);
-      }
+      const detail = await adminFetch<UserDetail>(`/admin/users/${userId}`);
+      setSelectedUser(detail);
+      setShowDetailModal(true);
     } catch (err) {
       console.error('[Admin] Failed to load user detail:', err);
       toast('Failed to load user details');
@@ -193,22 +179,14 @@ export function AdminUsersPage(): JSX.Element {
     if (!selectedUser) return;
     setIsProcessing(true);
     try {
-      const a = api();
-      if (!a) return;
-
-      // First ensure user exists in SQLite
-      // The license service handles this via upsert
-      const result = await safeInvoke(a.licenseV2Activate, selectedUser.user.id, {});
-      const apiResponse = result.data as Record<string, unknown> | undefined;
-      const innerResult = apiResponse?.data !== undefined ? apiResponse : apiResponse;
-      if (result.success && (innerResult?.success ?? apiResponse?.success)) {
-        toast(`Pro activated for ${selectedUser.user.email}`);
-        setShowActivateModal(false);
-        setShowDetailModal(false);
-        loadUsers();
-      } else {
-        toast(((innerResult as Record<string, unknown>)?.error as string) || 'Activation failed');
-      }
+      await adminFetch('/license/activate', {
+        method: 'POST',
+        body: JSON.stringify({ licenseKey: 'ROSAE-PRO-DEMO-DEMO-DEMO', deviceId: 'admin-activate', email: selectedUser.user.email }),
+      });
+      toast(`Pro activated for ${selectedUser.user.email}`);
+      setShowActivateModal(false);
+      setShowDetailModal(false);
+      loadUsers();
     } catch (err) {
       console.error('[Admin] Activation failed:', err);
       toast('Activation failed');
@@ -222,27 +200,15 @@ export function AdminUsersPage(): JSX.Element {
     if (!selectedUser) return;
     setIsProcessing(true);
     try {
-      const a = api();
-      if (!a) return;
-      const result = await safeInvoke(a.adminExtendLicense, selectedUser.user.id, days);
-      // Unwrap adminApiRequest response: { success, data: { success, ... } }
-      const apiResponse = result.data as Record<string, unknown> | undefined;
-      const innerResult = apiResponse?.data !== undefined ? apiResponse : apiResponse;
-      if (result.success && (innerResult?.success ?? apiResponse?.success)) {
-        toast(`Extended by ${days} days`);
-        // Refresh user detail
-        const detail = await safeInvoke(a.adminUserDetail, selectedUser.user.id);
-        if (detail.success && detail.data) {
-          const detailApi = detail.data as { success: boolean; data: unknown };
-          const detailInner = (typeof detailApi === 'object' && detailApi !== null && 'data' in detailApi)
-            ? (detailApi as { data: unknown }).data
-            : detailApi;
-          setSelectedUser(detailInner as UserDetail);
-        }
-        loadUsers();
-      } else {
-        toast(((innerResult as Record<string, unknown>)?.error as string) || 'Extension failed');
-      }
+      await adminFetch(`/admin/users/${selectedUser.user.id}/extend`, {
+        method: 'POST',
+        body: JSON.stringify({ days }),
+      });
+      toast(`Extended by ${days} days`);
+      // Refresh user detail
+      const detail = await adminFetch<UserDetail>(`/admin/users/${selectedUser.user.id}`);
+      setSelectedUser(detail);
+      loadUsers();
     } catch (err) {
       console.error('[Admin] Extension failed:', err);
       toast('Extension failed');
@@ -256,19 +222,13 @@ export function AdminUsersPage(): JSX.Element {
     if (!selectedUser) return;
     setIsProcessing(true);
     try {
-      const a = api();
-      if (!a) return;
-      const result = await safeInvoke(a.adminDowngradeUser, selectedUser.user.id);
-      const apiResponse = result.data as Record<string, unknown> | undefined;
-      const innerResult = apiResponse?.data !== undefined ? apiResponse : apiResponse;
-      if (result.success && (innerResult?.success ?? apiResponse?.success)) {
-        toast(`Pro deactivated for ${selectedUser.user.email}`);
-        setShowDeactivateModal(false);
-        setShowDetailModal(false);
-        loadUsers();
-      } else {
-        toast('Deactivation failed');
-      }
+      await adminFetch(`/admin/users/${selectedUser.user.id}/downgrade`, {
+        method: 'POST',
+      });
+      toast(`Pro deactivated for ${selectedUser.user.email}`);
+      setShowDeactivateModal(false);
+      setShowDetailModal(false);
+      loadUsers();
     } catch (err) {
       console.error('[Admin] Deactivation failed:', err);
       toast('Deactivation failed');
