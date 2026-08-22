@@ -1,0 +1,10 @@
+# Railway Nixpacks configuration — RosaeFinity
+# Builds and runs the Express backend from server/.
+# The root package.json builds the Vite frontend (Electron app);
+# this config ensures Railway deploys the API server instead.
+
+[phases.build]
+cmds = ["cd server && npm ci && npm run build"]
+
+[phases.start]
+cmd = "cd server && npm run start"
