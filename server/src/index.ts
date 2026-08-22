@@ -26,15 +26,25 @@ app.get('/health', (_req, res) => {
 
 // ── Start HTTP server immediately ──
 // /health is registered above, so it responds BEFORE full config validation.
-app.listen(health.PORT, health.HOST, () => {
+const server = app.listen(health.PORT, health.HOST, () => {
   console.log(`[STARTUP] Server listening on ${health.HOST}:${health.PORT}`);
   console.log(`[STARTUP] /health is available at http://${health.HOST}:${health.PORT}/health`);
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[STARTUP] ❌ Port ${health.PORT} is already in use. Another process is using it.`);
+    console.error('[STARTUP] Kill the other process or set a different PORT.');
+    process.exit(1);
+  }
+  console.error('[STARTUP] ❌ Server error:', err);
+  process.exit(1);
 });
 
 // ── Full Application Setup ──
 // If this fails (e.g. missing DATABASE_URL or JWT_SECRET), /health still works.
 setupApp(app).catch((err) => {
-  console.error('[STARTUP] ⚠️  Full API setup failed:', err);
+  console.error('[STARTUP] ⚠️  Full API setup failed:', err.message || err);
   console.error('[STARTUP] /health is available, but API routes are NOT loaded.');
   console.error('[STARTUP] Configure DATABASE_URL and JWT_SECRET in Railway.');
   console.error('[STARTUP] (The server stays running for health checks.)');
@@ -103,7 +113,11 @@ async function setupApp(app: express.Express): Promise<void> {
   apiV1.use('/updates', updateRouter);
   apiV1.use('/analytics', analyticsRouter);
   apiV1.use('/admin', adminRouter);
+
+  // ── Mount API router ──
+  console.log('[ROUTER] Mounting API router at /api/v1');
   app.use('/api/v1', apiV1);
+  console.log('[ROUTER] API router mounted at /api/v1');
 
   // ── 404 Handler ──
   app.use((_req, res) => {
@@ -118,7 +132,7 @@ async function setupApp(app: express.Express): Promise<void> {
   app.use(errorHandler);
 
   // ── Server already listening — log readiness ──
-  console.log(`\n🌹 RosaeFinity Server v1.0.0`);
+  console.log('\n[RosaeFinity] Server v1.0.0');
   console.log(`   Environment: ${config.NODE_ENV}`);
   console.log(`   Listening:   http://${config.HOST}:${config.PORT}`);
   console.log(`   API:         http://${config.HOST}:${config.PORT}/api/v1`);
