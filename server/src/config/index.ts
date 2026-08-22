@@ -5,13 +5,31 @@
 
 import { z } from 'zod';
 
+/**
+ * Minimal config for health checks — never throws, never exits.
+ * Uses safe defaults so /health is always reachable on Railway.
+ */
+export interface HealthConfig {
+  NODE_ENV: string;
+  PORT: number;
+  HOST: string;
+}
+
+export function getHealthConfig(): HealthConfig {
+  return {
+    NODE_ENV: process.env.NODE_ENV || 'production',
+    PORT: parseInt(process.env.PORT || '3000', 10),
+    HOST: process.env.HOST || '0.0.0.0',
+  };
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3000),
   HOST: z.string().default('0.0.0.0'),
 
-  // Database
-  DATABASE_URL: z.string().url(),
+  // Database — non-empty string (Railway Postgres URLs may not be standard http URLs)
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   // JWT
   JWT_SECRET: z.string().min(32),
@@ -50,9 +68,14 @@ export function getConfig(): Env {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
+    const errors = result.error.flatten().fieldErrors;
     console.error('❌ Invalid environment variables:');
-    console.error(result.error.flatten().fieldErrors);
-    process.exit(1);
+    console.error(errors);
+    // Throw instead of process.exit(1) so the server stays alive for /health.
+    // The caller (setupApp) catches this and logs instructions.
+    throw new Error(
+      `Missing required environment variables: ${Object.keys(errors).join(', ')}`
+    );
   }
 
   _config = result.data;

@@ -4,30 +4,66 @@
 // =============================================
 
 import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import compression from 'compression';
-import morgan from 'morgan';
-import { getConfig } from './config/index.js';
-import { requestId } from './api/middleware/request-id.js';
-import { rateLimiter } from './api/middleware/rate-limiter.js';
-import { errorHandler } from './api/middleware/error-handler.js';
-import { authRouter } from './api/modules/auth/routes.js';
-import { licenseRouter } from './api/modules/license/routes.js';
-import { deviceRouter } from './api/modules/devices/routes.js';
-import { syncRouter } from './api/modules/sync/routes.js';
-import { updateRouter } from './api/modules/updates/routes.js';
-import { analyticsRouter } from './api/modules/analytics/routes.js';
-import { adminRouter } from './api/modules/admin/routes.js';
+import { getHealthConfig, getConfig } from './config/index.js';
 
-async function main(): Promise<void> {
+// ── Health Config (no env validation, never crashes) ──
+const health = getHealthConfig();
+
+console.log('[STARTUP] RosaeFinity server starting...');
+console.log(`[STARTUP] PORT=${health.PORT}, HOST=${health.HOST}, NODE_ENV=${health.NODE_ENV}`);
+
+// ── Create app and register /health FIRST ──
+// This endpoint is reachable even if full config validation fails below.
+const app = express();
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    version: '1.0.0',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ── Start HTTP server immediately ──
+// /health is registered above, so it responds BEFORE full config validation.
+app.listen(health.PORT, health.HOST, () => {
+  console.log(`[STARTUP] Server listening on ${health.HOST}:${health.PORT}`);
+  console.log(`[STARTUP] /health is available at http://${health.HOST}:${health.PORT}/health`);
+});
+
+// ── Full Application Setup ──
+// If this fails (e.g. missing DATABASE_URL or JWT_SECRET), /health still works.
+setupApp(app).catch((err) => {
+  console.error('[STARTUP] ⚠️  Full API setup failed:', err);
+  console.error('[STARTUP] /health is available, but API routes are NOT loaded.');
+  console.error('[STARTUP] Configure DATABASE_URL and JWT_SECRET in Railway.');
+  console.error('[STARTUP] (The server stays running for health checks.)');
+});
+
+async function setupApp(app: express.Express): Promise<void> {
+  const { requestId } = await import('./api/middleware/request-id.js');
+  const { rateLimiter } = await import('./api/middleware/rate-limiter.js');
+  const { errorHandler } = await import('./api/middleware/error-handler.js');
+  const { authRouter } = await import('./api/modules/auth/routes.js');
+  const { licenseRouter } = await import('./api/modules/license/routes.js');
+  const { deviceRouter } = await import('./api/modules/devices/routes.js');
+  const { syncRouter } = await import('./api/modules/sync/routes.js');
+  const { updateRouter } = await import('./api/modules/updates/routes.js');
+  const { analyticsRouter } = await import('./api/modules/analytics/routes.js');
+  const { adminRouter } = await import('./api/modules/admin/routes.js');
+  const cors = (await import('cors')).default;
+  const helmet = (await import('helmet')).default;
+  const compression = (await import('compression')).default;
+  const morgan = (await import('morgan')).default;
+
   console.log('[STARTUP] Loading configuration...');
   const config = getConfig();
+
+  // ── Startup Logging (secrets masked) ──
   console.log(`[STARTUP] Config loaded. PORT=${config.PORT}, HOST=${config.HOST}, NODE_ENV=${config.NODE_ENV}`);
   console.log(`[STARTUP] DATABASE_URL set: ${!!config.DATABASE_URL}`);
   console.log(`[STARTUP] JWT_SECRET set: ${!!config.JWT_SECRET}`);
   console.log(`[STARTUP] CORS_ORIGINS: ${config.CORS_ORIGINS}`);
-  const app = express();
 
   // ── Security ──
   app.use(helmet({
@@ -58,16 +94,6 @@ async function main(): Promise<void> {
   // ── Rate Limiting ──
   app.use(rateLimiter);
 
-  // ── Health Check ──
-  app.get('/health', (_req, res) => {
-    res.json({
-      status: 'ok',
-      version: '1.0.0',
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
-    });
-  });
-
   // ── API Routes (v1) ──
   const apiV1 = express.Router();
   apiV1.use('/auth', authRouter);
@@ -91,19 +117,11 @@ async function main(): Promise<void> {
   // ── Error Handler ──
   app.use(errorHandler);
 
-  // ── Start Server ──
-  console.log(`[STARTUP] Starting server on ${config.HOST}:${config.PORT}...`);
-  app.listen(config.PORT, config.HOST, () => {
-    console.log(`\n🌹 RosaeFinity Server v1.0.0`);
-    console.log(`   Environment: ${config.NODE_ENV}`);
-    console.log(`   Listening:   http://${config.HOST}:${config.PORT}`);
-    console.log(`   API:         http://${config.HOST}:${config.PORT}/api/v1`);
-    console.log(`   Health:      http://${config.HOST}:${config.PORT}/health\n`);
-    console.log('[STARTUP] Server ready to accept connections');
-  });
+  // ── Server already listening — log readiness ──
+  console.log(`\n🌹 RosaeFinity Server v1.0.0`);
+  console.log(`   Environment: ${config.NODE_ENV}`);
+  console.log(`   Listening:   http://${config.HOST}:${config.PORT}`);
+  console.log(`   API:         http://${config.HOST}:${config.PORT}/api/v1`);
+  console.log(`   Health:      http://${config.HOST}:${config.PORT}/health\n`);
+  console.log('[STARTUP] Server ready to accept connections');
 }
-
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
