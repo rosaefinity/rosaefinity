@@ -82,6 +82,7 @@ export const adminController = {
   async extendLicense(req: AuthenticatedRequest, res: Response): Promise<void> {
     const id = req.params.id as string;
     const days = Number(req.body?.days) || 30;
+    console.log('[ADMIN-EXTEND] userId:', id, 'days:', days);
     const data = await adminService.extendLicense(id, days);
     const response: ApiResponse = { success: true, data };
     res.json(response);

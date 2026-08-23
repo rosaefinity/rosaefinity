@@ -30,23 +30,42 @@ export const adminService = {
     return adminRepository.getHealth();
   },
 
-  /** Extend a user's Pro license by N days */
+  /** Extend (or reactivate) a user's Pro license by N days.
+   *  Finds any PRO license — active, revoked, or expired — and extends it. */
   async extendLicense(userId: string, days: number) {
+    console.log('[ADMIN EXTEND] userId:', userId, 'durationDays:', days);
+
+    // Find any PRO license for this user (active, revoked, or expired)
     const license = await prisma.license.findFirst({
-      where: { userId, status: 'active', planId: 'pro' },
+      where: { userId, planId: 'pro' },
       orderBy: { createdAt: 'desc' },
     });
-    if (!license) throw new NotFoundError('No active Pro license found for this user');
+    console.log('[ADMIN EXTEND] found license:', license ? `id=${license.id} status=${license.status} expires=${license.expiresAt}` : 'none');
 
-    const currentExpiry = license.expiresAt || new Date();
-    const newExpiry = new Date(Math.max(currentExpiry.getTime(), Date.now()) + days * 24 * 60 * 60 * 1000);
+    if (!license) throw new NotFoundError('No Pro license found for this user. Use Activate Pro first.');
 
+    const previousStatus = license.status;
+    const previousExpiry = license.expiresAt;
+
+    // Calculate new expiry: max(existing future expiry, now) + days
+    const baseTime = license.expiresAt && license.expiresAt.getTime() > Date.now()
+      ? license.expiresAt.getTime()
+      : Date.now();
+    const newExpiry = new Date(baseTime + days * 24 * 60 * 60 * 1000);
+
+    // Update license: extend expiry and reactivate if revoked/expired
+    const newStatus = 'active';
     await prisma.license.update({
       where: { id: license.id },
-      data: { expiresAt: newExpiry },
+      data: { expiresAt: newExpiry, status: newStatus, lastValidatedAt: new Date() },
     });
 
-    return { success: true, newExpiresAt: newExpiry.toISOString() };
+    // Ensure user accountType reflects pro
+    await prisma.user.update({ where: { id: userId }, data: { accountType: 'pro' } });
+
+    console.log('[ADMIN EXTEND] done:', { previousStatus, previousExpiry: previousExpiry?.toISOString(), newExpiresAt: newExpiry.toISOString(), newStatus });
+
+    return { success: true, status: newStatus, newExpiresAt: newExpiry.toISOString() };
   },
 
   /** Activate a license for a specific user (admin action).
