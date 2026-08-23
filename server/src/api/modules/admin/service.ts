@@ -4,7 +4,7 @@
 
 import { adminRepository } from './repository.js';
 import { getPrisma } from '../../../database/client.js';
-import { NotFoundError, BadRequestError } from '../../middleware/error-handler.js';
+import { NotFoundError, BadRequestError, ConflictError } from '../../middleware/error-handler.js';
 
 const prisma = getPrisma();
 
@@ -50,7 +50,10 @@ export const adminService = {
 
   /** Activate a Pro license for a specific user (admin action) */
   async activateForUser(userId: string, licenseKey: string, deviceId: string, email?: string) {
+    console.log('[ADMIN ACTIVATE] userId:', userId, 'licenseKey:', licenseKey, 'deviceId:', deviceId, 'email:', email);
+
     const user = await prisma.user.findUnique({ where: { id: userId } });
+    console.log('[ADMIN ACTIVATE] user lookup:', user ? `found (${user.email})` : 'NOT FOUND');
     if (!user) throw new NotFoundError('User not found');
 
     // Check if user already has an active non-free license
@@ -59,6 +62,7 @@ export const adminService = {
       include: { plan: true },
       orderBy: { createdAt: 'desc' },
     });
+    console.log('[ADMIN ACTIVATE] existing license:', existingLicense ? `${existingLicense.planId}/${existingLicense.status}` : 'none');
     if (existingLicense && existingLicense.planId !== 'free') {
       throw new BadRequestError(`User already has an active ${existingLicense.planId} license. Deactivate it first.`);
     }
@@ -66,33 +70,58 @@ export const adminService = {
     // Determine plan from key prefix
     const planId = licenseKey.startsWith('ROSAE-ENT') ? 'enterprise' : 'pro';
     const plan = await prisma.plan.findUnique({ where: { id: planId } });
-    if (!plan) throw new NotFoundError('Plan not found');
+    console.log('[ADMIN ACTIVATE] plan lookup:', plan ? `${plan.id} (${plan.name})` : 'NOT FOUND');
+    if (!plan) throw new NotFoundError(`Plan '${planId}' not found in database`);
 
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year
 
-    // Check if key already exists
+    // Check if key already exists in the database
     const existingKey = await prisma.license.findUnique({ where: { licenseKey } });
+    console.log('[ADMIN ACTIVATE] existing key:', existingKey ? `id=${existingKey.id} user=${existingKey.userId}` : 'none');
+
     if (existingKey) {
       // Re-activate existing key for this user
+      console.log('[ADMIN ACTIVATE] reactivating existing key for user:', userId);
       const license = await prisma.license.update({
         where: { id: existingKey.id },
         data: { status: 'active', userId, expiresAt, email: email || existingKey.email, lastValidatedAt: new Date() },
         include: { plan: true },
       });
       await prisma.user.update({ where: { id: userId }, data: { accountType: planId } });
+      console.log('[ADMIN ACTIVATE] SUCCESS (reactivated):', license.id);
       return license;
     }
 
-    // Create new license
-    const license = await prisma.license.create({
-      data: { userId, planId, licenseKey, email, expiresAt },
-      include: { plan: true },
-    });
-
-    // Update user account type
-    await prisma.user.update({ where: { id: userId }, data: { accountType: planId } });
-
-    return license;
+    // Create new license — handle unique constraint on licenseKey
+    try {
+      console.log('[ADMIN ACTIVATE] creating new license...');
+      const license = await prisma.license.create({
+        data: { userId, planId, licenseKey, email, expiresAt },
+        include: { plan: true },
+      });
+      await prisma.user.update({ where: { id: userId }, data: { accountType: planId } });
+      console.log('[ADMIN ACTIVATE] SUCCESS (created):', license.id);
+      return license;
+    } catch (error: unknown) {
+      // Handle Prisma unique constraint violation (P2002) on licenseKey
+      const prismaError = error as { code?: string; meta?: { target?: string[] } };
+      if (prismaError.code === 'P2002' && prismaError.meta?.target?.includes('licenseKey')) {
+        console.log('[ADMIN ACTIVATE] unique constraint on licenseKey — falling back to update');
+        const existing = await prisma.license.findUnique({ where: { licenseKey } });
+        if (existing) {
+          const license = await prisma.license.update({
+            where: { id: existing.id },
+            data: { status: 'active', userId, expiresAt, email: email || existing.email, lastValidatedAt: new Date() },
+            include: { plan: true },
+          });
+          await prisma.user.update({ where: { id: userId }, data: { accountType: planId } });
+          console.log('[ADMIN ACTIVATE] SUCCESS (fallback update):', license.id);
+          return license;
+        }
+      }
+      console.error('[ADMIN ACTIVATE] FAILED:', error);
+      throw error;
+    }
   },
 
   /** Downgrade a user from Pro to Free */
