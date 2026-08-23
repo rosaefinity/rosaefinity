@@ -61,19 +61,26 @@ function PageLoader() {
 
 function App() {
   useInit();
-  const { initialize, user } = useAuthStore();
+  const { initialize, user, initialized } = useAuthStore();
   const { initialize: initLicense } = useLicenseStore();
   const { initialize: initUpdate } = useUpdateStore();
   const { initialize: initSync } = useSyncStore();
 
+  // Step 1: Initialize auth (restore session from storage)
   useEffect(() => {
     initialize();
-    if (user?.id) {
+  }, [initialize]);
+
+  // Step 2: After auth is initialized and user is available, load license/sync/update
+  // This runs AFTER initialize() sets user, avoiding the race condition
+  // where initLicense was called before session.accessToken was available.
+  useEffect(() => {
+    if (initialized && user?.id) {
       initLicense(user.id);
       initSync(user.id);
+      initUpdate();
     }
-    initUpdate();
-  }, [initialize, initLicense, initUpdate, initSync, user?.id]);
+  }, [initialized, user?.id, initLicense, initSync, initUpdate]);
 
   return (
     <QueryClientProvider client={queryClient}>
