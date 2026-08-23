@@ -96,6 +96,12 @@ export class BackendAuthProvider implements AuthProvider {
     console.log("[REGISTER] typeof API_URL =", typeof API_URL);
     console.log("[REGISTER] API_URL =", API_URL);
 
+    // Defense-in-depth: ensure email is a string
+    if (typeof email !== 'string') {
+      console.error('[AUTH] Invalid email type in signUpWithEmail', { type: typeof email, value: email });
+      return { success: false, error: 'Invalid email input' };
+    }
+
     try {
       // Derive username from displayName or email
       const username = displayName

@@ -35,7 +35,7 @@ interface AuthState {
   // Auth actions
   initialize: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  register: (input: { email: string; password: string; name?: string } | string, password?: string, displayName?: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   loginWithDiscord: () => Promise<void>;
   loginWithGitHub: () => Promise<void>;
@@ -208,7 +208,20 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      register: async (email, password, displayName) => {
+      register: async (emailOrInput, passwordArg, displayNameArg) => {
+        // Support both object { email, password, name } and positional (email, password, displayName) signatures
+        let email: string;
+        let password: string;
+        let displayName: string | undefined;
+        if (typeof emailOrInput === 'object' && emailOrInput !== null) {
+          email = emailOrInput.email;
+          password = emailOrInput.password;
+          displayName = emailOrInput.name;
+        } else {
+          email = String(emailOrInput ?? '');
+          password = String(passwordArg ?? '');
+          displayName = displayNameArg;
+        }
         console.log("[REGISTER] auth-store.register() called", { email, displayName });
         set({ isLoading: true, error: null });
         try {
