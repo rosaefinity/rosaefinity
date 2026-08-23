@@ -114,6 +114,31 @@ export const useAuthStore = create<AuthState>()(
             console.log('[AUTH-FLOW] isLoading = false (no session, cleared stale user)');
           }
 
+          // Listen for route changes (hash changes) to catch tokens that expire
+          // while the user is idle on a page. When navigating, if the access token
+          // is expired, clear auth state immediately so RouteGuard redirects to login.
+          // This is defense-in-depth — the primary handler is authFetch's 401 handler.
+          window.addEventListener('hashchange', () => {
+            const { currentUser, session } = get();
+            if (currentUser && session?.accessToken) {
+              const cached = sessionManager.getCachedSession();
+              if (!cached || !cached.accessToken) return;
+              try {
+                const parts = cached.accessToken.split('.');
+                if (parts.length !== 3) throw new Error('malformed');
+                const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                const payload = JSON.parse(decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')));
+                if (typeof payload.exp === 'number' && Date.now() >= (payload.exp * 1000) - 30_000) {
+                  console.log('[AUTH-FLOW] hashchange: token expired, clearing auth');
+                  get().logout();
+                }
+              } catch {
+                console.log('[AUTH-FLOW] hashchange: token unparseable, clearing auth');
+                get().logout();
+              }
+            }
+          });
+
           // Listen for auth state changes (post-initialization only)
           // IMPORTANT: These callbacks MUST NOT set isLoading=true.
           // isLoading is managed exclusively by initialize()/login()/register()/logout().
@@ -343,8 +368,14 @@ export const useAuthStore = create<AuthState>()(
       },
 
       restoreSession: async () => {
-        const cached = sessionManager.getCachedSession();
-        if (cached) set({ currentUser: cached.user, session: cached, user: cached.user, isAuthenticated: true });
+        // Use the validated restoreSession() which checks JWT expiry and refreshes.
+        // Do NOT use getCachedSession() here — it bypasses token validation.
+        const restored = await sessionManager.restoreSession();
+        if (restored) {
+          set({ currentUser: restored.user, session: restored, user: restored.user, isAuthenticated: true });
+        } else {
+          set({ currentUser: null, session: null, user: null, isAuthenticated: false });
+        }
       },
 
       updateProfile: async (updates) => {

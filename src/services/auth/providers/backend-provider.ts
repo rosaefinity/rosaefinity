@@ -47,7 +47,7 @@ export class BackendAuthProvider implements AuthProvider {
 
   async signInWithEmail(email: string, password: string): Promise<AuthResult> {
     try {
-      const loginUrl = `${API_URL}/auth/login`;
+      const loginUrl = `${API_URL}/v1/auth/login`;
       console.log('[AUTH] signInWithEmail URL:', loginUrl);
       const response = await fetch(loginUrl, {
         method: 'POST',
@@ -104,7 +104,7 @@ export class BackendAuthProvider implements AuthProvider {
 
       console.log("[REGISTER] username =", username);
 
-      const url = `${API_URL}/auth/register`;
+      const url = `${API_URL}/v1/auth/register`;
       const requestBody = { email, password, username };
       console.log("[REGISTER] url =", url);
       console.log("[REGISTER] body =", requestBody);
@@ -201,7 +201,7 @@ export class BackendAuthProvider implements AuthProvider {
     const refreshToken = this.getRefreshToken();
     if (refreshToken) {
       try {
-        await fetch(`${API_URL}/auth/logout`, {
+        await fetch(`${API_URL}/v1/auth/logout`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
@@ -225,7 +225,7 @@ export class BackendAuthProvider implements AuthProvider {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10_000);
 
-      const response = await fetch(`${API_URL}/auth/refresh`, {
+      const response = await fetch(`${API_URL}/v1/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken }),
@@ -248,7 +248,7 @@ export class BackendAuthProvider implements AuthProvider {
       const controller2 = new AbortController();
       const timeoutId2 = setTimeout(() => controller2.abort(), 10_000);
 
-      const userResponse = await fetch(`${API_URL}/auth/me`, {
+      const userResponse = await fetch(`${API_URL}/v1/auth/me`, {
         headers: { Authorization: `Bearer ${accessToken}` },
         signal: controller2.signal,
       });
@@ -283,7 +283,7 @@ export class BackendAuthProvider implements AuthProvider {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10_000);
 
-      const response = await fetch(`${API_URL}/auth/me`, {
+      const response = await fetch(`${API_URL}/v1/auth/me`, {
         headers: { Authorization: `Bearer ${accessToken}` },
         signal: controller.signal,
       });

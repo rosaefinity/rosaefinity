@@ -20,5 +20,6 @@ router.get('/audit', (req, res, next) => adminController.auditLogs(req, res).cat
 router.get('/health', (req, res, next) => adminController.health(req, res).catch(next));
 router.post('/users/:id/extend', (req, res, next) => adminController.extendLicense(req, res).catch(next));
 router.post('/users/:id/downgrade', (req, res, next) => adminController.downgradeUser(req, res).catch(next));
+router.post('/users/:id/activate', (req, res, next) => adminController.activateUser(req, res).catch(next));
 
 export { router as adminRouter };

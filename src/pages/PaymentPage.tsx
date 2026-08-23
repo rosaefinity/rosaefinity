@@ -12,6 +12,7 @@ import {
   Loader2, X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { authFetch, isAuthFailureError } from '../lib/auth-fetch';
 import { toast } from '../components/Toast';
 
 // ── Constants ──
@@ -148,28 +149,15 @@ export function PaymentPage() {
     setIsSubmitting(true);
 
     try {
-      const token = localStorage.getItem('rf_access_token');
-      const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
-
-      const response = await fetch(`${API_URL}/v1/payment/submit`, {
+      await authFetch('/payment/submit', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        },
         body: JSON.stringify({ amount: 150000, paymentMethod: 'qris' }),
       });
-
-      const data = await response.json();
-      if (data.success) {
-        setPaymentStatus('submitted');
-        toast('Your payment has been submitted. Your Pro license will be activated after admin verification.');
-      } else {
-        toast(data.error || 'Payment submission failed. Please try again.');
-      }
+      setPaymentStatus('submitted');
+      toast('Your payment has been submitted. Your Pro license will be activated after admin verification.');
     } catch (err) {
       console.error('[Payment] Submission error:', err);
-      toast('Payment submission failed. Please try again.');
+      if (!isAuthFailureError(err)) toast('Payment submission failed. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

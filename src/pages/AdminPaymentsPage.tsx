@@ -12,9 +12,8 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuthStore } from "../store/auth-store";
+import { authFetch, isAuthFailureError } from "../lib/auth-fetch";
 import { toast } from "../components/Toast";
-
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3000/api" : "");
 
 // ── Types ──
 
@@ -85,20 +84,14 @@ export default function AdminPaymentsPage() {
   const fetchPayments = useCallback(async () => {
     setLoading(true);
     try {
-      const token = localStorage.getItem("rf_access_token");
       const params = new URLSearchParams({ limit: "100" });
       if (filter !== "all") params.set("status", filter);
 
-      const res = await fetch(`${API_URL}/v1/payment/all?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (data.success) {
-        setPayments(data.data || []);
-      }
+      const data = await authFetch<Payment[]>(`/payment/all?${params}`);
+      setPayments(data || []);
     } catch (err) {
       console.error("[ADMIN-PAYMENTS] Fetch error:", err);
-      toast("Failed to load payments.");
+      if (!isAuthFailureError(err)) toast("Failed to load payments.");
     } finally {
       setLoading(false);
     }
@@ -110,23 +103,16 @@ export default function AdminPaymentsPage() {
   const handleApprove = async (payment: Payment) => {
     setActionLoading(true);
     try {
-      const token = localStorage.getItem("rf_access_token");
-      const res = await fetch(`${API_URL}/v1/payment/${payment.id}/approve`, {
+      await authFetch(`/payment/${payment.id}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       });
-      const data = await res.json();
-      if (data.success) {
-        toast(`Payment approved. ${payment.user.email} now has Pro.`);
-        setShowApproveModal(false);
-        setSelectedPayment(null);
-        fetchPayments();
-      } else {
-        toast(data.error || "Approval failed.");
-      }
+      toast(`Payment approved. ${payment.user.email} now has Pro.`);
+      setShowApproveModal(false);
+      setSelectedPayment(null);
+      fetchPayments();
     } catch (err) {
       console.error("[ADMIN-PAYMENTS] Approve error:", err);
-      toast("Approval failed.");
+      if (!isAuthFailureError(err)) toast("Approval failed.");
     } finally {
       setActionLoading(false);
     }
@@ -136,25 +122,18 @@ export default function AdminPaymentsPage() {
   const handleReject = async (payment: Payment) => {
     setActionLoading(true);
     try {
-      const token = localStorage.getItem("rf_access_token");
-      const res = await fetch(`${API_URL}/v1/payment/${payment.id}/reject`, {
+      await authFetch(`/payment/${payment.id}/reject`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ notes: rejectNotes || undefined }),
       });
-      const data = await res.json();
-      if (data.success) {
-        toast("Payment rejected.");
-        setShowRejectModal(false);
-        setSelectedPayment(null);
-        setRejectNotes("");
-        fetchPayments();
-      } else {
-        toast(data.error || "Rejection failed.");
-      }
+      toast("Payment rejected.");
+      setShowRejectModal(false);
+      setSelectedPayment(null);
+      setRejectNotes("");
+      fetchPayments();
     } catch (err) {
       console.error("[ADMIN-PAYMENTS] Reject error:", err);
-      toast("Rejection failed.");
+      if (!isAuthFailureError(err)) toast("Rejection failed.");
     } finally {
       setActionLoading(false);
     }

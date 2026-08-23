@@ -32,6 +32,13 @@ export const activateLicenseSchema = z.object({
   licenseKey: z.string().regex(/^ROSAE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/, 'Invalid license key format'),
   email: z.string().email().optional(),
   deviceId: z.string().min(1),
+  userId: z.string().optional(), // Admin-only: target user ID for admin-activated licenses
+});
+
+export const adminActivateSchema = z.object({
+  licenseKey: z.string().regex(/^ROSAE-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/, 'Invalid license key format'),
+  email: z.string().email().optional(),
+  deviceId: z.string().min(1),
 });
 
 export const deactivateLicenseSchema = z.object({
