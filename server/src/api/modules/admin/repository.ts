@@ -24,7 +24,12 @@ export const adminRepository = {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
-        include: { _count: { select: { devices: true, licenses: true } } },
+        include: {
+          licenses: {
+            orderBy: { createdAt: 'desc' },
+            include: { plan: true },
+          },
+        },
       }),
       prisma.user.count(),
     ]);

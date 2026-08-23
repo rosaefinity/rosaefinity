@@ -38,6 +38,43 @@ interface UserDetail {
 
 type FilterType = 'all' | 'free' | 'pro' | 'expired' | 'suspended';
 
+/**
+ * Derive a user's subscription state from their licenses array.
+ * Single source of truth — used by table, statistics, and filters.
+ */
+function deriveSubscription(licenses: Array<Record<string, unknown>> | undefined, accountType: string | null): {
+  plan: string;
+  status: string;
+  expires_at: string | null;
+} {
+  if (!licenses || licenses.length === 0) {
+    return { plan: accountType || 'free', status: 'active', expires_at: null };
+  }
+  const now = Date.now();
+  // Find the most recent active license (not expired)
+  const active = licenses.find(l =>
+    (l.status === 'active' || l.status === 'grace') &&
+    l.expiresAt && new Date(l.expiresAt as string).getTime() > now
+  );
+  if (active) {
+    return {
+      plan: String(active.planId || active.plan?.id || accountType || 'free'),
+      status: 'active',
+      expires_at: active.expiresAt ? String(active.expiresAt) : null,
+    };
+  }
+  // Find any non-revoked license (expired)
+  const any = licenses.find(l => l.status !== 'revoked');
+  if (any) {
+    return {
+      plan: String(any.planId || any.plan?.id || accountType || 'free'),
+      status: 'expired',
+      expires_at: any.expiresAt ? String(any.expiresAt) : null,
+    };
+  }
+  return { plan: accountType || 'free', status: 'active', expires_at: null };
+}
+
 // ── Helpers ──
 
 function formatDate(iso: string | null): string {
@@ -170,16 +207,27 @@ export function AdminUsersPage(): JSX.Element {
     setIsLoading(true);
     try {
       const rawUsers = await authFetch<Array<Record<string, unknown>>>('/admin/users');
-      const normalizedUsers: AdminUser[] = rawUsers.map((u) => ({
-        id: String(u.id || ''),
-        email: String(u.email || ''),
-        name: String(u.displayName || u.name || u.username || ''),
-        role: String(u.role || 'USER'),
-        created_at: String(u.createdAt || u.created_at || ''),
-        plan: (u.accountType as string | null) || null,
-        status: (u.status as string | null) || null,
-        expires_at: (u.expires_at as string | null) || null,
-      }));
+      const normalizedUsers: AdminUser[] = rawUsers.map((u) => {
+        const licenses = Array.isArray(u.licenses) ? u.licenses as Array<Record<string, unknown>> : [];
+        const sub = deriveSubscription(licenses, (u.accountType as string | null));
+        console.log('[Admin] User:', u.email, {
+          accountType: u.accountType,
+          licenseCount: licenses.length,
+          derivedPlan: sub.plan,
+          derivedStatus: sub.status,
+          expires: sub.expires_at,
+        });
+        return {
+          id: String(u.id || ''),
+          email: String(u.email || ''),
+          name: String(u.displayName || u.name || u.username || ''),
+          role: String(u.role || 'USER'),
+          created_at: String(u.createdAt || u.created_at || ''),
+          plan: sub.plan,
+          status: sub.status,
+          expires_at: sub.expires_at,
+        };
+      });
       setUsers(normalizedUsers);
     } catch (err) {
       console.error('[Admin] Failed to load users:', err);
