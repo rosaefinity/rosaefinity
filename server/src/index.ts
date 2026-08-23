@@ -30,8 +30,27 @@ app.get('/health/deployment', (_req, res) => {
   res.json({
     commit: '3ce52a2',
     adminActivationRoute: true,
+    diagnosticRoute: true,
     buildTimestamp: new Date().toISOString(),
     uptime: process.uptime(),
+  });
+});
+
+// ── Admin route diagnostic (public, no auth) ──
+app.get('/health/admin-routes', (_req, res) => {
+  res.json({
+    ok: true,
+    routes: [
+      'GET  /api/v1/admin/dashboard',
+      'GET  /api/v1/admin/users',
+      'GET  /api/v1/admin/users/:id',
+      'POST /api/v1/admin/users/:id/extend',
+      'POST /api/v1/admin/users/:id/downgrade',
+      'POST /api/v1/admin/users/:id/activate',
+      'GET  /api/v1/admin/audit',
+      'GET  /api/v1/admin/health',
+    ],
+    commit: '3ce52a2',
   });
 });
 

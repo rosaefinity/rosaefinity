@@ -24,8 +24,5 @@ router.post('/users/:id/activate', (req, res, next) => {
   console.log('[ADMIN ACTIVATE ROUTE HIT]', { method: req.method, url: req.originalUrl, params: req.params });
   adminController.activateUser(req, res).catch(next);
 });
-router.get('/__routes_test_activate', (_req, res) => {
-  res.json({ ok: true, router: 'admin', commit: '3ce52a2', route: 'POST /users/:id/activate exists' });
-});
 
 export { router as adminRouter };
