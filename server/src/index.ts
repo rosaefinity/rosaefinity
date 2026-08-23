@@ -11,7 +11,7 @@ const health = getHealthConfig();
 
 console.log('[STARTUP] RosaeFinity server starting...');
 console.log(`[STARTUP] PORT=${health.PORT}, HOST=${health.HOST}, NODE_ENV=${health.NODE_ENV}`);
-console.log('[DEPLOY] Build commit: 3ce52a2 (admin-activation-route)');
+console.log('[DEPLOY] Build timestamp:', new Date().toISOString());
 
 // ── Create app and register /health FIRST ──
 // This endpoint is reachable even if full config validation fails below.
@@ -26,12 +26,12 @@ app.get('/health', (_req, res) => {
 });
 
 // ── Deployment fingerprint (public, no auth) ──
+const BUILD_TIME = new Date().toISOString();
 app.get('/health/deployment', (_req, res) => {
   res.json({
-    commit: '3ce52a2',
+    buildTime: BUILD_TIME,
     adminActivationRoute: true,
     diagnosticRoute: true,
-    buildTimestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
 });
@@ -50,7 +50,7 @@ app.get('/health/admin-routes', (_req, res) => {
       'GET  /api/v1/admin/audit',
       'GET  /api/v1/admin/health',
     ],
-    commit: '3ce52a2',
+    buildTime: BUILD_TIME,
   });
 });
 

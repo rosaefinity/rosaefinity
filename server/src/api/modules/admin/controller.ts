@@ -97,8 +97,8 @@ export const adminController = {
   async activateUser(req: AuthenticatedRequest, res: Response): Promise<void> {
     const id = req.params.id as string;
     const body = adminActivateSchema.parse(req.body);
-    console.log('[ADMIN-ACTIVATE] userId:', id, 'licenseKey:', body.licenseKey, 'deviceId:', body.deviceId);
-    const data = await adminService.activateForUser(id, body.licenseKey, body.deviceId, body.email);
+    console.log('[ADMIN-ACTIVATE] userId:', id, 'plan:', body.plan, 'durationDays:', body.durationDays);
+    const data = await adminService.activateForUser(id, body.plan, body.durationDays);
     const response: ApiResponse = { success: true, data };
     res.json(response);
   },

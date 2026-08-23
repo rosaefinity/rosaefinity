@@ -259,9 +259,8 @@ export function AdminUsersPage(): JSX.Element {
       await authFetch(`/admin/users/${selectedUser.user.id}/activate`, {
         method: 'POST',
         body: JSON.stringify({
-          licenseKey: 'ROSAE-PRO-DEMO-DEMO-DEMO',
-          deviceId: `admin-${selectedUser.user.id}`,
-          email: selectedUser.user.email,
+          plan: 'pro',
+          durationDays: 365,
         }),
       });
       toast(`Pro activated for ${selectedUser.user.email}`);
@@ -274,7 +273,6 @@ export function AdminUsersPage(): JSX.Element {
     } catch (err: any) {
       console.error('[Admin] Activation failed:', err);
       if (!isAuthFailureError(err)) {
-        // Show the actual backend error message if available
         const msg = err?.message || 'Activation failed';
         toast(msg);
       }
