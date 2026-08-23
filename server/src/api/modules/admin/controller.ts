@@ -96,7 +96,16 @@ export const adminController = {
 
   async activateUser(req: AuthenticatedRequest, res: Response): Promise<void> {
     const id = req.params.id as string;
-    const body = adminActivateSchema.parse(req.body);
+    let body;
+    try {
+      body = adminActivateSchema.parse(req.body);
+    } catch (err: unknown) {
+      const zodErr = err as { issues?: Array<{ message: string; path: (string | number)[] }> };
+      const msg = zodErr.issues?.map(i => `${i.path.join('.')}: ${i.message}`).join(', ') || 'Invalid request body';
+      console.error('[ADMIN-ACTIVATE] VALIDATION ERROR:', msg, 'body:', JSON.stringify(req.body));
+      res.status(400).json({ success: false, error: msg, code: 'VALIDATION_ERROR' });
+      return;
+    }
     console.log('[ADMIN-ACTIVATE] userId:', id, 'plan:', body.plan, 'durationDays:', body.durationDays);
     const data = await adminService.activateForUser(id, body.plan, body.durationDays);
     const response: ApiResponse = { success: true, data };

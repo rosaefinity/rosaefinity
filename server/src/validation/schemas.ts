@@ -35,9 +35,13 @@ export const activateLicenseSchema = z.object({
   userId: z.string().optional(), // Admin-only: target user ID for admin-activated licenses
 });
 
+/** Admin activation — accepts both old {licenseKey,deviceId,email} and new {plan,durationDays} payloads */
 export const adminActivateSchema = z.object({
   plan: z.enum(['pro', 'enterprise']).default('pro'),
   durationDays: z.number().int().min(1).max(3650).default(365),
+  licenseKey: z.string().optional(),  // legacy field, ignored when plan is provided
+  deviceId: z.string().optional(),   // legacy field, ignored
+  email: z.string().optional(),      // legacy field, ignored
 });
 
 export const deactivateLicenseSchema = z.object({

@@ -12,6 +12,7 @@ const health = getHealthConfig();
 console.log('[STARTUP] RosaeFinity server starting...');
 console.log(`[STARTUP] PORT=${health.PORT}, HOST=${health.HOST}, NODE_ENV=${health.NODE_ENV}`);
 console.log('[DEPLOY] Build timestamp:', new Date().toISOString());
+const DEPLOYMENT_VERSION = `v-${Date.now()}`;
 
 // ── Create app and register /health FIRST ──
 // This endpoint is reachable even if full config validation fails below.
@@ -29,9 +30,10 @@ app.get('/health', (_req, res) => {
 const BUILD_TIME = new Date().toISOString();
 app.get('/health/deployment', (_req, res) => {
   res.json({
+    version: DEPLOYMENT_VERSION,
     buildTime: BUILD_TIME,
     adminActivationRoute: true,
-    diagnosticRoute: true,
+    schemaVersion: 'plan+durationDays',
     uptime: process.uptime(),
   });
 });
@@ -50,7 +52,7 @@ app.get('/health/admin-routes', (_req, res) => {
       'GET  /api/v1/admin/audit',
       'GET  /api/v1/admin/health',
     ],
-    buildTime: BUILD_TIME,
+    version: DEPLOYMENT_VERSION,
   });
 });
 
