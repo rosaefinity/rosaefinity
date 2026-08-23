@@ -20,6 +20,12 @@ router.get('/audit', (req, res, next) => adminController.auditLogs(req, res).cat
 router.get('/health', (req, res, next) => adminController.health(req, res).catch(next));
 router.post('/users/:id/extend', (req, res, next) => adminController.extendLicense(req, res).catch(next));
 router.post('/users/:id/downgrade', (req, res, next) => adminController.downgradeUser(req, res).catch(next));
-router.post('/users/:id/activate', (req, res, next) => adminController.activateUser(req, res).catch(next));
+router.post('/users/:id/activate', (req, res, next) => {
+  console.log('[ADMIN ACTIVATE ROUTE HIT]', { method: req.method, url: req.originalUrl, params: req.params });
+  adminController.activateUser(req, res).catch(next);
+});
+router.get('/__routes_test_activate', (_req, res) => {
+  res.json({ ok: true, router: 'admin', commit: '3ce52a2', route: 'POST /users/:id/activate exists' });
+});
 
 export { router as adminRouter };
