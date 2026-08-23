@@ -66,6 +66,13 @@ export const authController = {
     res.json(response);
   },
 
+  async subscription(req: AuthenticatedRequest, res: Response): Promise<void> {
+    if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
+    const sub = await authService.getSubscription(req.user.sub);
+    const response: ApiResponse = { success: true, data: sub };
+    res.json(response);
+  },
+
   async sessions(req: AuthenticatedRequest, res: Response): Promise<void> {
     if (!req.user) { res.status(401).json({ success: false, error: 'Unauthorized' }); return; }
     const sessions = await authService.getUserSessions(req.user.sub);

@@ -155,7 +155,8 @@ export function ActionsPage() {
   // Filter
   const filteredActions = actions.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()));
   const maxActions = features?.maxActions ?? 5;
-  const canCreate = plan === 'pro' || actions.length < maxActions;
+  const isUnlimited = maxActions === null || plan === 'pro';
+  const canCreate = isUnlimited || actions.length < maxActions;
 
   // Upgrade dialog state
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
@@ -402,7 +403,7 @@ export function ActionsPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-white/40">
-                {actions.length} / {plan === 'pro' ? "∞" : maxActions} actions
+                {actions.length} / {isUnlimited ? "∞" : maxActions} actions
               </span>
             <Button onClick={openCreateAction} disabled={!canCreate} className="gap-2">
               <Plus className="w-4 h-4" /> Create New Action

@@ -186,6 +186,53 @@ export const authService = {
     return safeUser;
   },
 
+  /** Get the user's current subscription/entitlements from their licenses */
+  async getSubscription(userId: string) {
+    const prisma = (await import('../../../database/client.js')).getPrisma();
+
+    // Find the most recent active (or grace) PRO license
+    const license = await prisma.license.findFirst({
+      where: { userId, planId: 'pro', status: { in: ['active', 'grace'] } },
+      include: { plan: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const now = Date.now();
+    const isPro = license != null && (!license.expiresAt || license.expiresAt.getTime() > now);
+
+    const plan = isPro ? 'pro' : 'free';
+    const status = isPro ? 'active' : 'free';
+    const features = isPro && license?.plan
+      ? {
+          maxActions: null as number | null, // null = unlimited
+          maxScenes: license.plan.maxScreens || 10,
+          maxOverlayPresets: license.plan.maxOverlays || 50,
+          maxDevices: license.plan.maxDevices || 5,
+          actionsUnlimited: true,
+          multiScreen: true,
+          premiumOverlay: true,
+          cloudBackup: true,
+        }
+      : {
+          maxActions: 5,
+          maxScenes: 1,
+          maxOverlayPresets: 10,
+          maxDevices: 1,
+          actionsUnlimited: false,
+          multiScreen: false,
+          premiumOverlay: false,
+          cloudBackup: false,
+        };
+
+    return {
+      plan,
+      status,
+      features,
+      expiresAt: license?.expiresAt?.getTime() ?? null,
+      isExpired: isPro ? false : !!(license?.expiresAt && license.expiresAt.getTime() < now),
+    };
+  },
+
   async getUserSessions(userId: string) {
     return authRepository.getUserSessions(userId);
   },

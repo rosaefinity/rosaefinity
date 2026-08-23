@@ -21,6 +21,7 @@ router.post('/refresh', (req, res, next) => authController.refresh(req, res).cat
 router.post('/logout', authenticate, (req, res, next) => authController.logout(req, res).catch(next));
 router.post('/logout-all', authenticate, (req, res, next) => authController.logoutAll(req, res).catch(next));
 router.get('/me', authenticate, (req, res, next) => authController.me(req, res).catch(next));
+router.get('/subscription', authenticate, (req, res, next) => authController.subscription(req, res).catch(next));
 router.get('/sessions', authenticate, (req, res, next) => authController.sessions(req, res).catch(next));
 
 export { router as authRouter };
