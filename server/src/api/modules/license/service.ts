@@ -42,7 +42,15 @@ export const licenseService = {
     }
 
     // Create or update license
-    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+    console.log('[LICENSE] Activating', JSON.stringify({
+      userId,
+      planId,
+      licenseKey: licenseKey.substring(0, 10) + '...',
+      expiresAt: expiresAt.toISOString(),
+      timestamp: new Date().toISOString(),
+    }));
 
     if (existingKey) {
       // Re-activate existing key

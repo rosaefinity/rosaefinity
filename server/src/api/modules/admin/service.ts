@@ -9,6 +9,40 @@ import { generateLicenseKey } from '../../../utils/helpers.js';
 
 const prisma = getPrisma();
 
+/**
+ * Find the canonical Pro license for a user.
+ *
+ * CRITICAL BUSINESS RULE:
+ * - ONLY active/grace licenses with FUTURE expiresAt can be renewed
+ * - Revoked/expired licenses ALWAYS reactivate from NOW, never from old expiresAt
+ * - Historical expiresAt values on revoked licenses MUST NOT influence reactivation
+ */
+async function getCanonicalProLicense(userId: string) {
+  const now = new Date();
+
+  const allProLicenses = await prisma.license.findMany({
+    where: { userId, planId: 'pro' },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (allProLicenses.length === 0) return null;
+
+  // ONLY active/grace with FUTURE expiry can act as a renewal source
+  const currentActiveEntitlement = allProLicenses.find(l =>
+    (l.status === 'active' || l.status === 'grace') &&
+    l.expiresAt !== null &&
+    l.expiresAt.getTime() > now.getTime()
+  );
+
+  if (currentActiveEntitlement) {
+    return currentActiveEntitlement;
+  }
+
+  // No current active entitlement - return most recent for reactivation
+  // BUT: its old expiresAt MUST NOT be used as base time
+  return allProLicenses[0];
+}
+
 export const adminService = {
   async getDashboard() {
     return adminRepository.getDashboardStats();
@@ -31,41 +65,120 @@ export const adminService = {
   },
 
   /** Extend (or reactivate) a user's Pro license by N days.
-   *  Finds any PRO license — active, revoked, or expired — and extends it. */
+   *
+   * CRITICAL BUSINESS RULES:
+   *
+   * CASE A - REACTIVATION (revoked/expired/no active entitlement):
+   *   baseTime = NOW (server time)
+   *   NEVER use old/historical expiresAt
+   *
+   * CASE B - RENEWAL (active/grace with future expiry):
+   *   baseTime = existing expiresAt
+   *   Preserves normal renewal behavior
+   */
   async extendLicense(userId: string, days: number) {
-    console.log('[ADMIN EXTEND] userId:', userId, 'durationDays:', days);
+    const now = new Date();
 
-    // Find any PRO license for this user (active, revoked, or expired)
-    const license = await prisma.license.findFirst({
+    // Get all Pro licenses
+    const allProLicenses = await prisma.license.findMany({
       where: { userId, planId: 'pro' },
       orderBy: { createdAt: 'desc' },
     });
-    console.log('[ADMIN EXTEND] found license:', license ? `id=${license.id} status=${license.status} expires=${license.expiresAt}` : 'none');
 
-    if (!license) throw new NotFoundError('No Pro license found for this user. Use Activate Pro first.');
+    console.log('[EXTEND] User:', userId);
+    console.log('[EXTEND] Current time:', now.toISOString());
+    console.log('[EXTEND] Days to add:', days);
+    console.log('[EXTEND] Pro licenses found:', allProLicenses.length);
 
-    const previousStatus = license.status;
-    const previousExpiry = license.expiresAt;
-
-    // Calculate new expiry: max(existing future expiry, now) + days
-    const baseTime = license.expiresAt && license.expiresAt.getTime() > Date.now()
-      ? license.expiresAt.getTime()
-      : Date.now();
-    const newExpiry = new Date(baseTime + days * 24 * 60 * 60 * 1000);
-
-    // Update license: extend expiry and reactivate if revoked/expired
-    const newStatus = 'active';
-    await prisma.license.update({
-      where: { id: license.id },
-      data: { expiresAt: newExpiry, status: newStatus, lastValidatedAt: new Date() },
+    allProLicenses.forEach((lic, idx) => {
+      console.log(`[EXTEND] License[${idx}]: id=${lic.id} status=${lic.status} expiresAt=${lic.expiresAt?.toISOString() ?? 'null'}`);
     });
 
-    // Ensure user accountType reflects pro
-    await prisma.user.update({ where: { id: userId }, data: { accountType: 'pro' } });
+    if (allProLicenses.length === 0) {
+      throw new NotFoundError('No Pro license found for this user. Use Activate Pro first.');
+    }
 
-    console.log('[ADMIN EXTEND] done:', { previousStatus, previousExpiry: previousExpiry?.toISOString(), newExpiresAt: newExpiry.toISOString(), newStatus });
+    // Determine if there is a CURRENT ACTIVE ENTITLEMENT
+    // ONLY active/grace with FUTURE expiry qualifies
+    const currentActiveEntitlement = allProLicenses.find(l =>
+      (l.status === 'active' || l.status === 'grace') &&
+      l.expiresAt !== null &&
+      l.expiresAt.getTime() > now.getTime()
+    );
 
-    return { success: true, status: newStatus, newExpiresAt: newExpiry.toISOString() };
+    let license: typeof allProLicenses[0];
+    let baseTime: Date;
+    let isReactivation: boolean;
+
+    if (currentActiveEntitlement) {
+      // CASE B: RENEWAL - extend from existing expiry
+      license = currentActiveEntitlement;
+      baseTime = license.expiresAt!;
+      isReactivation = false;
+
+      console.log('[EXTEND] CASE B: RENEWAL from existing active entitlement');
+      console.log('[EXTEND] License:', license.id);
+      console.log('[EXTEND] Status:', license.status);
+      console.log('[EXTEND] Current expiry:', license.expiresAt!.toISOString());
+      console.log('[EXTEND] Base time: EXISTING EXPIRY');
+    } else {
+      // CASE A: REACTIVATION - start from NOW
+      license = allProLicenses[0]; // Most recent Pro license
+      baseTime = now;
+      isReactivation = true;
+
+      console.log('[EXTEND] CASE A: REACTIVATION (no active entitlement)');
+      console.log('[EXTEND] License:', license.id);
+      console.log('[EXTEND] Status:', license.status);
+      console.log('[EXTEND] Old expiresAt:', license.expiresAt?.toISOString() ?? 'null');
+      console.log('[EXTEND] Base time: NOW (IGNORING OLD EXPIRY)');
+    }
+
+    // Calculate new expiry
+    const newExpiresAt = new Date(baseTime.getTime() + days * 24 * 60 * 60 * 1000);
+
+    console.log('[EXTEND] Calculation:');
+    console.log('[EXTEND]   baseTime:', baseTime.toISOString());
+    console.log('[EXTEND]   days:', days);
+    console.log('[EXTEND]   newExpiresAt:', newExpiresAt.toISOString());
+
+    // SAFETY CHECK: For reactivation, verify baseTime is actually NOW
+    if (isReactivation) {
+      const timeDiffMs = Math.abs(baseTime.getTime() - now.getTime());
+      if (timeDiffMs > 1000) {
+        console.error('[EXTEND] SAFETY VIOLATION: Reactivation baseTime is not NOW!');
+        console.error('[EXTEND]   baseTime:', baseTime.toISOString());
+        console.error('[EXTEND]   now:', now.toISOString());
+        console.error('[EXTEND]   diff (ms):', timeDiffMs);
+        throw new Error('Internal error: Reactivation must use current time as base');
+      }
+    }
+
+    // Update the license
+    const updated = await prisma.license.update({
+      where: { id: license.id },
+      data: {
+        status: 'active',
+        expiresAt: newExpiresAt,
+        lastValidatedAt: now,
+      },
+    });
+
+    console.log('[EXTEND] Updated license:', updated.id);
+    console.log('[EXTEND] New status:', updated.status);
+    console.log('[EXTEND] New expiresAt:', updated.expiresAt?.toISOString());
+
+    // Update user account type
+    await prisma.user.update({
+      where: { id: userId },
+      data: { accountType: 'pro' },
+    });
+
+    return {
+      success: true,
+      status: 'active',
+      newExpiresAt: newExpiresAt.toISOString(),
+    };
   },
 
   /** Activate a license for a specific user (admin action).
@@ -156,16 +269,44 @@ export const adminService = {
     }
   },
 
-  /** Downgrade a user from Pro to Free */
+  /** Downgrade a user from Pro to Free (Deactivate)
+   *
+   * CRITICAL: Revokes ALL active/grace Pro licenses and clears their expiresAt
+   * This ensures no historical expiresAt can be used for future reactivation
+   */
   async downgradeUser(userId: string) {
+    console.log('[DEACTIVATE] ========================================');
+    console.log('[DEACTIVATE] User:', userId);
+
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundError('User not found');
 
-    // Deactivate active Pro licenses
-    await prisma.license.updateMany({
-      where: { userId, status: 'active', planId: 'pro' },
-      data: { status: 'revoked' },
+    // Log ALL Pro licenses BEFORE deactivation
+    const allProBefore = await prisma.license.findMany({
+      where: { userId, planId: 'pro' },
+      orderBy: { createdAt: 'desc' },
     });
+    console.log('[DEACTIVATE] Licenses BEFORE:');
+    allProBefore.forEach((l, idx) => {
+      console.log(`[DEACTIVATE]   [${idx}] id=${l.id} status=${l.status} expiresAt=${l.expiresAt?.toISOString() ?? 'null'}`);
+    });
+
+    // CRITICAL: Revoke ALL active/grace Pro licenses AND clear expiresAt
+    // This is the key fix - we must clear expiresAt on revoked licenses
+    // so they can never be used as a base for reactivation
+    const revokeResult = await prisma.license.updateMany({
+      where: {
+        userId,
+        planId: 'pro',
+        status: { in: ['active', 'grace'] }
+      },
+      data: {
+        status: 'revoked',
+        expiresAt: null  // MUST be null to prevent historical date leakage
+      },
+    });
+
+    console.log('[DEACTIVATE] Revoked:', revokeResult.count, 'active/grace Pro license(s)');
 
     // Cancel active Pro subscriptions
     await prisma.subscription.updateMany({
@@ -178,6 +319,26 @@ export const adminService = {
       where: { id: userId },
       data: { accountType: 'free' },
     });
+
+    // Log ALL Pro licenses AFTER deactivation
+    const allProAfter = await prisma.license.findMany({
+      where: { userId, planId: 'pro' },
+      orderBy: { createdAt: 'desc' },
+    });
+    console.log('[DEACTIVATE] Licenses AFTER:');
+    allProAfter.forEach((l, idx) => {
+      console.log(`[DEACTIVATE]   [${idx}] id=${l.id} status=${l.status} expiresAt=${l.expiresAt?.toISOString() ?? 'null'}`);
+    });
+
+    // Verify no active/grace Pro licenses remain
+    const remainingActive = allProAfter.filter(l => l.status === 'active' || l.status === 'grace');
+    if (remainingActive.length > 0) {
+      console.error('[DEACTIVATE] ERROR: Active/grace Pro licenses still exist!', remainingActive.map(l => l.id));
+    } else {
+      console.log('[DEACTIVATE] VERIFIED: No active/grace Pro licenses remain ✓');
+    }
+
+    console.log('[DEACTIVATE] ========================================');
 
     return { success: true };
   },

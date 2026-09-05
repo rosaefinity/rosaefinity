@@ -94,6 +94,7 @@ async function setupApp(app: express.Express): Promise<void> {
   const { analyticsRouter } = await import('./api/modules/analytics/routes.js');
   const { adminRouter } = await import('./api/modules/admin/routes.js');
   const { paymentRouter } = await import('./api/modules/payment/routes.js');
+  const { overlayRouter } = await import('./api/modules/overlay/routes.js');
   const cors = (await import('cors')).default;
   const helmet = (await import('helmet')).default;
   const compression = (await import('compression')).default;
@@ -153,6 +154,10 @@ async function setupApp(app: express.Express): Promise<void> {
   app.use('/api/v1', apiV1);
   console.log('[ROUTER] API router mounted at /api/v1');
   console.log('[ROUTER] Admin routes: /dashboard, /users, /users/:id, /users/:id/extend, /users/:id/downgrade, /users/:id/activate, /audit, /health');
+
+  // ── Overlay routes (production HTTPS browser source) ──
+  console.log('[ROUTER] Mounting overlay router at /api');
+  app.use('/api', overlayRouter);
 
   // ── 404 Handler ──
   app.use((_req, res) => {

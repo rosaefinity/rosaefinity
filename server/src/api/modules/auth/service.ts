@@ -25,6 +25,15 @@ export const authService = {
       authProvider: 'email',
     });
 
+    console.log('[AUTH] Creating new user', JSON.stringify({
+      userId: user.id,
+      email: user.email,
+      accountType: user.accountType,
+      defaultPlan: 'FREE',
+      hasLicense: false,
+      expiresAt: null,
+    }));
+
     const tokens = generateTokens({
       sub: user.id,
       email: user.email || '',
@@ -199,6 +208,17 @@ export const authService = {
 
     const now = Date.now();
     const isPro = license != null && (!license.expiresAt || license.expiresAt.getTime() > now);
+
+    console.log('[ENTITLEMENT] Resolved', JSON.stringify({
+      userId,
+      hasLicense: !!license,
+      licenseStatus: license?.status ?? 'none',
+      licensePlan: license?.planId ?? 'none',
+      expiresAt: license?.expiresAt?.toISOString() ?? 'null',
+      isPro,
+      plan: isPro ? 'pro' : 'free',
+      timestamp: new Date().toISOString(),
+    }));
 
     const plan = isPro ? 'pro' : 'free';
     const status = isPro ? 'active' : 'free';

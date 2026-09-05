@@ -117,7 +117,7 @@ model License {
   userId          String
   planId          String
   licenseKey      String?  @unique
-  status          String   @default("active") // active | expired | revoked | grace
+  status          String   @default("inactive") // active | expired | revoked | grace | inactive
   activatedAt     DateTime @default(now())
   expiresAt       DateTime?
   trialStartedAt  DateTime?
@@ -142,7 +142,7 @@ model Subscription {
   id              String   @id @default(uuid())
   userId          String
   planId          String
-  status          String   @default("active") // active | cancelled | expired | past_due
+  status          String   @default("inactive") // active | cancelled | expired | past_due | inactive
   provider        String   // stripe | paypal | lemon_squeezy | mock
   providerId      String?  // External subscription ID
   currentPeriodStart DateTime?
@@ -162,7 +162,7 @@ model Subscription {
 model Payment {
   id              String    @id @default(uuid())
   userId          String
-  planId          String    @default("pro")
+  planId          String    @default("free")
   amount          Int       // Amount in IDR (e.g. 150000)
   paymentMethod   String    @default("qris") // qris | bank_transfer | e_wallet
   status          String    @default("PENDING") // PENDING | PAID | REJECTED | EXPIRED

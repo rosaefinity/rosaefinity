@@ -113,7 +113,7 @@ model License {
   userId          String
   planId          String
   licenseKey      String?  @unique
-  status          String   @default("active") // active | expired | revoked | grace
+  status          String   @default("inactive") // active | expired | revoked | grace | inactive
   activatedAt     DateTime @default(now())
   expiresAt       DateTime?
   trialStartedAt  DateTime?

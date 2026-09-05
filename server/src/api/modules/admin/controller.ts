@@ -29,8 +29,34 @@ export const adminController = {
       res.status(404).json({ success: false, error: 'User not found', code: 'NOT_FOUND' });
       return;
     }
-    // Reshape to match frontend UserDetail type
-    const activeLicense = data.licenses?.find((l: { status: string }) => l.status === 'active') ?? data.licenses?.[0] ?? null;
+
+    // Log ALL licenses for diagnostic tracing
+    console.log('[ADMIN USER DETAIL] ALL licenses for user:', JSON.stringify(
+      (data.licenses || []).map((l: any) => ({
+        id: l.id, planId: l.planId, status: l.status,
+        expiresAt: l.expiresAt?.toISOString(), createdAt: l.createdAt?.toISOString(),
+      }))
+    ));
+
+    // Select the canonical license using the same logic as downgradeUser/extendLicense
+    // Priority: active/grace with future expiry > active/grace > most recent revoked/expired > null
+    const now = new Date();
+    const activeLicense =
+      // Most recent active/grace with future expiry
+      data.licenses?.find((l: any) =>
+        (l.status === 'active' || l.status === 'grace') &&
+        l.expiresAt && new Date(l.expiresAt).getTime() > now.getTime()
+      ) ??
+      // Most recent active/grace (grace period, expired but still valid)
+      data.licenses?.find((l: any) => l.status === 'active' || l.status === 'grace') ??
+      // Most recent revoked/expired (for reactivation info)
+      data.licenses?.[0] ??
+      null;
+
+    console.log('[ADMIN USER DETAIL] selected license:', activeLicense ? {
+      id: activeLicense.id, status: activeLicense.status,
+      expiresAt: activeLicense.expiresAt?.toISOString(),
+    } : 'none');
     const response: ApiResponse = {
       success: true,
       data: {
@@ -80,11 +106,35 @@ export const adminController = {
   },
 
   async extendLicense(req: AuthenticatedRequest, res: Response): Promise<void> {
+    console.log('========== LICENSE RUNTIME MARKER 2026-09-03 ==========');
+    console.log('EXECUTING FILE: server/src/api/modules/admin/controller.ts');
+    console.log('PROCESS PID:', process.pid);
+    console.log('CWD:', process.cwd());
+    console.log('REQUEST:', {
+      method: req.method,
+      url: req.originalUrl,
+      params: req.params,
+      body: req.body,
+    });
+    console.log('=======================================================');
+
     const id = req.params.id as string;
     const days = Number(req.body?.days) || 30;
-    console.log('[ADMIN-EXTEND] userId:', id, 'days:', days);
+    const serverNow = new Date();
+
+    console.log('[LICENSE TRACE] CONTROLLER -> EXTEND SERVICE');
+    console.log('[LICENSE TRACE] User ID:', id);
+    console.log('[LICENSE TRACE] Days:', days);
+    console.log('[LICENSE TRACE] Server NOW:', serverNow.toISOString());
+
     const data = await adminService.extendLicense(id, days);
+
+    console.log('[LICENSE TRACE] CONTROLLER RECEIVED FROM SERVICE:', JSON.stringify(data));
+
     const response: ApiResponse = { success: true, data };
+
+    console.log('[LICENSE TRACE] FINAL RESPONSE TO FRONTEND:', JSON.stringify(response));
+
     res.json(response);
   },
 
