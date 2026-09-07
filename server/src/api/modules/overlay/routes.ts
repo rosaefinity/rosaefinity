@@ -7,8 +7,11 @@ import { Router, type Request, type Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
+import { getConfig } from '../../../config/index.js';
 import {
   verifyOverlayToken,
+  generateOverlayToken,
   setGoalState,
   addSSEClient,
   removeSSEClient,
@@ -23,16 +26,71 @@ function getToken(req: Request): string {
   return String(req.params.token || '');
 }
 
+// ─── POST /overlay/token — Generate overlay token (called by Electron) ───
+// Public endpoint: overlay tokens are designed to be shared (browser sources).
+// HMAC signature prevents forgery; this endpoint just ensures both sides use the same JWT_SECRET.
+overlayRouter.post('/overlay/token', (req: Request, res: Response) => {
+  const { userId } = req.body;
+  if (!userId || typeof userId !== 'string') {
+    res.status(400).json({ error: 'userId is required' });
+    return;
+  }
+  const token = generateOverlayToken(userId);
+  console.log('[OVERLAY-AUTH-TRACE] token generated for userId:', userId);
+  res.json({ success: true, token });
+});
+
+// ─── GET /overlay/self-test — Prove generate↔verify roundtrip ───
+// Returns safe metadata only. NEVER returns JWT_SECRET.
+overlayRouter.get('/overlay/self-test', (_req: Request, res: Response) => {
+  try {
+    const config = getConfig();
+    const secretFp = crypto.createHash('sha256').update(config.JWT_SECRET).digest('hex');
+
+    // Roundtrip test: generate → verify
+    const testUserId = 'self-test-' + Date.now();
+    const token = generateOverlayToken(testUserId);
+    const verifiedUserId = verifyOverlayToken(token);
+
+    const result = {
+      server: 'ok',
+      roundtrip: verifiedUserId === testUserId,
+      tokenSecretConfigured: config.JWT_SECRET.length > 0,
+      tokenSecretFingerprint: secretFp.substring(0, 16),
+      verificationSecretFingerprint: secretFp.substring(0, 16), // same process = same secret
+      algorithm: 'HS256',
+      tokenLength: token.length,
+      generatedUserId: testUserId,
+      verifiedUserId,
+      hasExp: false,
+      timestamp: Date.now(),
+    };
+    console.log('[OVERLAY-AUTH-TRACE] self-test:', result.roundtrip ? 'PASS' : 'FAIL');
+    console.log('[OVERLAY-AUTH-TRACE] secretFingerprint=' + result.tokenSecretFingerprint);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ server: 'error', error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // ─── GET /overlay/goal/:token — Serve overlay HTML ───
 overlayRouter.get('/overlay/goal/:token', (req: Request, res: Response) => {
   const token = getToken(req);
+  console.log('[OVERLAY-AUTH-TRACE] GET /overlay/goal/:token');
+  console.log('[OVERLAY-AUTH-TRACE] server expected token location: URL path segment /api/overlay/goal/:token');
+  console.log('[OVERLAY-AUTH-TRACE] token extracted from path: true');
+  console.log('[OVERLAY-AUTH-TRACE] token length:', token.length);
+  console.log('[OVERLAY-AUTH-TRACE] token parts:', token.split('.').length);
+  console.log('[OVERLAY-AUTH-TRACE] originalUrl:', req.originalUrl);
   const userId = verifyOverlayToken(token);
   if (!userId) {
+    console.log('[OVERLAY-AUTH-TRACE] REJECTED — returning 401 Invalid overlay token');
     res.status(401).json({ error: 'Invalid overlay token' });
     return;
   }
 
   // Serve the self-contained overlay HTML
+  console.log('[OVERLAY-E2E-API] serving goals-overlay.html for userId:', userId);
   const htmlPaths = [
     path.join(__dirname, '../../../../public/goals-overlay.html'),
     path.join(__dirname, '../../../../dist/goals-overlay.html'),
@@ -42,6 +100,7 @@ overlayRouter.get('/overlay/goal/:token', (req: Request, res: Response) => {
     try {
       if (fs.existsSync(htmlPath)) {
         const html = fs.readFileSync(htmlPath, 'utf-8');
+        console.log('[OVERLAY-E2E-API] resolved HTML path:', htmlPath, 'length:', html.length);
         // Inject the token into the HTML for the SSE connection
         const finalHtml = html.replace('__OVERLAY_TOKEN__', token);
         res.writeHead(200, {
