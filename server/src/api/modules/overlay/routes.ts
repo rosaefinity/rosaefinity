@@ -90,10 +90,23 @@ overlayRouter.get('/overlay/goal/:token', (req: Request, res: Response) => {
   }
 
   // Serve the self-contained overlay HTML
+  // Try multiple path strategies for different runtimes (node, tsx, Docker)
   console.log('[OVERLAY-E2E-API] serving goals-overlay.html for userId:', userId);
+  console.log('[OVERLAY-E2E-API] __dirname:', __dirname);
+  console.log('[OVERLAY-E2E-API] process.cwd():', process.cwd());
   const htmlPaths = [
+    // Strategy 1: relative to this file (4 levels up from src/api/modules/overlay/)
     path.join(__dirname, '../../../../public/goals-overlay.html'),
     path.join(__dirname, '../../../../dist/goals-overlay.html'),
+    // Strategy 2: relative to process.cwd() (Railway /app/)
+    path.join(process.cwd(), 'public/goals-overlay.html'),
+    path.join(process.cwd(), 'dist/goals-overlay.html'),
+    // Strategy 3: absolute Railway paths
+    '/app/public/goals-overlay.html',
+    '/app/dist/goals-overlay.html',
+    // Strategy 4: relative to server root (when running from server/)
+    path.join(process.cwd(), '../../public/goals-overlay.html'),
+    path.join(process.cwd(), '../../dist/goals-overlay.html'),
   ];
 
   for (const htmlPath of htmlPaths) {
