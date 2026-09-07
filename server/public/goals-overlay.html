@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RosaeFinity Goal Progress</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    #goal-container {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      padding: 16px;
+    }
+    .goal-title {
+      font-size: 16px; font-weight: 700;
+      color: #ffffff; margin-bottom: 6px;
+      text-align: center; width: 100%;
+    }
+    .goal-numbers {
+      font-size: 12px; color: rgba(255,255,255,0.8);
+      margin-bottom: 8px; text-align: center; width: 100%;
+    }
+    .goal-bar-track {
+      width: 100%; height: 12px; border-radius: 6px;
+      background: rgba(255,255,255,0.1); overflow: hidden;
+    }
+    .goal-bar-fill {
+      height: 100%; border-radius: 6px;
+      transition: width 0.5s ease-out;
+      background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+    }
+    .goal-bar-fill.reached {
+      background: linear-gradient(90deg, #22c55e, #16a34a);
+    }
+    .goal-pct {
+      font-size: 11px; color: rgba(255,255,255,0.5);
+      text-align: right; width: 100%; margin-top: 4px;
+    }
+    #status {
+      position: fixed; top: 4px; right: 4px;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #ef4444; transition: background 0.3s;
+    }
+    #status.connected { background: #22c55e; }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+  <div id="goal-container">
+    <div class="goal-title" id="goal-title">Goal</div>
+    <div class="goal-numbers" id="goal-numbers">0 / 0 LIKES</div>
+    <div class="goal-bar-track">
+      <div class="goal-bar-fill" id="goal-bar" style="width: 0%"></div>
+    </div>
+    <div class="goal-pct" id="goal-pct">0%</div>
+  </div>
+
+  <script>
+    // ── Token is injected by the server ──
+    var OVERLAY_TOKEN = '__OVERLAY_TOKEN__';
+    var goals = [];
+    var statusEl = document.getElementById('status');
+
+    function renderGoals() {
+      if (goals.length === 0) return;
+      // Show the first active goal (or the one with most progress)
+      var goal = goals[0];
+      var typeLabel = goal.type === 'followers' ? 'FOLLOWERS' : goal.type === 'gifts' ? 'COINS' : 'LIKES';
+      var pct = goal.target > 0 ? Math.min(100, (goal.current / goal.target) * 100) : 0;
+      var reached = goal.current >= goal.target;
+
+      document.getElementById('goal-title').textContent = goal.title || 'Goal';
+      document.getElementById('goal-numbers').textContent =
+        (goal.current || 0).toLocaleString() + ' / ' + (goal.target || 0).toLocaleString() + ' ' + typeLabel;
+
+      var bar = document.getElementById('goal-bar');
+      bar.style.width = pct + '%';
+      bar.style.background = reached
+        ? 'linear-gradient(90deg, #22c55e, #16a34a)'
+        : 'linear-gradient(90deg, ' + (goal.barColor || '#8b5cf6') + ', ' + (goal.barColor || '#8b5cf6') + 'cc)';
+      bar.className = 'goal-bar-fill' + (reached ? ' reached' : '');
+
+      document.getElementById('goal-pct').textContent = Math.round(pct) + '%';
+    }
+
+    // ── Fetch initial state ──
+    function fetchInitialState() {
+      fetch('/api/overlay/goal/' + OVERLAY_TOKEN + '/state')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.goals && data.goals.length > 0) {
+            goals = data.goals;
+            renderGoals();
+          }
+        })
+        .catch(function() {});
+    }
+
+    // ── SSE connection ──
+    var es = null;
+    var retryCount = 0;
+
+    function connectSSE() {
+      es = new EventSource('/api/overlay/goal/' + OVERLAY_TOKEN + '/events');
+
+      es.onopen = function() {
+        retryCount = 0;
+        statusEl.className = 'connected';
+      };
+
+      es.onmessage = function(e) {
+        if (!e.data || e.data.trim() === '') return;
+        try {
+          var data = JSON.parse(e.data);
+          if (data.type === 'goal-state' && data.goals) {
+            goals = data.goals;
+            renderGoals();
+          }
+        } catch(err) {}
+      };
+
+      es.onerror = function() {
+        statusEl.className = '';
+        es.close();
+        es = null;
+        if (retryCount < 50) {
+          var delay = Math.min(1000 * Math.pow(1.5, retryCount), 30000);
+          retryCount++;
+          setTimeout(connectSSE, delay);
+        }
+      };
+    }
+
+    fetchInitialState();
+    connectSSE();
+  </script>
+</body>
+</html>
