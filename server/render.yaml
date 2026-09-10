@@ -2,20 +2,16 @@ services:
   - type: web
     name: rosaefinity-api
     runtime: node
-    plan: starter  # Paid tier required for SSE long-lived connections
     region: oregon
     rootDir: server
-    buildCommand: npm ci && npx prisma generate
+    buildCommand: npm ci && npx prisma generate && npx prisma migrate deploy
     startCommand: npm run start
-    preDeployCommand: npx prisma migrate deploy
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: rosaefinity-db
-          property: connectionString
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
@@ -23,16 +19,10 @@ services:
       - key: JWT_REFRESH_EXPIRES_IN
         value: "7d"
       - key: CORS_ORIGINS
-        sync: false  # Set manually after deployment
+        sync: false
       - key: RATE_LIMIT_WINDOW_MS
         value: "900000"
       - key: RATE_LIMIT_MAX
         value: "100"
       - key: LOG_LEVEL
         value: info
-
-databases:
-  - name: rosaefinity-db
-    plan: starter  # Paid PostgreSQL
-    databaseName: rosaefinity
-    ipAllowList: []  # Only accessible from Render services
