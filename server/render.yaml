@@ -7,7 +7,7 @@ services:
     rootDir: server
     buildCommand: npm ci && npx prisma generate
     startCommand: npm run start
-    postDeployCommand: npx prisma migrate deploy
+    preDeployCommand: npx prisma migrate deploy
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
