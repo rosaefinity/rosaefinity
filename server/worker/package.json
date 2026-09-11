@@ -1,0 +1,37 @@
+{
+  "name": "rosaefinity-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "cd .. && npx prisma generate",
+    "prisma:push": "cd .. && npx prisma db push",
+    "prisma:migrate": "cd .. && npx prisma migrate dev",
+    "prisma:deploy": "cd .. && npx prisma migrate deploy"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "@noble/hashes": "^1.7.1",
+    "@prisma/adapter-neon": "^6.12.0",
+    "@prisma/client": "^6.12.0",
+    "bcryptjs": "^2.4.3",
+    "hono": "^4.8.3",
+    "jose": "^6.0.11",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "@prisma/client": "^6.12.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.15.3",
+    "prisma": "^6.12.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.1",
+    "wrangler": "^4.46.0"
+  }
+}

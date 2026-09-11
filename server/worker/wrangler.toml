@@ -1,0 +1,21 @@
+name = "rosaefinity-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-10"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+NODE_ENV = "production"
+JWT_EXPIRES_IN = "15m"
+JWT_REFRESH_EXPIRES_IN = "7d"
+RATE_LIMIT_WINDOW_MS = "900000"
+RATE_LIMIT_MAX = "100"
+
+# Secrets (set via `wrangler secret put`):
+# DATABASE_URL
+# JWT_SECRET
+# CORS_ORIGINS
+
+# Optional secrets:
+# SUPABASE_URL
+# SUPABASE_ANON_KEY
+# SUPABASE_SERVICE_ROLE_KEY
