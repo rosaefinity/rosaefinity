@@ -18,10 +18,10 @@ const REFRESH_TOKEN_KEY = 'rf_refresh_token';
 interface BackendUser {
   id: string;
   email: string;
-  username: string;
+  displayName: string;
   role: string;       // USER | ADMIN (authorization)
   accountType: string; // guest | free | pro | enterprise (plan tier)
-  avatar: string | null;
+  avatarUrl: string | null;
 }
 
 interface LoginResponse {
@@ -111,7 +111,7 @@ export class BackendAuthProvider implements AuthProvider {
       console.log("[REGISTER] username =", username);
 
       const url = `${API_URL}/v1/auth/register`;
-      const requestBody = { email, password, username };
+      const requestBody = { email, password, displayName: username };
       console.log("[REGISTER] url =", url);
       console.log("[REGISTER] body =", requestBody);
       console.log("[REGISTER] before fetch");
@@ -204,13 +204,15 @@ export class BackendAuthProvider implements AuthProvider {
   }
 
   async signOut(): Promise<void> {
-    const refreshToken = this.getRefreshToken();
-    if (refreshToken) {
+    const accessToken = this.getAccessToken();
+    if (accessToken) {
       try {
         await fetch(`${API_URL}/v1/auth/logout`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken }),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+          },
         });
       } catch {
         // Ignore logout errors
@@ -380,9 +382,9 @@ export class BackendAuthProvider implements AuthProvider {
     return {
       id: backendUser.id,
       email: backendUser.email,
-      username: backendUser.username,
-      displayName: backendUser.username,
-      avatarUrl: backendUser.avatar,
+      username: backendUser.displayName,
+      displayName: backendUser.displayName,
+      avatarUrl: backendUser.avatarUrl,
       provider: 'email',
       accountType: frontendAccountType,
       subscriptionStatus: 'none',

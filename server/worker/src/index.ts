@@ -78,8 +78,8 @@ app.route('/api/v1/analytics', analytics);
 app.route('/api/v1/admin', admin);
 app.route('/api/v1/payment', payment);
 
-// ── Overlay routes (different base path) ──
-app.route('/api', overlay);
+// ── Overlay routes ──
+app.route('/api/overlay', overlay);
 
 // ── 404 handler ──
 app.notFound((c) => {
