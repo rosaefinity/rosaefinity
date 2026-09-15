@@ -9,7 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Users, Search, Shield, Crown, Zap, Clock,
   RefreshCw, Loader2, X, Check, ChevronDown,
-  AlertTriangle, UserCheck, UserX, Plus, Minus,
+  AlertTriangle, UserCheck, UserX, Plus, Minus, Trash2,
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth-store';
 import { authFetch, isAuthFailureError } from '../lib/auth-fetch';
@@ -51,7 +51,7 @@ function deriveSubscription(licenses: Array<Record<string, unknown>> | undefined
     return { plan: accountType || 'free', status: 'active', expires_at: null };
   }
   const now = Date.now();
-  // Find the most recent active license (not expired)
+  // Only 'active' or 'grace' with future expiry count as current entitlement
   const active = licenses.find(l =>
     (l.status === 'active' || l.status === 'grace') &&
     l.expiresAt && new Date(l.expiresAt as string).getTime() > now
@@ -63,15 +63,7 @@ function deriveSubscription(licenses: Array<Record<string, unknown>> | undefined
       expires_at: active.expiresAt ? String(active.expiresAt) : null,
     };
   }
-  // Find any non-revoked license (expired)
-  const any = licenses.find(l => l.status !== 'revoked');
-  if (any) {
-    return {
-      plan: String(any.planId || any.plan?.id || accountType || 'free'),
-      status: 'expired',
-      expires_at: any.expiresAt ? String(any.expiresAt) : null,
-    };
-  }
+  // No current entitlement — fall back to accountType
   return { plan: accountType || 'free', status: 'active', expires_at: null };
 }
 
@@ -127,7 +119,11 @@ function normalizeUserDetail(raw: unknown): UserDetail | null {
   // { id, email, displayName, role, createdAt, licenses: [...], devices: [...], sessions: [...] }
   if (obj.id && (obj.email || obj.displayName)) {
     const licenses = Array.isArray(obj.licenses) ? obj.licenses : [];
-    const activeLicense = licenses.find((l: any) => l?.status === 'active') ?? licenses[0] ?? null;
+    // Use deriveSubscription logic to find the current active license, not just licenses[0]
+    const sub = deriveSubscription(licenses, (obj.accountType as string) || null);
+    const activeLicense = sub.status === 'active'
+      ? licenses.find((l: any) => (l?.status === 'active' || l?.status === 'grace') && l.expiresAt && new Date(l.expiresAt).getTime() > Date.now())
+      : null;
     const sessions = Array.isArray(obj.sessions) ? obj.sessions : [];
 
     return {
@@ -163,12 +159,15 @@ function normalizeUserDetail(raw: unknown): UserDetail | null {
 function normalizeLicense(raw: unknown): UserDetail['license'] {
   if (!raw || typeof raw !== 'object') return null;
   const l = raw as Record<string, unknown>;
+  const status = String(l.status || 'active');
+  const isRevokedOrFree = status === 'revoked' || status === 'expired';
   return {
     id: String(l.id || ''),
     user_id: String(l.userId || l.user_id || ''),
     plan: String(l.planId || l.plan || 'free'),
-    status: String(l.status || 'active'),
-    expires_at: l.expiresAt != null ? String(l.expiresAt) : (l.expires_at != null ? String(l.expires_at) : null),
+    status,
+    // When license is revoked/free, always show null (no expiry) — the old date is irrelevant
+    expires_at: isRevokedOrFree ? null : (l.expiresAt != null ? String(l.expiresAt) : (l.expires_at != null ? String(l.expires_at) : null)),
     created_at: String(l.createdAt || l.created_at || ''),
     updated_at: String(l.updatedAt || l.updated_at || ''),
   };
@@ -192,7 +191,13 @@ export function AdminUsersPage(): JSX.Element {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  // ── Pagination ──
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const PAGE_SIZE = 20;
 
   // ── Access Control ──
   useEffect(() => {
@@ -203,10 +208,21 @@ export function AdminUsersPage(): JSX.Element {
   }, [isAdmin, navigate]);
 
   // ── Load Users ──
-  const loadUsers = useCallback(async () => {
+  const loadUsers = useCallback(async (page = 1) => {
     setIsLoading(true);
     try {
-      const rawUsers = await authFetch<Array<Record<string, unknown>>>('/admin/users');
+      // Use fetch directly to access pagination metadata alongside data
+      const token = localStorage.getItem('rf_access_token');
+      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/v1/admin/users?page=${page}&limit=${PAGE_SIZE}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || `HTTP ${res.status}`);
+      const rawUsers: Array<Record<string, unknown>> = json.data ?? [];
+      const pagination = json.pagination ?? { page: 1, totalPages: 1, total: rawUsers.length };
       const normalizedUsers: AdminUser[] = rawUsers.map((u) => {
         const licenses = Array.isArray(u.licenses) ? u.licenses as Array<Record<string, unknown>> : [];
         const sub = deriveSubscription(licenses, (u.accountType as string | null));
@@ -229,6 +245,9 @@ export function AdminUsersPage(): JSX.Element {
         };
       });
       setUsers(normalizedUsers);
+      setCurrentPage(pagination.page);
+      setTotalPages(pagination.totalPages);
+      setTotalUsers(pagination.total);
     } catch (err) {
       console.error('[Admin] Failed to load users:', err);
       setUsers([]);
@@ -241,7 +260,7 @@ export function AdminUsersPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (isAdmin) loadUsers();
+    if (isAdmin) loadUsers(1);
   }, [isAdmin, loadUsers]);
 
   // ── Filter Users ──
@@ -308,7 +327,7 @@ export function AdminUsersPage(): JSX.Element {
         method: 'POST',
         body: JSON.stringify({
           plan: 'pro',
-          durationDays: 365,
+          durationDays: 30,
         }),
       });
       toast(`Pro activated for ${selectedUser.user.email}`);
@@ -317,7 +336,7 @@ export function AdminUsersPage(): JSX.Element {
       const rawDetail = await authFetch<unknown>(`/admin/users/${selectedUser.user.id}`);
       const normalized = normalizeUserDetail(rawDetail);
       if (normalized) setSelectedUser(normalized);
-      loadUsers();
+      loadUsers(currentPage);
     } catch (err: any) {
       console.error('[Admin] Activation failed:', err);
       if (!isAuthFailureError(err)) {
@@ -332,18 +351,26 @@ export function AdminUsersPage(): JSX.Element {
   // ── Extend License ──
   const handleExtendLicense = async (days: number) => {
     if (!selectedUser) return;
+    console.log('[REACTIVATION DEBUG] FRONTEND REQUEST', {
+      userId: selectedUser.user.id,
+      days,
+      email: selectedUser.user.email,
+      currentLicense: selectedUser.license
+    });
     setIsProcessing(true);
     try {
-      await authFetch(`/admin/users/${selectedUser.user.id}/extend`, {
+      const response = await authFetch<unknown>(`/admin/users/${selectedUser.user.id}/extend`, {
         method: 'POST',
         body: JSON.stringify({ days }),
       });
+      console.log('[REACTIVATION DEBUG] BACKEND RESPONSE', response);
       toast(`Extended by ${days} days`);
       // Refresh user detail
       const rawDetail = await authFetch<unknown>(`/admin/users/${selectedUser.user.id}`);
       const normalized = normalizeUserDetail(rawDetail);
+      console.log('[REACTIVATION DEBUG] REFRESHED user detail', normalized);
       if (normalized) setSelectedUser(normalized);
-      loadUsers();
+      loadUsers(currentPage);
     } catch (err) {
       console.error('[Admin] Extension failed:', err);
       if (!isAuthFailureError(err)) toast('Extension failed');
@@ -355,6 +382,7 @@ export function AdminUsersPage(): JSX.Element {
   // ── Deactivate Pro ──
   const handleDeactivatePro = async () => {
     if (!selectedUser) return;
+    console.log('[ADMIN FRONTEND] DEACTIVATE REQUEST', { userId: selectedUser.user.id, email: selectedUser.user.email, currentLicense: selectedUser.license });
     setIsProcessing(true);
     try {
       await authFetch(`/admin/users/${selectedUser.user.id}/downgrade`, {
@@ -362,11 +390,34 @@ export function AdminUsersPage(): JSX.Element {
       });
       toast(`Pro deactivated for ${selectedUser.user.email}`);
       setShowDeactivateModal(false);
-      setShowDetailModal(false);
-      loadUsers();
+
+      // Fetch fresh user detail from backend — do NOT rely on stale selectedUser state
+      const rawDetail = await authFetch<unknown>(`/admin/users/${selectedUser.user.id}`);
+      const normalized = normalizeUserDetail(rawDetail);
+      console.log('[ADMIN FRONTEND] DEACTIVATE REFRESHED:', normalized);
+      if (normalized) setSelectedUser(normalized);
+      loadUsers(currentPage);
     } catch (err) {
       console.error('[Admin] Deactivation failed:', err);
       if (!isAuthFailureError(err)) toast('Deactivation failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // ── Delete User ──
+  const handleDeleteUser = async () => {
+    if (!selectedUser) return;
+    setIsProcessing(true);
+    try {
+      await authFetch(`/admin/users/${selectedUser.user.id}`, { method: 'DELETE' });
+      toast(`User deleted: ${selectedUser.user.email}`);
+      setShowDeleteModal(false);
+      setSelectedUser(null);
+      loadUsers(currentPage);
+    } catch (err) {
+      console.error('[Admin] Deletion failed:', err);
+      if (!isAuthFailureError(err)) toast('Deletion failed');
     } finally {
       setIsProcessing(false);
     }
@@ -394,7 +445,7 @@ export function AdminUsersPage(): JSX.Element {
           </p>
         </div>
         <button
-          onClick={loadUsers}
+          onClick={() => loadUsers(currentPage)}
           disabled={isLoading}
           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 transition-colors"
         >
@@ -501,6 +552,31 @@ export function AdminUsersPage(): JSX.Element {
           </div>
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-gray-400">
+            Page {currentPage} of {totalPages} · {totalUsers} users
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => loadUsers(currentPage - 1)}
+              disabled={currentPage <= 1 || isLoading}
+              className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/70 text-xs font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => loadUsers(currentPage + 1)}
+              disabled={currentPage >= totalPages || isLoading}
+              className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/70 text-xs font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -616,6 +692,7 @@ export function AdminUsersPage(): JSX.Element {
 
                   {/* Actions */}
                   <div className="flex flex-wrap gap-2">
+                    {/* Activate Pro - only for users without an active Pro/Enterprise license */}
                     {(!selectedUser.license || selectedUser.license.plan === 'free') ? (
                       <button
                         onClick={() => setShowActivateModal(true)}
@@ -624,7 +701,10 @@ export function AdminUsersPage(): JSX.Element {
                         <Crown className="w-4 h-4" />
                         Activate Pro
                       </button>
-                    ) : (
+                    ) : null}
+
+                    {/* License management - for any non-free license (active, revoked, or expired) */}
+                    {(selectedUser.license && selectedUser.license.plan !== 'free') ? (
                       <>
                         <button
                           onClick={() => handleExtendLicense(30)}
@@ -659,7 +739,17 @@ export function AdminUsersPage(): JSX.Element {
                           Deactivate
                         </button>
                       </>
-                    )}
+                    ) : null}
+
+                    {/* Delete User - ALWAYS available for deletable users (backend enforces self-delete/admin protection) */}
+                    <button
+                      onClick={() => setShowDeleteModal(true)}
+                      disabled={isProcessing}
+                      className="flex items-center gap-2 px-3 py-2 rounded-xl bg-red-600/20 text-red-300 text-sm font-medium hover:bg-red-600/30 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete User
+                    </button>
                   </div>
 
                   {/* Recent Activity */}
@@ -823,6 +913,80 @@ export function AdminUsersPage(): JSX.Element {
                     <>
                       <UserX className="w-4 h-4" />
                       Deactivate
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ══════ DELETE USER MODAL ══════ */}
+      <AnimatePresence>
+        {showDeleteModal && selectedUser?.user && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowDeleteModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm mx-4 p-6 rounded-2xl bg-[#18181f] border border-white/[0.08] shadow-2xl"
+            >
+              <div className="text-center mb-6">
+                <div className="w-14 h-14 rounded-2xl bg-red-600/20 border border-red-600/30 flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="w-7 h-7 text-red-400" />
+                </div>
+                <h3 className="text-lg font-bold text-white mb-2">Delete User</h3>
+                <p className="text-sm text-white/40">{selectedUser.user.email}</p>
+              </div>
+
+              <div className="space-y-3 mb-6 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Name</span>
+                  <span className="text-white">{selectedUser.user.name || '—'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Role</span>
+                  <span className="text-white">{selectedUser.user.role}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Plan</span>
+                  <span className="text-white">{(selectedUser.license?.plan || 'free').toUpperCase()}</span>
+                </div>
+              </div>
+
+              <p className="text-xs text-red-400/80 text-center mb-2">
+                This will permanently delete the selected user and all related data.
+              </p>
+              <p className="text-xs text-red-400/60 text-center mb-6 font-medium">
+                This action cannot be undone.
+              </p>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  className="flex-1 h-11 rounded-xl bg-white/[0.04] border border-white/[0.08] text-white/60 text-sm font-medium hover:bg-white/[0.06] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteUser}
+                  disabled={isProcessing}
+                  className="flex-1 h-11 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-500 transition-colors flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      Delete User
                     </>
                   )}
                 </button>

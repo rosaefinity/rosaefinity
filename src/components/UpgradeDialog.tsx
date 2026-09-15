@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Lock, ArrowRight, Sparkles, Check, X } from 'lucide-react';
 import { Button } from './ui/button';
+import { safeNavigate } from '../lib/safe-navigate';
 
 interface UpgradeDialogProps {
   open: boolean;
@@ -39,7 +40,7 @@ export function UpgradeDialog({
 }: UpgradeDialogProps): JSX.Element {
   const navigate = () => {
     onClose();
-    window.location.hash = '#/payment';
+    safeNavigate('/payment', 'UpgradeDialog:navigate');
   };
 
   const reasonMessages: Record<string, { title: string; subtitle: string }> = {

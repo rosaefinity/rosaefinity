@@ -96,57 +96,626 @@
       z-index: 99999;
     }
     #status-dot.connected { background: #22c55e; }
+
+    /* ── Diagnostic Panel ── */
+    #diagnostic-panel {
+      position: fixed;
+      top: 10px; left: 10px;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      z-index: 99999;
+      border: 1px solid rgba(255,255,255,0.1);
+      pointer-events: auto;
+      min-width: 280px;
+    }
+    #diagnostic-panel .diag-line { margin: 2px 0; }
+    #diagnostic-panel .diag-label { color: #aaa; }
+    #diagnostic-panel .diag-value { color: #fff; }
+    #diagnostic-panel .diag-value.connected { color: #22c55e; }
+    #diagnostic-panel .diag-value.disconnected { color: #ef4444; }
+    #diagnostic-panel .diag-value.success { color: #22c55e; }
+    #diagnostic-panel .diag-value.error { color: #ef4444; }
   </style>
 </head>
 <body>
-  <div id="status-dot" title="Disconnected"></div>
-  <div id="no-events">🌹 RosaeFinity Overlay — waiting for events...</div>
+  <!-- Debug/Development elements (only visible when ?debug=1) -->
+  <div id="status-dot" title="Disconnected" hidden></div>
+  <div id="no-events" hidden>🌹 RosaeFinity Overlay — waiting for events...</div>
   <div id="alerts-container"></div>
+
+  <!-- Diagnostic Panel (only visible when ?debug=1) -->
+  <div id="diagnostic-panel" hidden>
+    <div class="diag-line"><span class="diag-label">Overlay Widget: </span><span class="diag-value" id="diag-widget">Connected</span></div>
+    <div class="diag-line"><span class="diag-label">Screen: </span><span class="diag-value" id="diag-screen">-</span></div>
+    <div class="diag-line"><span class="diag-label">SSE: </span><span class="diag-value disconnected" id="diag-sse">DISCONNECTED</span></div>
+    <div class="diag-line"><span class="diag-label">Last Event: </span><span class="diag-value" id="diag-last-event">none</span></div>
+    <div class="diag-line"><span class="diag-label">Last Render: </span><span class="diag-value" id="diag-last-render">-</span></div>
+  </div>
 
   <script>
     const container = document.getElementById("alerts-container");
     const noEvents = document.getElementById("no-events");
     const statusDot = document.getElementById("status-dot");
+    const diagnosticPanel = document.getElementById("diagnostic-panel");
     const ICONS = { gift: "🎁", follow: "👤", comment: "💬", like: "❤️", share: "🔗", subscribe: "⭐", action: "⚡", keystroke: "⌨️" };
 
-    const params = new URLSearchParams(window.location.search);
-    const filterScreen = params.get("screen");
+    // Track active audio instances to prevent garbage collection
+    const activeAudioInstances = new Set();
+
+    // ── VIDEO PRELOAD CACHE ──
+    // Preloads the next queued video in background to eliminate gap between videos.
+    let _preloadVideo = null;
+    let _preloadSrc = null;
+
+    // ── DEBUG MODE DETECTION ──
+    const widgetUrl = new URL(window.location.href);
+    const debugMode = widgetUrl.searchParams.get('debug') === '1';
+    if (debugMode) {
+      // Show debug elements
+      statusDot.hidden = false;
+      noEvents.hidden = false;
+      diagnosticPanel.hidden = false;
+    }
+
+    // ── OVERLAY-WIDGET-BUILD ──
+    const OVERLAY_WIDGET_BUILD_ID = 'SSE-FIX-' + Date.now();
+    console.log('[OVERLAY-WIDGET-BUILD]', JSON.stringify({
+      buildId: OVERLAY_WIDGET_BUILD_ID,
+      href: window.location.href,
+      debugMode,
+      timestamp: Date.now(),
+    }));
+
+    // ── OVERLAY-WIDGET-RUNTIME-LOCATION ──
+    console.log('[OVERLAY-WIDGET-RUNTIME-LOCATION]', JSON.stringify({
+      href: window.location.href,
+      origin: window.location.origin,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hash: window.location.hash,
+      rawScreen: widgetUrl.searchParams.get('screen'),
+      debugParam: widgetUrl.searchParams.get('debug'),
+      timestamp: Date.now(),
+    }));
+
+    // ── CANONICAL SCREEN PARSING ──
+    const rawScreen = widgetUrl.searchParams.get('screen');
+    const screen = rawScreen ? String(rawScreen).trim() : '';
+
+    console.log('[OVERLAY-WIDGET-SCREEN-PARSE]', JSON.stringify({
+      href: widgetUrl.href,
+      rawScreen,
+      screen,
+      search: widgetUrl.search,
+      timestamp: Date.now(),
+    }));
+
+    // Runtime assertion
+    if (widgetUrl.searchParams.has('screen') && !screen) {
+      console.error('[OVERLAY-WIDGET-SCREEN-BUG]', JSON.stringify({
+        message: 'URL contains screen parameter but canonical screen is empty',
+        href: window.location.href,
+        search: window.location.search,
+        timestamp: Date.now(),
+      }));
+    }
+
+    const filterScreen = screen;
+
+    // ── Diagnostic panel helpers ──
+    function updateDiag(id, value, className) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.textContent = value;
+        el.className = 'diag-value' + (className ? ' ' + className : '');
+      }
+    }
+
+    // Shared normalizeScreen function (must match server)
+    function normalizeScreen(screen) {
+      if (!screen) return '';
+      return String(screen).trim().toLowerCase().replace(/^screen[-\s]?/i, '');
+    }
+
+    // ── OVERLAY-WIDGET-BOOT ──
+    const normalizedWidgetScreen = normalizeScreen(screen);
+    const sseUrl = `http://127.0.0.1:18890/events?screen=${encodeURIComponent(screen || '')}`;
+    console.log('[OVERLAY-WIDGET-BOOT]', JSON.stringify({
+      href: window.location.href,
+      origin: window.location.origin,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      screenParam: screen,
+      normalizedScreen: normalizedWidgetScreen,
+      sseUrl: sseUrl,
+      debugMode,
+      timestamp: Date.now(),
+    }));
+    updateDiag('diag-screen', screen || '(all)');
+    updateDiag('diag-widget', 'Connected');
+
+    // ── VIDEO PRELOAD HELPERS ──
+    // Preloads the next queued video so it starts instantly when current ends.
+    function preloadNextVideo() {
+      try {
+        const ev = window.__rf_peekNextQueued?.();
+        if (!ev || ev.type !== 'video' || !ev.videoFile) { cleanupPreload(); return; }
+        if (ev.videoFile === _preloadSrc && _preloadVideo?.readyState >= 2) return; // already ready
+        if (ev.videoFile === _preloadSrc) return; // already loading
+        cleanupPreload();
+        _preloadSrc = ev.videoFile;
+        _preloadVideo = document.createElement('video');
+        _preloadVideo.preload = 'auto';
+        _preloadVideo.muted = true;
+        _preloadVideo.src = ev.videoFile;
+        _preloadVideo.load();
+        console.log('[PRELOAD] started', JSON.stringify({ src: ev.videoFile.substring(0, 80), ts: Date.now() }));
+      } catch { cleanupPreload(); }
+    }
+
+    function consumePreload(src) {
+      if (_preloadVideo && _preloadSrc === src && _preloadVideo.readyState >= 2) {
+        const el = _preloadVideo;
+        console.log('[PRELOAD] consumed', JSON.stringify({ src: src.substring(0, 80), readyState: el.readyState, ts: Date.now() }));
+        _preloadVideo = null; _preloadSrc = null;
+        el.preload = 'auto'; el.muted = false; el.loop = false;
+        el.currentTime = 0;
+        return el;
+      }
+      cleanupPreload();
+      return null;
+    }
+
+    function cleanupPreload() {
+      if (_preloadVideo) {
+        try { _preloadVideo.removeAttribute('src'); _preloadVideo.load(); } catch {}
+        _preloadVideo = null; _preloadSrc = null;
+      }
+    }
 
     function showAlert(data) {
       if (!data) return;
-      if (filterScreen && data.screen && String(data.screen) !== filterScreen) return;
+      if (filterScreen && !(data.screen || data.screenId)) return;
 
       noEvents.style.display = "none";
 
+      // ── SOUND (audio playback for TikTok LIVE Studio Browser Source) ──
+      if (data.type === "sound" && data.soundFile) {
+        console.log('[OVERLAY-WIDGET-RENDER] START', JSON.stringify({
+          type: 'sound',
+          actionName: data.actionName,
+          screen: data.screen,
+          soundFile: data.soundFile ? data.soundFile.substring(0, 100) : null,
+          soundFileLength: data.soundFile ? data.soundFile.length : 0,
+          soundVolume: data.soundVolume,
+          soundFadeIn: data.soundFadeIn,
+          soundFadeOut: data.soundFadeOut,
+          soundLoop: data.soundLoop,
+          timestamp: Date.now(),
+        }));
+
+        try {
+          const audio = new Audio(data.soundFile);
+
+          // Apply volume safely (clamp between 0 and 1)
+          const volume = Math.max(0, Math.min(1, data.soundVolume ?? 0.8));
+          audio.volume = volume;
+
+          // Fade in
+          if (data.soundFadeIn && data.soundFadeIn > 0) {
+            audio.volume = 0;
+            const fadeSteps = 20;
+            const stepTime = (data.soundFadeIn * 1000) / fadeSteps;
+            let step = 0;
+            const fadeInterval = setInterval(() => {
+              step++;
+              audio.volume = Math.min(volume, (step / fadeSteps) * volume);
+              if (step >= fadeSteps) clearInterval(fadeInterval);
+            }, stepTime);
+          }
+
+          // Fade out
+          if (data.soundFadeOut && data.soundFadeOut > 0) {
+            audio.addEventListener("timeupdate", () => {
+              const remaining = audio.duration - audio.currentTime;
+              const fadeOut = data.soundFadeOut;
+              if (remaining <= fadeOut && remaining > 0) {
+                audio.volume = Math.max(0, (remaining / fadeOut) * volume);
+              }
+            });
+          }
+
+          audio.loop = data.soundLoop || false;
+
+          // Track audio instance to prevent premature garbage collection
+          activeAudioInstances.add(audio);
+
+          // Trace audio playback
+          audio.onplay = () => {
+            console.log('[OVERLAY-WIDGET-RENDER] SOUND playing', JSON.stringify({
+              actionName: data.actionName,
+              soundFile: data.soundFile ? data.soundFile.substring(0, 100) : null,
+              duration: audio.duration,
+              volume: audio.volume,
+              loop: audio.loop,
+              timestamp: Date.now(),
+            }));
+            console.log('[OVERLAY-WIDGET-RENDER] COMPLETE', JSON.stringify({
+              type: 'sound',
+              actionName: data.actionName,
+              timestamp: Date.now(),
+            }));
+            updateDiag('diag-last-render', 'SUCCESS', 'success');
+          };
+
+          audio.onerror = (e) => {
+            const audioError = audio.error ? audio.error.message : 'Unknown audio error';
+            console.error('[OVERLAY-WIDGET-RENDER] SOUND ERROR', JSON.stringify({
+              actionName: data.actionName,
+              error: audioError,
+              timestamp: Date.now(),
+            }));
+            console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+              type: 'sound',
+              actionName: data.actionName,
+              error: audioError,
+              timestamp: Date.now(),
+            }));
+            updateDiag('diag-last-render', 'ERROR', 'error');
+            // Remove from tracking
+            activeAudioInstances.delete(audio);
+          };
+
+          // Guard against double-completion (onended vs duration fallback)
+          let soundCompleted = false;
+          const completeSound = () => {
+            if (soundCompleted) return;
+            soundCompleted = true;
+            console.log('[OVERLAY-WIDGET-RENDER] SOUND ended', JSON.stringify({
+              actionName: data.actionName,
+              timestamp: Date.now(),
+            }));
+            // Remove from tracking
+            activeAudioInstances.delete(audio);
+            // Notify action queue of SOUND completion (media-aware)
+            if (data.actionExecutionId) {
+              console.log('[OVERLAY-WIDGET-COMPLETION] sound complete', JSON.stringify({
+                actionExecutionId: data.actionExecutionId,
+                actionId: data.actionId,
+                actionName: data.actionName,
+                screen: data.screen,
+                mediaType: 'sound',
+                timestamp: Date.now(),
+              }));
+              window.dispatchEvent(new CustomEvent('rosae:media-complete', {
+                detail: {
+                  type: 'media-complete',
+                  mediaType: 'sound',
+                  screen: data.screen,
+                  actionExecutionId: data.actionExecutionId,
+                  actionId: data.actionId,
+                  actionName: data.actionName,
+                  timestamp: Date.now(),
+                }
+              }));
+            }
+          };
+
+          audio.onended = completeSound;
+
+          // Fallback for looping sounds: `ended` never fires when loop=true
+          // Use configured display duration as the queue handoff timer
+          if (data.soundLoop && data.duration) {
+            setTimeout(completeSound, (data.duration || 5) * 1000);
+          }
+
+          audio.play().catch((err) => {
+            console.error('[OVERLAY-WIDGET-RENDER] SOUND play failed', JSON.stringify({
+              actionName: data.actionName,
+              error: err.message,
+              timestamp: Date.now(),
+            }));
+            console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+              type: 'sound',
+              actionName: data.actionName,
+              error: err.message,
+              timestamp: Date.now(),
+            }));
+            updateDiag('diag-last-render', 'ERROR', 'error');
+            activeAudioInstances.delete(audio);
+          });
+
+        } catch (err) {
+          console.error('[OVERLAY-WIDGET-RENDER] SOUND ERROR', JSON.stringify({
+            actionName: data.actionName,
+            error: err instanceof Error ? err.message : String(err),
+            timestamp: Date.now(),
+          }));
+          console.log('[OVERLAY-WIDGT-RENDER] ERROR', JSON.stringify({
+            type: 'sound',
+            actionName: data.actionName,
+            error: err instanceof Error ? err.message : String(err),
+            timestamp: Date.now(),
+          }));
+          updateDiag('diag-last-render', 'ERROR', 'error');
+        }
+        return;
+      }
+
       // ── VIDEO (fullscreen, full resolution) ──
       if (data.type === "video" && data.videoFile) {
+        console.log('[OVERLAY-WIDGET-RENDER] START', JSON.stringify({
+          type: 'video',
+          actionName: data.actionName,
+          screen: data.screen,
+          videoFile: data.videoFile.substring(0, 100),
+          videoFileLength: data.videoFile.length,
+          timestamp: Date.now(),
+        }));
+
         const overlay = document.createElement("div");
         overlay.className = "media-overlay";
-        const vid = document.createElement("video");
-        vid.src = data.videoFile;
-        vid.autoplay = true;
-        vid.playsInline = true;
-        vid.setAttribute("playsinline", "");
-        vid.volume = 1;
-        vid.muted = false;
+        const preloaded = consumePreload(data.videoFile);
+        const vid = preloaded || document.createElement("video");
+        if (!preloaded) {
+          vid.src = data.videoFile;
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.setAttribute("playsinline", "");
+          vid.volume = 1;
+          vid.muted = false;
+        } else {
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.volume = 1;
+          vid.muted = false;
+        }
         overlay.appendChild(vid);
         document.body.appendChild(overlay);
 
+        console.log('[OVERLAY-WIDGET-RENDER] VIDEO', JSON.stringify({
+          actionName: data.actionName,
+          videoSrc: vid.src ? vid.src.substring(0, 100) : null,
+          videoSrcLength: vid.src ? vid.src.length : 0,
+          readyState: vid.readyState,
+          networkState: vid.networkState,
+          timestamp: Date.now(),
+        }));
+
         // When metadata loads, let the video's natural size drive the display
         vid.onloadedmetadata = () => {
-          // Video will use max-width:100% max-height:100% + object-fit:contain
-          // This shows the FULL video at its native aspect ratio, filling as much
-          // of the canvas as possible without cropping
+          console.log('[OVERLAY-WIDGET-RENDER] VIDEO loadedmetadata', JSON.stringify({
+            actionName: data.actionName,
+            videoWidth: vid.videoWidth,
+            videoHeight: vid.videoHeight,
+            readyState: vid.readyState,
+            duration: vid.duration,
+            timestamp: Date.now(),
+          }));
         };
 
-        // Try playing with audio
-        vid.play().catch(() => {
-          // Retry once — Browser Sources may need a moment
-          setTimeout(() => { vid.play().catch(() => {}); }, 100);
+        vid.oncanplay = () => {
+          console.log('[OVERLAY-WIDGET-RENDER] VIDEO canplay', JSON.stringify({
+            actionName: data.actionName,
+            readyState: vid.readyState,
+            timestamp: Date.now(),
+          }));
+        };
+
+        vid.onplaying = () => {
+          console.log('[OVERLAY-WIDGET-RENDER] VIDEO playing', JSON.stringify({
+            actionName: data.actionName,
+            readyState: vid.readyState,
+            timestamp: Date.now(),
+          }));
+        };
+
+        // NOTE: vid.onended is set below in the remove() section to dispatch
+        // the media-complete event. Do NOT set vid.onended here.
+
+        vid.onerror = (e) => {
+          console.error('[OVERLAY-WIDGET-RENDER] VIDEO ERROR', JSON.stringify({
+            actionName: data.actionName,
+            error: vid.error ? {
+              code: vid.error.code,
+              message: vid.error.message
+            } : 'Unknown video error',
+            readyState: vid.readyState,
+            networkState: vid.networkState,
+            timestamp: Date.now(),
+          }));
+          console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+            type: 'video',
+            actionName: data.actionName,
+            error: vid.error ? vid.error.message : 'Unknown video error',
+            timestamp: Date.now(),
+          }));
+          updateDiag('diag-last-render', 'ERROR', 'error');
+        };
+
+        // ── Autoplay Policy Handler ──
+        let audioUnlocked = false;
+
+        function unlockOverlayAudio() {
+          if (audioUnlocked) return;
+          audioUnlocked = true;
+          console.log('[OVERLAY-WIDGET-AUTOPLAY] audio unlocked by user interaction', {
+            timestamp: Date.now(),
+          });
+        }
+
+        // Register user interaction listeners for audio unlock
+        ['click', 'pointerdown', 'keydown'].forEach(evt => {
+          document.addEventListener(evt, unlockOverlayAudio, { once: true, passive: true });
         });
 
+        async function attemptPlay() {
+          // First attempt: normal playback with audio
+          console.log('[OVERLAY-WIDGET-AUTOPLAY] normal play attempt', JSON.stringify({
+            actionName: data.actionName,
+            videoSrc: vid.src ? vid.src.substring(0, 100) : null,
+            muted: vid.muted,
+            readyState: vid.readyState,
+            timestamp: Date.now(),
+          }));
+
+          try {
+            await vid.play();
+            console.log('[OVERLAY-WIDGET-AUTOPLAY] normal play success', JSON.stringify({
+              actionName: data.actionName,
+              readyState: vid.readyState,
+              timestamp: Date.now(),
+            }));
+            console.log('[OVERLAY-WIDGET-RENDER] COMPLETE', JSON.stringify({
+              type: 'video',
+              actionName: data.actionName,
+              timestamp: Date.now(),
+            }));
+            updateDiag('diag-last-render', 'SUCCESS', 'success');
+            return true;
+          } catch (err) {
+            // Check if it's an autoplay policy error
+            const isAutoplayError = err.name === 'NotAllowedError' ||
+                                    err.message?.includes('autoplay') ||
+                                    err.message?.includes('user didn\'t interact') ||
+                                    err.message?.includes('user interaction');
+
+            if (isAutoplayError) {
+              console.log('[OVERLAY-WIDGET-AUTOPLAY] normal play blocked', JSON.stringify({
+                actionName: data.actionName,
+                error: err.message,
+                readyState: vid.readyState,
+                timestamp: Date.now(),
+              }));
+
+              // Second attempt: muted autoplay fallback
+              console.log('[OVERLAY-WIDGET-AUTOPLAY] retrying muted autoplay', JSON.stringify({
+                actionName: data.actionName,
+                videoSrc: vid.src ? vid.src.substring(0, 100) : null,
+                muted: true,
+                readyState: vid.readyState,
+                timestamp: Date.now(),
+              }));
+
+              vid.muted = true;
+
+              try {
+                await vid.play();
+                console.log('[OVERLAY-WIDGET-AUTOPLAY] muted autoplay success', JSON.stringify({
+                  actionName: data.actionName,
+                  readyState: vid.readyState,
+                  timestamp: Date.now(),
+                }));
+                console.log('[OVERLAY-WIDGET-RENDER] COMPLETE', JSON.stringify({
+                  type: 'video',
+                  actionName: data.actionName,
+                  mutedAutoplay: true,
+                  timestamp: Date.now(),
+                }));
+                updateDiag('diag-last-render', 'SUCCESS_MUTED_AUTOPLAY', 'success');
+                return true;
+              } catch (err2) {
+                console.log('[OVERLAY-WIDGET-AUTOPLAY] muted autoplay failed', JSON.stringify({
+                  actionName: data.actionName,
+                  error: err2.message,
+                  readyState: vid.readyState,
+                  timestamp: Date.now(),
+                }));
+                console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+                  type: 'video',
+                  actionName: data.actionName,
+                  error: err2.message,
+                  timestamp: Date.now(),
+                }));
+                updateDiag('diag-last-render', 'ERROR', 'error');
+                return false;
+              }
+            } else {
+              // Other error (network, decode, etc.)
+              console.error('[OVERLAY-WIDGET-RENDER] VIDEO play failed', JSON.stringify({
+                actionName: data.actionName,
+                error: err.message,
+                timestamp: Date.now(),
+              }));
+              console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+                type: 'video',
+                actionName: data.actionName,
+                error: err.message,
+                timestamp: Date.now(),
+              }));
+              updateDiag('diag-last-render', 'ERROR', 'error');
+              return false;
+            }
+          }
+        }
+
+        // Wait for canplay event before attempting play
+        if (vid.readyState >= 3) { // HAVE_FUTURE_DATA
+          attemptPlay();
+        } else {
+          vid.oncanplay = () => {
+            vid.oncanplay = null; // Prevent duplicate calls
+            attemptPlay();
+          };
+        }
+
         const dur = (data.duration || 5) * 1000;
-        const remove = () => { if (overlay.parentElement) overlay.remove(); };
+        let videoRemoved = false;
+        const remove = () => {
+          if (videoRemoved) return; // prevent double-fire from setTimeout + onended
+          videoRemoved = true;
+          // Log element CSS/layout info before removal
+          const rect = overlay.getBoundingClientRect();
+          const style = window.getComputedStyle(overlay);
+          console.log('[OVERLAY-WIDGET-RENDER] VIDEO removing overlay', JSON.stringify({
+            actionName: data.actionName,
+            elementExists: !!overlay.parentElement,
+            display: style.display,
+            visibility: style.visibility,
+            opacity: style.opacity,
+            width: style.width,
+            height: style.height,
+            position: style.position,
+            zIndex: style.zIndex,
+            boundingRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+            videoReadyState: vid.readyState,
+            videoNetworkState: vid.networkState,
+            videoError: vid.error ? vid.error.code : null,
+            timestamp: Date.now(),
+          }));
+          // Dispatch completion event BEFORE removing DOM
+          if (data.actionExecutionId) {
+            console.log('[OVERLAY-WIDGET-COMPLETION] video complete', JSON.stringify({
+              actionExecutionId: data.actionExecutionId,
+              actionId: data.actionId,
+              actionName: data.actionName,
+              screen: data.screen,
+              mediaType: 'video',
+              timestamp: Date.now(),
+            }));
+            window.dispatchEvent(new CustomEvent('rosae:media-complete', {
+              detail: {
+                type: 'media-complete',
+                mediaType: 'video',
+                screen: data.screen,
+                actionExecutionId: data.actionExecutionId,
+                actionId: data.actionId,
+                actionName: data.actionName,
+                timestamp: Date.now(),
+              }
+            }));
+          }
+          if (overlay.parentElement) overlay.remove();
+          // Preload next queued video immediately to minimize gap
+          preloadNextVideo();
+        };
+        // Both duration timeout AND natural video end trigger removal
+        // Guard flag prevents double-fire
         setTimeout(remove, dur);
         vid.onended = remove;
         return;
@@ -154,13 +723,110 @@
 
       // ── IMAGE (fullscreen) ──
       if (data.type === "image" && data.imageFile) {
+        console.log('[OVERLAY-WIDGET-RENDER] START', JSON.stringify({
+          type: 'image',
+          actionName: data.actionName,
+          screen: data.screen,
+          imageFile: data.imageFile.substring(0, 100),
+          imageFileLength: data.imageFile.length,
+          timestamp: Date.now(),
+        }));
+
         const overlay = document.createElement("div");
         overlay.className = "media-overlay";
         const img = document.createElement("img");
         img.src = data.imageFile;
+
+        console.log('[OVERLAY-WIDGET-RENDER] IMAGE', JSON.stringify({
+          actionName: data.actionName,
+          imageSrc: img.src ? img.src.substring(0, 100) : null,
+          imageSrcLength: img.src ? img.src.length : 0,
+          timestamp: Date.now(),
+        }));
+
+        img.onload = () => {
+          console.log('[OVERLAY-WIDGET-RENDER] IMAGE loaded', JSON.stringify({
+            actionName: data.actionName,
+            naturalWidth: img.naturalWidth,
+            naturalHeight: img.naturalHeight,
+            timestamp: Date.now(),
+          }));
+          console.log('[OVERLAY-WIDGET-RENDER] COMPLETE', JSON.stringify({
+            type: 'image',
+            actionName: data.actionName,
+            timestamp: Date.now(),
+          }));
+          updateDiag('diag-last-render', 'SUCCESS', 'success');
+          // Completion is dispatched by remove() below — NOT here
+        };
+
+        img.onerror = (e) => {
+          console.error('[OVERLAY-WIDGET-RENDER] IMAGE ERROR', JSON.stringify({
+            actionName: data.actionName,
+            error: 'Failed to load image',
+            timestamp: Date.now(),
+          }));
+          console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+            type: 'image',
+            actionName: data.actionName,
+            error: 'Failed to load image',
+            timestamp: Date.now(),
+          }));
+          updateDiag('diag-last-render', 'ERROR', 'error');
+        };
+
         overlay.appendChild(img);
         document.body.appendChild(overlay);
-        setTimeout(() => { if (overlay.parentElement) overlay.remove(); }, (data.duration || 5) * 1000);
+
+        let imageRemoved = false;
+        const remove = () => {
+          if (imageRemoved) return;
+          imageRemoved = true;
+          // Log element CSS/layout info before removal
+          const rect = overlay.getBoundingClientRect();
+          const style = window.getComputedStyle(overlay);
+          console.log('[OVERLAY-WIDGET-RENDER] IMAGE removing overlay', JSON.stringify({
+            actionName: data.actionName,
+            elementExists: !!overlay.parentElement,
+            display: style.display,
+            visibility: style.visibility,
+            opacity: style.opacity,
+            width: style.width,
+            height: style.height,
+            position: style.position,
+            zIndex: style.zIndex,
+            boundingRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+            imageNaturalWidth: img.naturalWidth,
+            imageNaturalHeight: img.naturalHeight,
+            imageComplete: img.complete,
+            timestamp: Date.now(),
+          }));
+          // Dispatch completion event BEFORE removing DOM
+          if (data.actionExecutionId) {
+            console.log('[OVERLAY-WIDGET-COMPLETION] image complete', JSON.stringify({
+              actionExecutionId: data.actionExecutionId,
+              actionId: data.actionId,
+              actionName: data.actionName,
+              screen: data.screen,
+              mediaType: 'image',
+              timestamp: Date.now(),
+            }));
+            window.dispatchEvent(new CustomEvent('rosae:media-complete', {
+              detail: {
+                type: 'media-complete',
+                mediaType: 'image',
+                screen: data.screen,
+                actionExecutionId: data.actionExecutionId,
+                actionId: data.actionId,
+                actionName: data.actionName,
+                timestamp: Date.now(),
+              }
+            }));
+          }
+          if (overlay.parentElement) overlay.remove();
+        };
+
+        setTimeout(remove, (data.duration || 5) * 1000);
         return;
       }
 
@@ -210,21 +876,120 @@
       while (container.children.length > 5) container.lastElementChild.remove();
     }
 
+    // ═══ VIDEO PRELOAD (set by action-queue.ts) ═══
+    // action-queue dispatches this event after sending a video to the overlay,
+    // providing a peek at the next queued item so preload can start immediately.
+    window.__rf_peekNextQueued = null; // replaced by action-queue
+    window.addEventListener('rosae:preload-video', (e) => {
+      if (e.detail?.type === 'preload-next') {
+        // Store peek function for preloadNextVideo to call
+        window.__rf_peekNextQueued = () => e.detail.nextEvent;
+        // Trigger preload immediately
+        preloadNextVideo();
+      }
+    });
+
     // ═══ EVENT SOURCES ═══
 
     // SSE
     function connectSSE() {
       try {
-        const es = new EventSource("http://127.0.0.1:18890/events");
-        es.onopen = () => { statusDot.classList.add("connected"); statusDot.title = "Connected"; };
-        es.onmessage = (e) => { try { showAlert(JSON.parse(e.data)); } catch {} };
-        es.onerror = () => { statusDot.classList.remove("connected"); es.close(); setTimeout(connectSSE, 3000); };
+        // Use screen parameter from URL for SSE connection
+        const sseUrl = `http://127.0.0.1:18890/events?screen=${encodeURIComponent(screen || '')}`;
+        console.log('[OVERLAY-SSE-CLIENT] EventSource URL', JSON.stringify({
+          url: sseUrl,
+          windowLocation: window.location.href,
+          screen: screen,
+          timestamp: Date.now(),
+        }));
+        console.log('[OVERLAY-SSE-CLIENT] connecting', JSON.stringify({
+          sseUrl,
+          readyState: 0, // CONNECTING
+          timestamp: Date.now(),
+        }));
+        const es = new EventSource(sseUrl);
+        es.onopen = () => {
+          statusDot.classList.add("connected");
+          statusDot.title = "Connected";
+          updateDiag('diag-sse', 'CONNECTED', 'connected');
+          console.log('[OVERLAY-SSE-CLIENT] open', JSON.stringify({
+            url: sseUrl,
+            readyState: es.readyState,
+            timestamp: Date.now(),
+          }));
+        };
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            console.log('[OVERLAY-SSE-CLIENT] message', JSON.stringify({
+              readyState: es.readyState,
+              type: data.type,
+              actionName: data.actionName,
+              screen: data.screen,
+              videoFile: data.videoFile ? data.videoFile.substring(0, 100) : null,
+              imageFile: data.imageFile ? data.imageFile.substring(0, 100) : null,
+              timestamp: Date.now(),
+            }));
+            // Extract screen from either 'screen' or 'screenId' field
+            const eventScreen = data.screen || data.screenId;
+            const normalizedEventScreen = normalizeScreen(eventScreen);
+            // Screen filter: reject if widget has a screen and event doesn't match
+            if (screen) {
+              if (!normalizedEventScreen || normalizedEventScreen !== normalizedWidgetScreen) {
+                return;
+              }
+            }
+            updateDiag('diag-last-event', data.type || data.actionName || 'unknown');
+            showAlert(data);
+          } catch (err) {
+            console.error('[OVERLAY-SSE-CLIENT] parse error', err);
+          }
+        };
+        es.onerror = (err) => {
+          statusDot.classList.remove("connected");
+          updateDiag('diag-sse', 'DISCONNECTED', 'disconnected');
+          console.error('[OVERLAY-SSE-CLIENT] error', JSON.stringify({
+            url: sseUrl,
+            readyState: es.readyState,
+            error: err ? String(err) : 'EventSource error',
+            timestamp: Date.now(),
+          }));
+          // Log reconnect attempt
+          console.log('[OVERLAY-SSE-CLIENT] reconnecting in 3s...', JSON.stringify({
+            url: sseUrl,
+            timestamp: Date.now(),
+          }));
+          es.close();
+          setTimeout(connectSSE, 3000);
+        };
       } catch (_) { setTimeout(connectSSE, 3000); }
     }
     connectSSE();
 
     // BroadcastChannel
-    try { new BroadcastChannel("rosaefinity-overlay").onmessage = (e) => { if (e.data) showAlert(e.data); }; } catch {}
+    try {
+      new BroadcastChannel("rosaefinity-overlay").onmessage = (e) => {
+        if (e.data) {
+          console.log('[OVERLAY-BROADCAST-CLIENT] message', JSON.stringify({
+            type: e.data.type,
+            actionName: e.data.actionName,
+            screen: e.data.screen,
+            timestamp: Date.now(),
+          }));
+          // Extract screen from either 'screen' or 'screenId' field
+          const eventScreen = e.data.screen || e.data.screenId;
+          const normalizedEventScreen = normalizeScreen(eventScreen);
+          // Screen filter: reject if widget has a screen and event doesn't match
+          if (screen) {
+            if (!normalizedEventScreen || normalizedEventScreen !== normalizedWidgetScreen) {
+              return;
+            }
+          }
+          updateDiag('diag-last-event', e.data.type || e.data.actionName || 'unknown');
+          showAlert(e.data);
+        }
+      };
+    } catch {}
 
     // localStorage polling
     let lastChecked = 0;
@@ -234,13 +999,54 @@
         if (t && parseInt(t) > lastChecked) {
           lastChecked = parseInt(t);
           const d = localStorage.getItem("rf_overlay_test");
-          if (d) { try { showAlert(JSON.parse(d)); } catch {} }
+          if (d) {
+            try {
+              const data = JSON.parse(d);
+              console.log('[OVERLAY-LOCALSTORAGE-CLIENT] message', JSON.stringify({
+                type: data.type,
+                actionName: data.actionName,
+                screen: data.screen,
+                timestamp: Date.now(),
+              }));
+              // Extract screen from either 'screen' or 'screenId' field
+              const eventScreen = data.screen || data.screenId;
+              const normalizedEventScreen = normalizeScreen(eventScreen);
+              // Screen filter: reject if widget has a screen and event doesn't match
+              if (screen) {
+                if (!normalizedEventScreen || normalizedEventScreen !== normalizedWidgetScreen) {
+                  return;
+                }
+              }
+              updateDiag('diag-last-event', data.type || data.actionName || 'unknown');
+              showAlert(data);
+            } catch {}
+          }
         }
       } catch {}
     }, 500);
 
     // CustomEvent
-    window.addEventListener("rosae:overlay-event", (e) => { if (e.detail) showAlert(e.detail); });
+    window.addEventListener("rosae:overlay-event", (e) => {
+      if (e.detail) {
+        console.log('[OVERLAY-CUSTOMEVENT-CLIENT] message', JSON.stringify({
+          type: e.detail.type,
+          actionName: e.detail.actionName,
+          screen: e.detail.screen,
+          timestamp: Date.now(),
+        }));
+        // Extract screen from either 'screen' or 'screenId' field
+        const eventScreen = e.detail.screen || e.detail.screenId;
+        const normalizedEventScreen = normalizeScreen(eventScreen);
+        // Screen filter: reject if widget has a screen and event doesn't match
+        if (screen) {
+          if (!normalizedEventScreen || normalizedEventScreen !== normalizedWidgetScreen) {
+            return;
+          }
+        }
+        updateDiag('diag-last-event', e.detail.type || e.detail.actionName || 'unknown');
+        showAlert(e.detail);
+      }
+    });
 
     console.log("[Overlay] Ready");
   </script>

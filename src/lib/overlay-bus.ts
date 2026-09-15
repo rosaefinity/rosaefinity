@@ -60,6 +60,14 @@ function attemptSSERetry() {
 
 // ─── Kirim event ke overlay ─────────────────
 export function sendToOverlay(data: any) {
+  console.log('[ACTION-TRACE] overlay dispatch sent', JSON.stringify({
+    type: data.type,
+    actionName: data.actionName,
+    screen: data.screen,
+    channels: ["BroadcastChannel", "CustomEvent", "localStorage", "SSE"],
+    timestamp: Date.now(),
+  }));
+
   // 1. BroadcastChannel (same-process, instant)
   const ch = getChannel();
   if (ch) {

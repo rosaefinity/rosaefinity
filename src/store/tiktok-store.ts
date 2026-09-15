@@ -18,6 +18,11 @@ export interface TikTokConnectionState {
   lastError?: string;
   reconnectAttempts: number;
   isReconnecting: boolean;
+  isRateLimited: boolean;
+  /** Authoritative server-enforced rate limit deadline (epoch ms).
+   *  Both UI and backend connection guard derive remaining time from this.
+   *  When Date.now() >= serverRetryUntil, connection is allowed. */
+  serverRetryUntil: number | null;
 }
 
 const DEFAULT_STATE: TikTokConnectionState = {
@@ -28,6 +33,8 @@ const DEFAULT_STATE: TikTokConnectionState = {
   stats: { gifts: 0, likes: 0, follows: 0, shares: 0, comments: 0 },
   reconnectAttempts: 0,
   isReconnecting: false,
+  isRateLimited: false,
+  serverRetryUntil: null,
 };
 
 interface TikTokStore {
@@ -43,6 +50,7 @@ interface TikTokStore {
   incrementScreenStat: (screenId: string, key: keyof TikTokConnectionState['stats']) => void;
   setScreenReconnecting: (screenId: string, isReconnecting: boolean, attempt?: number) => void;
   setScreenError: (screenId: string, error: string) => void;
+  setScreenRateLimited: (screenId: string, isRateLimited: boolean, serverRetryUntil: number | null) => void;
 
   // Legacy compat (delegates to screen-0)
   connect: (username: string) => void;
@@ -74,40 +82,119 @@ export const useTikTokStore = create<TikTokStore>()(
       screens: getDefaultScreens(),
 
       // Per-screen actions
-      connectScreen: (screenId, username) => set((state) => ({
-        screens: {
-          ...state.screens,
-          [screenId]: { ...DEFAULT_STATE, status: 'connecting', username: username.toLowerCase().replace(/^@/, '') },
-        },
-      })),
-
-      disconnectScreen: (screenId) => set((state) => ({
-        screens: { ...state.screens, [screenId]: { ...DEFAULT_STATE } },
-      })),
-
-      setScreenConnected: (screenId, data) => set((state) => ({
-        screens: {
-          ...state.screens,
-          [screenId]: {
-            ...state.screens[screenId],
-            status: 'connected',
-            username: data.username,
-            roomId: data.roomId,
-            viewerCount: data.viewerCount ?? 0,
-            stats: { gifts: 0, likes: 0, follows: 0, shares: 0, comments: 0 },
-            reconnectAttempts: 0,
-            isReconnecting: false,
-            lastError: undefined,
+      connectScreen: (screenId, username) => set((state) => {
+        const now = Date.now();
+        const prevScreen = state.screens[screenId];
+        if (prevScreen?.serverRetryUntil && prevScreen.serverRetryUntil > now) {
+          console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE] BLOCKED`, JSON.stringify({
+            source: "store-connectScreen",
+            screenId,
+            now,
+            serverRetryUntilBeforeClear: prevScreen.serverRetryUntil,
+            remainingMs: Math.max(0, prevScreen.serverRetryUntil - now),
+            isRateLimitedBeforeClear: prevScreen.isRateLimited,
+            reason: "connectScreen called but rate limit still active - NOT clearing",
+          }));
+          // Don't clear rate limit, just return unchanged state
+          return state;
+        }
+        console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+          source: "store-connectScreen",
+          screenId,
+          now,
+          serverRetryUntilBeforeClear: prevScreen?.serverRetryUntil,
+          remainingMs: prevScreen?.serverRetryUntil ? Math.max(0, prevScreen.serverRetryUntil - now) : null,
+          isRateLimitedBeforeClear: prevScreen?.isRateLimited,
+          reason: "connectScreen - starting new connection (rate limit expired or none)",
+        }));
+        return {
+          screens: {
+            ...state.screens,
+            [screenId]: { ...DEFAULT_STATE, status: 'connecting', username: username.toLowerCase().replace(/^@/, '') },
           },
-        },
-      })),
+        };
+      }),
 
-      setScreenDisconnected: (screenId, error) => set((state) => ({
-        screens: {
-          ...state.screens,
-          [screenId]: { ...DEFAULT_STATE, lastError: error, status: 'disconnected' },
-        },
-      })),
+      disconnectScreen: (screenId) => set((state) => {
+        const now = Date.now();
+        const prevScreen = state.screens[screenId];
+        if (prevScreen?.serverRetryUntil && prevScreen.serverRetryUntil > now) {
+          console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE] BLOCKED`, JSON.stringify({
+            source: "store-disconnectScreen",
+            screenId,
+            now,
+            serverRetryUntilBeforeClear: prevScreen.serverRetryUntil,
+            remainingMs: Math.max(0, prevScreen.serverRetryUntil - now),
+            isRateLimitedBeforeClear: prevScreen.isRateLimited,
+            reason: "disconnectScreen called but rate limit still active - NOT clearing",
+          }));
+          return state;
+        }
+        console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+          source: "store-disconnectScreen",
+          screenId,
+          now,
+          serverRetryUntilBeforeClear: prevScreen?.serverRetryUntil,
+          remainingMs: prevScreen?.serverRetryUntil ? Math.max(0, prevScreen.serverRetryUntil - now) : null,
+          isRateLimitedBeforeClear: prevScreen?.isRateLimited,
+          reason: "disconnectScreen - manual disconnect (rate limit expired or none)",
+        }));
+        return {
+          screens: { ...state.screens, [screenId]: { ...DEFAULT_STATE } },
+        };
+      }),
+
+      setScreenConnected: (screenId, data) => set((state) => {
+        const now = Date.now();
+        const prevScreen = state.screens[screenId];
+        console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+          source: "store-setScreenConnected",
+          screenId,
+          now,
+          serverRetryUntilBeforeClear: prevScreen?.serverRetryUntil,
+          remainingMs: prevScreen?.serverRetryUntil ? Math.max(0, prevScreen.serverRetryUntil - now) : null,
+          isRateLimitedBeforeClear: prevScreen?.isRateLimited,
+          reason: "setScreenConnected - successful connection replaces rate limit",
+        }));
+        return {
+          screens: {
+            ...state.screens,
+            [screenId]: {
+              ...state.screens[screenId],
+              status: 'connected',
+              username: data.username,
+              roomId: data.roomId,
+              viewerCount: data.viewerCount ?? 0,
+              stats: { gifts: 0, likes: 0, follows: 0, shares: 0, comments: 0 },
+              reconnectAttempts: 0,
+              isReconnecting: false,
+              lastError: undefined,
+              isRateLimited: false,
+              serverRetryUntil: null,
+            },
+          },
+        };
+      }),
+
+      setScreenDisconnected: (screenId, error) => set((state) => {
+        // [TIKTOK-DISCONNECT-TRACE][STORE] Always transition to disconnected
+        // — disconnect is an authoritative user action, never block it
+        const now = Date.now();
+        const prevScreen = state.screens[screenId];
+        console.log(`[TIKTOK-DISCONNECT-TRACE][STORE]`, JSON.stringify({
+          screenId,
+          previousStatus: prevScreen?.status,
+          previousUsername: prevScreen?.username,
+          hadRateLimit: !!(prevScreen?.serverRetryUntil && prevScreen.serverRetryUntil > now),
+          reason: "setScreenDisconnected — always applies",
+        }));
+        return {
+          screens: {
+            ...state.screens,
+            [screenId]: { ...DEFAULT_STATE, lastError: error, status: 'disconnected' },
+          },
+        };
+      }),
 
       setScreenViewerCount: (screenId, count) => set((state) => ({
         screens: {
@@ -145,6 +232,35 @@ export const useTikTokStore = create<TikTokStore>()(
         },
       })),
 
+      setScreenRateLimited: (screenId, isRateLimited, serverRetryUntil) => set((state) => {
+        const now = Date.now();
+        const prevScreen = state.screens[screenId];
+        console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+          source: "store-setScreenRateLimited",
+          screenId,
+          now,
+          serverRetryUntilBeforeClear: prevScreen?.serverRetryUntil,
+          remainingMs: prevScreen?.serverRetryUntil ? Math.max(0, prevScreen.serverRetryUntil - now) : null,
+          isRateLimitedBeforeClear: prevScreen?.isRateLimited,
+          isRateLimitedAfter: isRateLimited,
+          serverRetryUntilAfter: serverRetryUntil,
+          reason: isRateLimited ? "setting rate limited" : "clearing rate limit",
+        }));
+        return {
+          screens: {
+            ...state.screens,
+            [screenId]: {
+              ...state.screens[screenId],
+              isRateLimited,
+              serverRetryUntil,
+              status: isRateLimited ? 'error' : 'disconnected',
+              isReconnecting: false,
+              reconnectAttempts: 0,
+            },
+          },
+        };
+      }),
+
       // Legacy compat (delegates to screen-0)
       connect: (username) => get().connectScreen('screen-0', username),
       disconnect: () => get().disconnectScreen('screen-0'),
@@ -161,7 +277,18 @@ export const useTikTokStore = create<TikTokStore>()(
     {
       name: 'rf-tiktok-connections',
       partialize: (state) => ({
-        screens: state.screens,
+        screens: Object.fromEntries(
+          Object.entries(state.screens).map(([id, screen]) => [
+            id,
+            {
+              ...screen,
+              // Do NOT persist ephemeral rate-limit state
+              // Server controls the cooldown lifecycle on startup
+              isRateLimited: false,
+              serverRetryUntil: null,
+            },
+          ])
+        ),
       }),
     }
   )
@@ -177,3 +304,5 @@ export const selectScreenRoomId = (screenId: string) => (state: TikTokStore) => 
 export const selectScreenIsReconnecting = (screenId: string) => (state: TikTokStore) => state.screens[screenId]?.isReconnecting ?? false;
 export const selectScreenReconnectAttempts = (screenId: string) => (state: TikTokStore) => state.screens[screenId]?.reconnectAttempts ?? 0;
 export const selectScreenLastError = (screenId: string) => (state: TikTokStore) => state.screens[screenId]?.lastError;
+export const selectScreenIsRateLimited = (screenId: string) => (state: TikTokStore) => state.screens[screenId]?.isRateLimited ?? false;
+export const selectScreenServerRetryUntil = (screenId: string) => (state: TikTokStore) => state.screens[screenId]?.serverRetryUntil ?? null;

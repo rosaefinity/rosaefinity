@@ -31,6 +31,13 @@ export const authRepository = {
     return prisma.user.update({ where: { id }, data });
   },
 
+  async updateUserPassword(userId: string, passwordHash: string) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+  },
+
   async createSession(data: { userId: string; accessToken: string; refreshToken: string; deviceId?: string; ipAddress?: string; userAgent?: string; expiresAt: Date }) {
     return prisma.session.create({ data });
   },

@@ -8,10 +8,12 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { showTestNotification } from "../components/TestNotification";
 import { toast } from "../components/Toast";
-import { getGifts, getGiftEmoji, getGiftImageUrl, type TikTokGift } from "../services/gift-service";
+import { getGifts, getGiftsSync, getGiftEmoji, getGiftImageUrl, type TikTokGift } from "../services/gift-service";
 import { sendToOverlay } from "../lib/overlay-bus";
 import { saveActionMedia, deleteActionMedia } from "../lib/db";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
+import { normalizeScreenWithTrace as normalizeScreen } from "../lib/screen-normalizer";
+import { executeAction } from "../store/event-dispatch";
 import {
   Plus, Search, Play, Edit, Trash2, X, Copy, CheckCircle2,
   Music, Video, Image, Keyboard, Monitor, Gift, Heart, Bell,
@@ -325,8 +327,49 @@ export function ActionsPage() {
 
   // ── TEST ACTION ──────────────────────────────────────────
   function testAction(action: any) {
-    const screen = action.overlayScreen || "Screen 1";
-    const screenNum = screen.replace("Screen ", "");
+    const catalog = getGiftsSync();
+    // Pick a real gift from the catalog - prefer one with an image URL
+    const giftsWithImages = catalog?.filter(g => getGiftImageUrl(g)) || [];
+    const entry = giftsWithImages.length > 0
+      ? giftsWithImages[0]  // First gift with a valid image
+      : catalog?.[0];       // Fallback to first gift
+
+    if (!entry) {
+      console.error('[COIN-JAR-TEST] No catalog entries available');
+      toast('Gift catalog not loaded yet');
+      return;
+    }
+
+    const resolvedImageUrl = getGiftImageUrl(entry);
+    const resolvedGiftId = entry?.giftId || 'test-gift';
+
+    console.log('[COIN-JAR-IMAGE-SOURCE] ACTION_TEST_EVENT', JSON.stringify({
+      giftId: resolvedGiftId,
+      giftName: entry.name,
+      diamondCount: entry.coins,
+      repeatCount: 2,
+      giftImageUrl: resolvedImageUrl || '(empty)',
+      imageSource: resolvedImageUrl ? 'catalog' : 'empty',
+    }));
+
+    const testEventData = {
+      type: "test",
+      user: "test_user",
+      nickname: "test_user",
+      screenId: action.overlayScreen || "Screen 1",
+      giftName: entry.name,
+      giftId: entry?.giftId || 'test-gift',
+      diamondCount: entry.coins,
+      repeatCount: 2,
+      giftImageUrl: resolvedImageUrl || undefined,
+      timestamp: Date.now(),
+    };
+
+    // Use the same executeAction path as TikTok events
+    // This ensures Repeat Combo queue is respected
+    executeAction(action, testEventData);
+
+    // Show test notification (NOT during live TikTok events)
     const effects: string[] = [];
     if (action.sound) effects.push("Sound");
     if (action.video) effects.push("Video");
@@ -334,38 +377,9 @@ export function ActionsPage() {
     if (action.keystroke) effects.push("Keystroke");
     if (action.minecraft) effects.push("Minecraft");
 
-    // Send overlay event to the target screen
-    const overlayData: Record<string, unknown> = {
-      actionName: action.name,
-      timestamp: Date.now(),
-      screen: screenNum,
-      isTest: true,
-      duration: action.displayDuration || action.duration || 5,
-      videoFile: action.video ? action.videoFile : undefined,
-      imageFile: action.image ? action.imageFile : undefined,
-      keystrokeKeys: action.keystroke ? action.keystrokeKeys : undefined,
-      keystrokeHoldMs: action.keystroke ? action.keystrokeHoldMs : 100,
-    };
-
-    if (action.video && action.videoFile) {
-      overlayData.type = "video";
-    } else if (action.image && action.imageFile) {
-      overlayData.type = "image";
-    } else if (action.keystroke) {
-      overlayData.type = "keystroke";
-      if (typeof window !== 'undefined' && (window as any).electronAPI?.sendKeystroke) {
-        (window as any).electronAPI.sendKeystroke(action.keystrokeKeys, action.keystrokeHoldMs || 100);
-      }
-    } else {
-      overlayData.type = "action";
-    }
-
-    sendToOverlay(overlayData);
-
-    // Show test notification (NOT during live TikTok events)
     showTestNotification({
       actionName: action.name,
-      screen,
+      screen: action.overlayScreen || "Screen 1",
       duration: action.displayDuration || action.duration || 5,
       effects,
     });

@@ -115,17 +115,30 @@ export interface ElectronAPI {
   showItemInFolder: (path: string) => void;
 
   // TikTok (per-screen)
-  connectTikTokScreen: (screenId: string, username: string) => void;
-  disconnectTikTokScreen: (screenId: string) => void;
-  connectTikTok: (username: string) => void;       // deprecated alias → screen-0
-  disconnectTikTok: () => void;                    // deprecated alias → screen-0
+  connectTikTokScreen: (screenId: string, username: string) => Promise<unknown>;
+  disconnectTikTokScreen: (screenId: string) => Promise<unknown>;
+  connectTikTok: (username: string) => Promise<unknown>;       // deprecated alias → screen-0
+  disconnectTikTok: () => Promise<unknown>;                    // deprecated alias → screen-0
   onConnected: (cb: (data: { screenId: string; username: string; roomId: string; viewerCount: number }) => void) => () => void;
   onDisconnected: (cb: (data: { screenId: string; reason?: string }) => void) => () => void;
   onEvent: (cb: (data: { screenId: string; type: string; [key: string]: any }) => void) => () => void;
   onViewers: (cb: (data: { screenId: string; viewerCount: number }) => void) => () => void;
   onError: (cb: (data: { screenId: string; message: string }) => void) => () => void;
   onReconnecting: (cb: (data: { screenId: string; attempt: number; maxAttempts: number }) => void) => () => void;
+  onRateLimited?: (cb: (data: {
+    screenId: string;
+    serverRetryUntil: number;
+    serverRetryAfterMs: number;
+  }) => void) => () => void;
+  onCooldownExpired?: (cb: (data: {
+    screenId: string;
+    serverRetryUntil?: number;
+    serverStillRateLimited?: boolean;
+  }) => void) => () => void;
   onStats: (cb: (data: { screenId: string; stats: { gifts: number; likes: number; follows: number; shares: number; comments: number } }) => void) => () => void;
+
+  // TEMPORARY: Test event injection
+  injectTikTokTestEvent: (screenId: string, event: Record<string, any>) => Promise<unknown>;
 
   // Overlay
   openOverlay: () => void;

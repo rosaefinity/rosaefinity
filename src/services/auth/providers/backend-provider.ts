@@ -378,7 +378,9 @@ export class BackendAuthProvider implements AuthProvider {
   private mapBackendUser(backendUser: BackendUser): AuthUser {
     // Backend role (USER/ADMIN) maps to frontend accountType for authorization.
     // Backend accountType (guest/free/pro/enterprise) is the plan tier.
-    const frontendAccountType = backendUser.role === 'ADMIN' ? 'admin' : 'free';
+    const frontendAccountType = backendUser.role === 'ADMIN'
+      ? 'admin'
+      : (backendUser.accountType === 'enterprise' ? 'pro' : backendUser.accountType as AccountType);
     return {
       id: backendUser.id,
       email: backendUser.email,

@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { OverlayInstance } from '../overlays/types';
 import { resolveConfig } from '../overlays/createConfig';
+import { defaultGoalProgressConfig } from '../overlays/goal-progress/types';
+import type { GoalProgressConfig } from '../overlays/goal-progress/types';
+import { sendToOverlay } from './overlay-bus';
 import {
   saveOverlayInstance,
   getAllOverlayInstances,
@@ -14,6 +17,20 @@ function syncInstancesToMain(instances: OverlayInstance[]): void {
     const api = (window as Record<string, unknown>)['electronAPI'] as Record<string, unknown> | undefined;
     if (api?.syncOverlayInstances) {
       (api.syncOverlayInstances as (instances: OverlayInstance[]) => void)(instances);
+    }
+  } catch (_) {}
+}
+
+/**
+ * Push instances to the main process immediately after Dexie load.
+ * This populates overlayInstancesByBrowserSourceId before Browser Source
+ * /config requests can arrive, eliminating the config-fetch retry race.
+ */
+function pushInstancesToMain(instances: OverlayInstance[]): void {
+  try {
+    const api = (window as Record<string, unknown>)['electronAPI'] as Record<string, unknown> | undefined;
+    if (api?.pushOverlayInstances) {
+      (api.pushOverlayInstances as (instances: OverlayInstance[]) => void)(instances);
     }
   } catch (_) {}
 }
@@ -94,6 +111,7 @@ export const useOverlayStore = create<OverlayStore>()(
       },
 
       updateConfig: (id, config) => {
+        console.log('[GOAL-SYNC-3] updateConfig:', { id });
         set((state) => ({
           instances: state.instances.map((inst) =>
             inst.id === id ? { ...inst, config, updatedAt: Date.now() } : inst
@@ -101,7 +119,10 @@ export const useOverlayStore = create<OverlayStore>()(
         }));
 
         const updated = get().getInstance(id);
-        if (updated) get().persistInstance(updated);
+        if (updated) {
+          console.log('[GOAL-SYNC-3] persistInstance called:', { moduleId: updated.moduleId });
+          get().persistInstance(updated);
+        }
       },
 
       toggleEnabled: (id) => {
@@ -182,8 +203,19 @@ export const useOverlayStore = create<OverlayStore>()(
             config: resolveConfig(inst.config),
           }));
           set({ instances, loaded: true });
-          // Sync to main process for SSE config endpoint
+          // Push to main process immediately — populates the instance map
+          // BEFORE Browser Source /config requests can arrive (eliminates race)
+          pushInstancesToMain(instances);
+          // Also sync via the existing channel for full rebuild
           syncInstancesToMain(instances);
+          // Push Goal Progress config to Electron main process for browser sources
+          const gpInstance = instances.find(i => i.moduleId === 'goal-progress');
+          if (gpInstance) {
+            const full = { ...defaultGoalProgressConfig, ...(gpInstance.config as Partial<GoalProgressConfig>) };
+            try {
+              (window as any).electronAPI?.pushGoalConfig?.(full);
+            } catch { /* not in Electron */ }
+          }
         } catch (error) {
           console.error('[OverlayStore] Failed to load instances:', error);
           set({ loaded: true, instances: [] });
@@ -195,6 +227,21 @@ export const useOverlayStore = create<OverlayStore>()(
           await saveOverlayInstance(instance);
           // Sync to main process for SSE config endpoint
           notifyInstanceUpdated(instance);
+          // Sync Goal Progress config to localStorage + server + broadcast via SSE
+          if (instance.moduleId === 'goal-progress') {
+            try {
+              const full = { ...defaultGoalProgressConfig, ...(instance.config as Partial<GoalProgressConfig>) };
+              localStorage.setItem('rf-goal-config', JSON.stringify(full));
+              // Store config on server for newly-connected browser sources
+              fetch('http://localhost:18890/goal-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(full),
+              }).catch(() => {});
+              // Broadcast via SSE so all connected browser sources receive the update
+              sendToOverlay({ type: 'goal-config-update', config: full } as any);
+            } catch (err) { console.error('[GOAL-SYNC] persistInstance error:', err); }
+          }
         } catch (error) {
           console.error('[OverlayStore] Failed to persist instance:', error);
         }

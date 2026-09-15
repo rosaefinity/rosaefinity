@@ -45,13 +45,17 @@ declare global {
 function parseURLParams(): URLParams {
   const params = new URLSearchParams(window.location.search);
 
-  // Read globals injected by SSE server for /overlay/<browserSourceId> endpoint
+  // PRIMARY: Extract from URL pathname (process-isolated, never overwritten by other pages)
+  const pathMatch = window.location.pathname.match(/^\/overlay\/([a-f0-9-]+)(?:\.html)?$/);
+  const pathBrowserSourceId = pathMatch ? pathMatch[1] : null;
+
+  // FALLBACK: window global injected by server (vulnerable to overwrite in shared browsing contexts)
   const injectedBrowserSourceId = window.__ROSAEFINITY_BROWSER_SOURCE_ID__ || null;
 
   return {
     overlayId: params.get('overlay'),
     instanceId: params.get('instance') ?? params.get('instanceId'),
-    browserSourceId: injectedBrowserSourceId ?? params.get('browserSourceId'),
+    browserSourceId: pathBrowserSourceId ?? injectedBrowserSourceId ?? params.get('browserSourceId'),
     screenId: params.get('screen'),
     sceneId: params.get('scene'),
     previewMode: params.get('preview') === 'true',
@@ -366,18 +370,6 @@ export function BrowserSourceApp(): React.ReactElement {
           </Suspense>
         </OverlayErrorBoundary>
       </div>
-
-      {/* Connection status indicator */}
-      <StatusDot connected={sse.connectionStatus === 'connected'} />
-
-      {/* Connection status with reconnect button (when disconnected) */}
-      {sse.connectionStatus !== 'connected' && (
-        <ConnectionStatusUI
-          status={sse.connectionStatus}
-          reconnectCount={sse.reconnectCount}
-          onReconnect={sse.reconnect}
-        />
-      )}
 
       {/* Debug panel (only when ?debug=true) */}
       {urlParams.debugMode && <DebugPanel />}

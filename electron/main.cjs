@@ -2,6 +2,8 @@
 // RosaeFinity - electron/main.cjs
 // Electron Main Process (v2 — full backend)
 // =============================================
+console.log("[TIKTOK-MAIN-BOOT]", __filename);
+console.log("[TIKTOK-MAIN-PID]", process.pid);
 
 const { app, BrowserWindow, ipcMain, nativeTheme, Menu, Tray, shell, desktopCapturer, session } = require("electron");
 const path = require("path");
@@ -29,6 +31,7 @@ const licenseSystem = require("./backend/license-system.cjs");
 const spotify       = require("./backend/spotify.cjs");
 const authSystem    = require("./backend/auth-system.cjs");
 const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/global-input-hook.cjs");
+const updateManager = require("./backend/update-manager.cjs");
 const { getTikTokService } = require("./backend/tiktok-service.cjs");
 
 // ── Phase 2: Stability Modules ──────────────
@@ -81,6 +84,11 @@ const RECONNECT_DELAY_MS    = 3000;
 // ── SSE Overlay Server ─────────────────────
 const SSE_PORT = 18890;
 let sseClients = [];
+let storedGoalConfig = null; // Latest Goal Progress config for browser sources
+
+// ── v3.1 Instance-based browser source registry ──
+// Maps browserSourceId → OverlayInstance (synced from renderer via IPC)
+const overlayInstancesByBrowserSourceId = new Map();
 
 function broadcastSSE(data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
@@ -93,6 +101,20 @@ function startSSEServer() {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${SSE_PORT}`);
 
+    // ── UNIVERSAL REQUEST LOGGER ──
+    const ua = req.headers["user-agent"] || "unknown";
+    const referer = req.headers["referer"] || "none";
+    const origin = req.headers["origin"] || "none";
+    console.log("[HTTP-IN] " + req.method + " " + url.pathname + " UA=" + ua.substring(0, 80) + " REFERER=" + referer.substring(0, 60));
+
+    // ── Response logger (wraps res.end) ──
+    const origEnd = res.end;
+    res.end = function(...args) {
+      const ct = res.getHeader("content-type") || "unknown";
+      console.log("[HTTP-OUT] " + url.pathname + " STATUS=" + res.statusCode + " CONTENT-TYPE=" + ct);
+      return origEnd.apply(this, args);
+    };
+
     // ── SSE stream endpoint ──
     if (url.pathname === "/events" && req.method === "GET") {
       res.writeHead(200, {
@@ -102,8 +124,27 @@ function startSSEServer() {
         "Access-Control-Allow-Origin": "*",
       });
       res.write(":\n\n"); // initial comment to flush headers
+      // Push stored Goal Progress config to newly connected client
+      if (storedGoalConfig) {
+        res.write(`data: ${JSON.stringify({ type: 'goal-config-update', config: storedGoalConfig })}\n\n`);
+      }
       sseClients.push(res);
       req.on("close", () => { sseClients = sseClients.filter(c => c !== res); });
+      return;
+    }
+
+    // ── Health check endpoint ──
+    if (url.pathname === "/health") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify({
+        status: "ok",
+        sseClients: sseClients.length,
+        uptime: process.uptime(),
+        timestamp: Date.now(),
+      }));
       return;
     }
 
@@ -124,6 +165,212 @@ function startSSEServer() {
         res.writeHead(404); res.end("Overlay not found");
       }
       return;
+    }
+
+    // ── Coin Jar Browser Source HTML ──
+    if (url.pathname === "/coin-jar.html" || url.pathname === "/coin-jar") {
+      if (isDev) {
+        // Dev mode: serve coin-jar.html with dev entry point (references /src/ paths)
+        const devHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RosaeFinity Coin Jar</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    #root { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/coin-jar-entry.tsx"></script>
+</body>
+</html>`;
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(devHtml);
+      } else {
+        // Production mode: serve built coin-jar.html
+        const htmlStrategies = [
+          path.join(__dirname, "../dist/coin-jar.html"),
+          path.join(process.resourcesPath || "", "dist", "coin-jar.html"),
+          path.join(app.getAppPath(), "dist", "coin-jar.html"),
+          path.join(process.cwd(), "dist", "coin-jar.html"),
+        ];
+
+        let served = false;
+        for (const htmlPath of htmlStrategies) {
+          try {
+            if (!fs.existsSync(htmlPath)) continue;
+            const html = fs.readFileSync(htmlPath, "utf-8");
+            console.log('[COIN-JAR-SSE] serving coin-jar.html', JSON.stringify({
+              requestedUrl: req.url,
+              resolvedFilePath: htmlPath,
+              contentLength: html.length,
+              timestamp: Date.now(),
+            }));
+            res.writeHead(200, {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "no-store, no-cache, must-revalidate",
+              "Pragma": "no-cache",
+              "Expires": "0",
+              "Access-Control-Allow-Origin": "*",
+            });
+            res.end(html);
+            served = true;
+            break;
+          } catch (_) {}
+        }
+        if (!served) {
+          console.error('[COIN-JAR-SSE] coin-jar.html not found in any strategy', {
+            strategies: htmlStrategies,
+            timestamp: Date.now(),
+          });
+          res.writeHead(404); res.end("Coin Jar overlay not found");
+        }
+      }
+      return;
+    }
+
+    // ── Goals overlay ──
+    // EXACT same pattern as Coin Jar Pro: dev inline HTML + Vite module proxy.
+    if (url.pathname === "/goals-widget.html" || url.pathname === "/goals-widget") {
+      if (isDev) {
+        // Dev mode: serve goals-widget.html with dev entry point (references /src/ paths)
+        const devHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RosaeFinity Goal Progress</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    #root { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/goals/goal-entry.tsx"></script>
+</body>
+</html>`;
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(devHtml);
+      } else {
+        // Production mode: serve built goals-widget.html
+        const htmlStrategies = [
+          path.join(__dirname, "../dist/goals-widget.html"),
+          path.join(process.resourcesPath || "", "dist", "goals-widget.html"),
+          path.join(app.getAppPath(), "dist", "goals-widget.html"),
+          path.join(process.cwd(), "dist", "goals-widget.html"),
+        ];
+        let served = false;
+        for (const htmlPath of htmlStrategies) {
+          try {
+            if (!fs.existsSync(htmlPath)) continue;
+            const html = fs.readFileSync(htmlPath, "utf-8");
+            res.writeHead(200, {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "no-store, no-cache, must-revalidate",
+              "Pragma": "no-cache",
+              "Expires": "0",
+              "Access-Control-Allow-Origin": "*",
+            });
+            res.end(html);
+            served = true;
+            break;
+          } catch (_) {}
+        }
+        if (!served) {
+          res.writeHead(404); res.end("Goals overlay not found");
+        }
+      }
+      return;
+    }
+
+    // ── Instance-based overlay: serve HTML shell ──
+    {
+      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)(?:\.html)?$/);
+      if (match && req.method === "GET") {
+        const browserSourceId = match[1];
+        const htmlPath = isDev
+          ? path.join(__dirname, "../overlay-entry.html")
+          : path.join(__dirname, "../dist/overlay-entry.html");
+        try {
+          let html = fs.readFileSync(htmlPath, "utf-8");
+          // Inject browserSourceId so BrowserSourceApp can read it from window global
+          html = html.replace('<head>', `<head><script>window.__ROSAEFINITY_BROWSER_SOURCE_ID__="${browserSourceId}";</script>`);
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Access-Control-Allow-Origin": "*",
+          });
+          res.end(html);
+        } catch (_) {
+          res.writeHead(404); res.end("Overlay entry not found");
+        }
+        return;
+      }
+    }
+
+    // ── Instance-based overlay: config JSON ──
+    {
+      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)\/config$/);
+      if (match && req.method === "GET") {
+        const browserSourceId = match[1];
+        const instance = overlayInstancesByBrowserSourceId.get(browserSourceId);
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        if (instance) {
+          res.end(JSON.stringify({ moduleId: instance.moduleId, config: instance.config }));
+        } else {
+          res.writeHead(404, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+          res.end(JSON.stringify({ error: "Instance not found", browserSourceId }));
+        }
+        return;
+      }
+    }
+
+    // ── Instance-based overlay: SSE events ──
+    {
+      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)\/events$/);
+      if (match && req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.write(":\n\n");
+        sseClients.push(res);
+        req.on("close", () => { sseClients = sseClients.filter(c => c !== res); });
+        return;
+      }
     }
 
     // ── Broadcast event via GET (for external tools) ──
@@ -157,6 +404,27 @@ function startSSEServer() {
       return;
     }
 
+    // ── Goal Progress config endpoints ──
+    if (url.pathname === "/goal-config" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.end(JSON.stringify(storedGoalConfig || {}));
+      return;
+    }
+    if (url.pathname === "/goal-config" && req.method === "POST") {
+      let body = "";
+      req.on("data", c => { body += c; });
+      req.on("end", () => {
+        try {
+          storedGoalConfig = JSON.parse(body);
+          // Broadcast to all connected SSE clients
+          broadcastSSE({ type: 'goal-config-update', config: storedGoalConfig });
+        } catch (_) {}
+        res.writeHead(200, { "Access-Control-Allow-Origin": "*" });
+        res.end("ok");
+      });
+      return;
+    }
+
     // ── CORS preflight ──
     if (req.method === "OPTIONS") {
       res.writeHead(204, {
@@ -165,6 +433,124 @@ function startSSEServer() {
         "Access-Control-Allow-Headers": "Content-Type",
       });
       res.end();
+      return;
+    }
+
+    // ── Production: serve public files from dist/ ──
+    // Handles /assets/* (bundled JS/CSS) and root-level public files (logos, favicon)
+    if (url.pathname.startsWith("/assets/") || /\.(png|svg|ico|jpg|jpeg|gif|woff2?|ttf|eot)$/.test(url.pathname)) {
+      const assetPath = url.pathname.replace(/^\//, '');
+      console.log("[GOALS-ASSET] requested =", url.pathname);
+      const distStrategies = [
+        path.join(__dirname, "../dist", assetPath),
+        path.join(process.resourcesPath || "", "dist", assetPath),
+        path.join(app.getAppPath(), "dist", assetPath),
+        path.join(process.cwd(), "dist", assetPath),
+      ];
+      for (const filePath of distStrategies) {
+        try {
+          if (!fs.existsSync(filePath)) continue;
+          const ext = path.extname(filePath).toLowerCase();
+          const contentType = {
+            '.js': 'application/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.json': 'application/json; charset=utf-8',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.svg': 'image/svg+xml',
+            '.woff2': 'font/woff2',
+            '.woff': 'font/woff',
+          }[ext] || 'application/octet-stream';
+          const data = fs.readFileSync(filePath);
+          console.log("[GOALS-ASSET] resolved =", filePath, "exists = true size =", data.length);
+          res.writeHead(200, {
+            'Content-Type': contentType,
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          });
+          res.end(data);
+          return;
+        } catch (_) {}
+      }
+      res.writeHead(404); res.end('Asset not found');
+      return;
+    }
+
+    // ── Dev mode: proxy /assets/ to Vite dev server ──
+    // coin-jar.html references /assets/ paths in production build
+    if (isDev && url.pathname.startsWith("/assets/")) {
+      console.log(`[COIN-JAR-REQUEST] ${url.pathname} → proxy→Vite`);
+      const viteUrl = `http://127.0.0.1:5173${url.pathname}`;
+      http.get(viteUrl, (proxyRes) => {
+        const contentType = proxyRes.headers['content-type'] || 'application/octet-stream';
+        res.writeHead(proxyRes.statusCode || 200, {
+          'Content-Type': contentType,
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store',
+        });
+        proxyRes.pipe(res);
+      }).on('error', () => {
+        res.writeHead(502);
+        res.end('Vite dev server not available for asset proxy');
+      });
+      return;
+    }
+
+    // ── Dev mode: proxy /src/* and /node_modules/* to Vite dev server ──
+    // coin-jar.html and goals-widget.html in dev mode reference /src/ paths
+    if (isDev && (url.pathname.startsWith("/src/") || url.pathname.startsWith("/node_modules/"))) {
+      console.log(`[GOALS-PROXY] ${url.pathname} → proxy→Vite`);
+      const viteUrl = `http://127.0.0.1:5173${url.pathname}`;
+      http.get(viteUrl, (proxyRes) => {
+        const contentType = proxyRes.headers['content-type'] || 'application/octet-stream';
+        console.log(`[GOALS-PROXY] ${url.pathname} ← status=${proxyRes.statusCode} content-type=${contentType}`);
+        res.writeHead(proxyRes.statusCode || 200, {
+          'Content-Type': contentType,
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store',
+        });
+        proxyRes.pipe(res);
+      }).on('error', (err) => {
+        console.log(`[GOALS-PROXY] ${url.pathname} ← ERROR: ${err.message}`);
+        res.writeHead(502);
+        res.end('Vite dev server not available for source proxy');
+      });
+      return;
+    }
+
+    // ── Diagnostic test endpoints ──
+    if (url.pathname === "/goals-test.html") {
+      console.log("[GOALS-SERVE] /goals-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(`<!DOCTYPE html>
+<html><body style="margin:0;background:red;">
+<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:48px;font-family:sans-serif;color:white;font-weight:bold;">
+GOALS STATIC TEST
+</div>
+</body></html>`);
+      return;
+    }
+    if (url.pathname === "/goals-js-test.html") {
+      console.log("[GOALS-SERVE] /goals-js-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(`<!DOCTYPE html>
+<html><body style="margin:0;background:transparent;">
+<div id="test" style="position:fixed;inset:0;background:rgba(0,0,255,.15);color:white;font-size:40px;display:flex;align-items:center;justify-content:center;font-family:monospace;">
+HTML OK — WAITING FOR JS
+</div>
+<script>
+document.getElementById("test").textContent = "HTML + INLINE JS OK";
+console.log("[GOALS-RUNTIME] inline JS test executed");
+</script>
+</body></html>`);
       return;
     }
 
@@ -679,6 +1065,12 @@ function getTikTokServiceInstance() {
     // Forward service events to renderer and overlay
     tiktokService.on("event", (event) => {
       const { type, screenId, ...data } = event;
+      console.log(`[TIKTOK-DISCONNECT-TRACE][EVENT]`, JSON.stringify({
+        screenId,
+        eventType: type,
+        reason: data.reason || null,
+        timestamp: Date.now(),
+      }));
       if (type === "connected") {
         sendToRenderer("tiktok:connected", { screenId, ...data });
         sendToOverlay("overlay:connected", { screenId, username: data.username });
@@ -695,6 +1087,22 @@ function getTikTokServiceInstance() {
         // All other events (gift, like, comment, follow, share, subscribe, member)
         sendToRenderer("tiktok:event", { type, screenId, ...data });
         sendToOverlay("overlay:event", { type, screenId, ...data });
+        // CRITICAL: Broadcast gift events to SSE so Browser Sources receive them
+        // Without this, Browser Sources only get coin-jar-gift (counter updates)
+        // but never get the 'gift' events that trigger falling gift animations.
+        broadcastSSE({ type, screenId, ...data });
+
+        // [REAL-GIFT-DEBUG][MAIN-FORWARD] Event forwarded to all channels
+        if (type === 'gift') {
+          console.log('[REAL-GIFT-DEBUG][MAIN-FORWARD]', JSON.stringify({
+            type, screenId,
+            giftId: data.giftId, giftName: data.giftName,
+            giftImageUrl: data.giftImageUrl || '(empty)',
+            sentToRenderer: true,
+            sentToOverlay: true,
+            sentToSSE: true,
+          }));
+        }
       }
     });
   }
@@ -717,13 +1125,12 @@ function disconnectTikTok(screenId) {
   });
 }
 
-function manualReconnect(screenId, username) {
+async function manualReconnect(screenId, username) {
   const service = getTikTokServiceInstance();
   // Reset any lock and reconnect
-  service.disconnect(screenId).then(() => {
-    service.connect(screenId, username).catch((err) => {
-      console.error(`[TIKTOK] manual reconnect failed for ${screenId}:`, err.message);
-    });
+  await service.disconnect(screenId);
+  await service.connect(screenId, username).catch((err) => {
+    console.error(`[TIKTOK] manual reconnect failed for ${screenId}:`, err.message);
   });
 }
 
@@ -732,8 +1139,36 @@ function manualReconnect(screenId, username) {
 // =============================================
 
 // ── TikTok (per-screen) ──
-ipcMain.on("tiktok:connect", (_, { screenId, username }) => manualReconnect(screenId, username));
-ipcMain.on("tiktok:disconnect", (_, { screenId }) => { disconnectTikTok(screenId); sendToRenderer("tiktok:disconnected", { screenId }); });
+console.log("[TIKTOK-IPC-REGISTER] registering tiktok:connect and tiktok:disconnect");
+ipcMain.handle("tiktok:connect", async (_, { screenId, username }) => {
+  console.log(`[TIKTOK-IPC] tiktok:connect invoked screenId=${screenId} username=${username}`);
+  await manualReconnect(screenId, username);
+  return { success: true };
+});
+ipcMain.handle("tiktok:disconnect", async (_, { screenId }) => {
+  const service = getTikTokServiceInstance();
+  const beforeState = service.getState(screenId);
+  console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
+    screenId,
+    beforeStatus: beforeState.state,
+    beforeUsername: beforeState.username,
+    beforeRoomId: beforeState.roomId,
+  }));
+  await service.disconnect(screenId).catch((err) => {
+    console.error(`[TIKTOK-IPC] tiktok:disconnect failed for ${screenId}:`, err.message);
+  });
+  const afterState = service.getState(screenId);
+  console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
+    screenId,
+    afterStatus: afterState.state,
+    afterUsername: afterState.username,
+    afterRoomId: afterState.roomId,
+    success: true,
+  }));
+  return { success: true };
+});
+console.log("[TIKTOK-IPC-REGISTERED] tiktok:connect registered");
+console.log("[TIKTOK-IPC-REGISTERED] tiktok:disconnect registered");
 
 // ── Overlay ──
 ipcMain.on("overlay:open", () => createOverlayWindow());
@@ -741,6 +1176,142 @@ ipcMain.on("overlay:close", () => { if (overlayWindow) overlayWindow.close(); })
 ipcMain.on("overlay:send", (_, data) => {
   sendToOverlay("overlay:action", data);
   broadcastSSE(data);
+});
+
+// ── Goal Progress config (from renderer on startup) ──
+ipcMain.on("goal:config", (_, config) => {
+  storedGoalConfig = config;
+  console.log("[GOAL-STARTUP] storedGoalConfig initialized from renderer:", JSON.stringify({
+    textColor: config?.textColor,
+    barColor: config?.barColor,
+    showPercentage: config?.showPercentage,
+    showNumbers: config?.showNumbers,
+  }));
+  // Broadcast to ALL already-connected SSE clients (fixes race condition)
+  if (config && sseClients.length > 0) {
+    broadcastSSE({ type: 'goal-config-update', config });
+    console.log("[GOAL-STARTUP] broadcast config to", sseClients.length, "SSE clients");
+  }
+});
+
+// ── v3.1 Overlay Instance Sync (browser source config resolution) ──
+ipcMain.on("overlay:sync-instances", (_, instances) => {
+  overlayInstancesByBrowserSourceId.clear();
+  for (const inst of instances) {
+    if (inst.browserSourceId) {
+      overlayInstancesByBrowserSourceId.set(inst.browserSourceId, inst);
+    }
+  }
+  console.log("[OVERLAY-SYNC] synced", instances.length, "instances,", overlayInstancesByBrowserSourceId.size, "with browserSourceId");
+});
+
+// ── Immediate instance sync: renderer pushes instances right after Dexie load ──
+// This eliminates the config-fetch race by populating the map before
+// Browser Source /config requests arrive.
+ipcMain.on("overlay:push-instances", (_, instances) => {
+  for (const inst of instances) {
+    if (inst.browserSourceId) {
+      overlayInstancesByBrowserSourceId.set(inst.browserSourceId, inst);
+    }
+  }
+  console.log("[OVERLAY-SYNC] pushed", instances.length, "instances,", overlayInstancesByBrowserSourceId.size, "total with browserSourceId");
+});
+
+ipcMain.on("overlay:updated", (_, instance) => {
+  if (instance && instance.browserSourceId) {
+    overlayInstancesByBrowserSourceId.set(instance.browserSourceId, instance);
+    console.log("[OVERLAY-SYNC] updated instance:", instance.moduleId, instance.browserSourceId.substring(0, 8));
+  }
+});
+
+ipcMain.on("overlay:deleted", (_, instanceId) => {
+  for (const [bsid, inst] of overlayInstancesByBrowserSourceId) {
+    if (inst.id === instanceId) {
+      overlayInstancesByBrowserSourceId.delete(bsid);
+      console.log("[OVERLAY-SYNC] deleted instance:", bsid.substring(0, 8));
+      break;
+    }
+  }
+});
+let overlayTokenModule = null;
+let overlaySyncModule = null;
+try {
+  overlayTokenModule = require("./backend/overlay-token.cjs");
+  overlaySyncModule = require("./backend/overlay-sync.cjs");
+  console.log("[ELECTRON-IPC] Overlay modules loaded successfully");
+} catch (err) {
+  console.error("[ELECTRON-IPC] Failed to load overlay modules:", err.message);
+}
+
+ipcMain.handle("overlay:generate-token", async (_, userId) => {
+  console.log("[ELECTRON-IPC] overlay:generate-token called, userId:", userId);
+  if (!overlayTokenModule) {
+    console.error("[ELECTRON-IPC] overlay:generate-token handler not available");
+    return { success: false, error: "Overlay module not loaded" };
+  }
+
+  // PRIMARY: Request token from backend (ensures JWT_SECRET match)
+  const tokenUrl = `${apiUrl}/overlay/token`;
+  console.log("[OVERLAY-TOKEN-IPC] requesting token from server:", tokenUrl);
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const https = require("https");
+      const http = require("http");
+      const urlObj = new URL(tokenUrl);
+      const client = urlObj.protocol === "https:" ? https : http;
+      const body = JSON.stringify({ userId });
+      const req = client.request({
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        timeout: 5000,
+      }, (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+          try { resolve(JSON.parse(data)); } catch { reject(new Error("Invalid JSON from server")); }
+        });
+      });
+      req.on("error", reject);
+      req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
+      req.write(body);
+      req.end();
+    });
+
+    if (result?.success && result.token) {
+      console.log("[OVERLAY-AUTH-TRACE] TOKEN SOURCE: RAILWAY SERVER (correct)");
+      console.log("[OVERLAY-AUTH-TRACE] token length:", result.token.length);
+      const url = overlayTokenModule.getOverlayUrl(result.token);
+      console.log("[OVERLAY-AUTH-TRACE] FINAL PRODUCTION URL =", url);
+      return { success: true, token: result.token, url };
+    }
+    console.log("[OVERLAY-AUTH-TRACE] server returned failure:", result?.error);
+  } catch (err) {
+    console.log("[OVERLAY-AUTH-TRACE] server request FAILED:", err.message);
+    console.log("[OVERLAY-AUTH-TRACE] FALLING BACK TO LOCAL GENERATION (will fail verification if JWT_SECRET differs!)");
+  }
+
+  // FALLBACK: Generate locally (will fail verification if Railway JWT_SECRET differs!)
+  const jwtSecret = process.env.JWT_SECRET || "default-secret-change-me";
+  console.log("[OVERLAY-AUTH-TRACE] TOKEN SOURCE: LOCAL FALLBACK (WILL FAIL VERIFICATION)");
+  console.log("[OVERLAY-AUTH-TRACE] JWT_SECRET env set:", !!process.env.JWT_SECRET);
+  console.log("[OVERLAY-AUTH-TRACE] local secret length:", jwtSecret.length, "isDefault:", jwtSecret === "default-secret-change-me");
+  const token = overlayTokenModule.generateOverlayToken(userId, jwtSecret);
+  const url = overlayTokenModule.getOverlayUrl(token);
+  console.log("[OVERLAY-AUTH-TRACE] FINAL PRODUCTION URL (LOCAL) =", url);
+  return { success: true, token, url };
+});
+
+ipcMain.handle("overlay:push-state", async (_, { token, goals }) => {
+  if (!overlaySyncModule) {
+    console.error("[ELECTRON-IPC] overlay:push-state handler not available");
+    return { success: false, error: "Overlay sync module not loaded" };
+  }
+  const success = await overlaySyncModule.pushGoalState(token, goals, apiUrl);
+  return { success };
 });
 
 // ── Keystroke ──
@@ -860,6 +1431,28 @@ ipcMain.handle("license:limits", () => licenseSystem.getPlanLimits());
 ipcMain.handle("license:validateAction", (_, count) => licenseSystem.validateActionLimit(count));
 ipcMain.handle("license:validateSound", (_, count) => licenseSystem.validateSoundLimit(count));
 ipcMain.handle("license:userData", () => licenseSystem.getUserData());
+
+// ── License V2 (backend-proxied via Worker API) ──
+ipcMain.handle("licenseV2:status", async (_, userId) => {
+  return adminApiRequest("GET", "/license/status");
+});
+ipcMain.handle("licenseV2:activate", async (_, { userId, licenseKey, email, deviceId }) => {
+  return adminApiRequest("POST", "/license/activate", { licenseKey, email, deviceId });
+});
+ipcMain.handle("licenseV2:deactivate", async (_, userId) => {
+  return adminApiRequest("POST", "/license/deactivate", {});
+});
+
+// ── Device management (backend-proxied via Worker API) ──
+ipcMain.handle("device:register", async (_, { userId, name, platform, appVersion, machineFingerprint }) => {
+  return adminApiRequest("POST", "/devices/register", { deviceId: machineFingerprint, name, platform, appVersion, machineFingerprint });
+});
+ipcMain.handle("device:list", async (_, userId) => {
+  return adminApiRequest("GET", "/devices");
+});
+ipcMain.handle("device:remove", async (_, { userId, machineId }) => {
+  return adminApiRequest("POST", "/devices/deactivate", { deviceId: machineId });
+});
 
 // ── Auth ──
 ipcMain.handle("auth:register", (_, { email, password, name }) => authSystem.registerEmail(email, password, name));
@@ -1118,6 +1711,11 @@ app.whenReady().then(async () => {
   pointsSystem.initPointsSystem();
   logger.info("Backend loaded: points, obs, streamerbot, minecraft, spotify, license, auth");
 
+  // ── Auto-update manager ──
+  updateManager.registerIPC();
+  updateManager.init(mainWindow);
+  logger.info("Auto-update manager initialized");
+
   // Pre-fetch gifts in background
   muatGiftTikTok().then(gifts => console.log(`[RF] ${gifts.length} gifts loaded`)).catch(() => {});
 
@@ -1149,6 +1747,7 @@ app.on("before-quit", async (e) => {
   if (logger) logger.info("Application shutting down gracefully");
   disconnectAllScreens();
   if (memoryManager) await memoryManager.cleanupAll();
+  updateManager.shutdown();
 });
 
 // ── Phase 1: Global error handlers ──

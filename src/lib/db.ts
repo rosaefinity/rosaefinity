@@ -18,6 +18,18 @@ class RosaeFinityDB extends Dexie {
     configVersion: number;
     createdAt: string;
   }, string>;
+  goals!: Dexie.Table<{
+    id: string;
+    type: string;
+    target: number;
+    title: string;
+    reachedBehavior: string;
+    increaseAmount: number;
+    actionId: string | null;
+    enabled: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }, string>;
 
   constructor() {
     super("rosaefinity-db");
@@ -30,6 +42,9 @@ class RosaeFinityDB extends Dexie {
     });
     this.version(3).stores({
       overlays: "id, name, updatedAt, moduleId, enabled, browserSourceId, config, configVersion, createdAt",
+    });
+    this.version(4).stores({
+      goals: "id, type, enabled, createdAt",
     });
   }
 }

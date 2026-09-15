@@ -169,11 +169,10 @@ overlay.get('/goal/:token/events', async (c) => {
       await stream.writeSSE({ data: payload });
     }
 
-    // Keep connection alive — use raw stream for heartbeat comments
+    // Keep connection alive via heartbeat
     let alive = true;
     const interval = setInterval(() => {
       if (alive) {
-        // SSE comment heartbeat (lines starting with ':' are ignored by EventSource)
         stream.writeln(': heartbeat').catch(() => {
           alive = false;
           clearInterval(interval);
@@ -181,13 +180,11 @@ overlay.get('/goal/:token/events', async (c) => {
       }
     }, 15000);
 
-    // Wait until client disconnects
     stream.onAbort(() => {
       alive = false;
       clearInterval(interval);
     });
 
-    // Keep the stream open
     while (alive) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }

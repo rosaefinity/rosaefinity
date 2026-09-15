@@ -61,6 +61,10 @@ export const paymentController = {
   async getById(req: AuthenticatedRequest, res: Response): Promise<void> {
     const id = req.params.id as string;
     const payment = await paymentService.getPaymentById(id);
+    if (!payment || payment.userId !== req.user?.sub) {
+      res.status(404).json({ success: false, error: 'Payment not found' });
+      return;
+    }
     const response: ApiResponse = { success: true, data: payment };
     res.json(response);
   },

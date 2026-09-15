@@ -8,15 +8,14 @@ import { authRepository } from './repository.js';
 import { generateTokens, verifyRefreshToken } from '../../middleware/auth.js';
 import { BadRequestError, UnauthorizedError, NotFoundError, ConflictError } from '../../middleware/error-handler.js';
 import { generateId } from '../../../utils/helpers.js';
-
-const BCRYPT_ROUNDS = 12;
+import { hashPassword, verifyPassword } from '../../../utils/password.js';
 
 export const authService = {
   async register(email: string, password: string, displayName?: string) {
     const existing = await authRepository.findUserByEmail(email);
     if (existing) throw new ConflictError('Email already registered');
 
-    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const passwordHash = await hashPassword(password);
 
     const user = await authRepository.createUser({
       email,
@@ -58,14 +57,20 @@ export const authService = {
     const user = await authRepository.findUserByEmail(email);
     if (!user) throw new UnauthorizedError('Invalid credentials');
 
-    // Verify password with bcrypt
+    // Verify password with dual-format support (bcrypt legacy + scrypt)
     if (!user.passwordHash) {
       // User registered via OAuth or guest - cannot login with email/password
       throw new UnauthorizedError('Invalid credentials');
     }
 
-    const validPassword = await bcrypt.compare(password, user.passwordHash);
-    if (!validPassword) throw new UnauthorizedError('Invalid credentials');
+    const { verified, needsMigration } = await verifyPassword(password, user.passwordHash);
+    if (!verified) throw new UnauthorizedError('Invalid credentials');
+
+    // If the password was verified but needs migration (legacy bcrypt), re-hash to scrypt
+    if (needsMigration) {
+      const newHash = await hashPassword(password);
+      await authRepository.updateUserPassword(user.id, newHash);
+    }
 
     const tokens = generateTokens({
       sub: user.id,

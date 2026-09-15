@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { useAuthStore } from "../store/auth-store";
-import { useTikTokStore, selectScreenStatus, selectScreenUsername, selectScreenViewerCount, selectScreenStats, selectScreenRoomId, selectScreenIsReconnecting, selectScreenReconnectAttempts, selectScreenLastError } from "../store/tiktok-store";
+import { useLicenseStore } from "../store/license-store";
+import { useTikTokStore, selectScreenStatus, selectScreenUsername, selectScreenViewerCount, selectScreenStats, selectScreenRoomId, selectScreenIsReconnecting, selectScreenReconnectAttempts, selectScreenLastError, selectScreenIsRateLimited, selectScreenServerRetryUntil } from "../store/tiktok-store";
 import { api } from "../services/electron-service";
 import { toast } from "../components/Toast";
 import { Button } from "../components/ui/button";
@@ -25,7 +26,6 @@ const SECTIONS: { id: Section; label: string; icon: string }[] = [
   { id: "account", label: "Account", icon: "👤" },
   { id: "importexport", label: "Import/Export", icon: "📦" },
   { id: "advanced", label: "Advanced", icon: "⚙️" },
-  { id: "license", label: "Pro License", icon: "🌟" },
 ];
 
 export function SettingsPage() {
@@ -36,6 +36,17 @@ export function SettingsPage() {
   const updatePointsConfig = useAppStore(s => s.updatePointsConfig);
   const actions = useAppStore(s => s.actions);
   const { user } = useAuthStore();
+  const { plan: licensePlan, status: licenseStatus, expiresAt, effectivePlan, isLifetimePro } = useLicenseStore();
+
+  // Reactive expiration: re-render when subscription expires mid-session
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (licensePlan !== 'pro' || !expiresAt) return;
+    const msUntilExpiry = expiresAt - Date.now();
+    if (msUntilExpiry <= 0) return; // Already expired
+    const timer = setTimeout(() => setNow(Date.now()), msUntilExpiry + 1000);
+    return () => clearTimeout(timer);
+  }, [licensePlan, expiresAt]);
 
   // TikTok store for connection management
   const tikTokStatus = useTikTokStore(selectScreenStatus("screen-0"));
@@ -46,6 +57,54 @@ export function SettingsPage() {
   const tikTokIsReconnecting = useTikTokStore(selectScreenIsReconnecting("screen-0"));
   const tikTokReconnectAttempts = useTikTokStore(selectScreenReconnectAttempts("screen-0"));
   const tikTokLastError = useTikTokStore(selectScreenLastError("screen-0"));
+  const tikTokIsRateLimited = useTikTokStore(selectScreenIsRateLimited("screen-0"));
+  const tikTokServerRetryUntil = useTikTokStore(selectScreenServerRetryUntil("screen-0"));
+
+  // Countdown timer for rate-limit cooldown — derives from authoritative serverRetryUntil
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const cooldownEndRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (tikTokIsRateLimited && tikTokServerRetryUntil && tikTokServerRetryUntil > Date.now()) {
+      // Use serverRetryUntil as the single authoritative deadline
+      cooldownEndRef.current = tikTokServerRetryUntil;
+      const initialRemaining = Math.max(0, Math.ceil((tikTokServerRetryUntil - Date.now()) / 1000));
+      setCooldownRemaining(initialRemaining);
+      console.log(`[TIKTOK-RATE-LIMIT-TRACE] UI remaining calculation`, JSON.stringify({
+        screenId: 'screen-0',
+        now: Date.now(),
+        nowIso: new Date(Date.now()).toISOString(),
+        inputValue: tikTokServerRetryUntil,
+        inputValueIso: new Date(tikTokServerRetryUntil).toISOString(),
+        source: "Zustand store (serverRetryUntil)",
+        unit: "epoch milliseconds",
+        outputValue: initialRemaining,
+        outputUnit: "seconds (displayed in UI)",
+        calculation: `(serverRetryUntil ${tikTokServerRetryUntil} - Date.now() ${Date.now()}) / 1000 = ${initialRemaining}`,
+        sanityCheck: initialRemaining > 86400 ? "WARNING: > 24 hours display — serverRetryUntil is likely a wrong value" : "within 24h",
+      }));
+      console.log(`[TIKTOK-RATE-LIMIT-UI-AUDIT] state sync`, JSON.stringify({
+        screenId: 'screen-0',
+        serverRetryUntil: new Date(tikTokServerRetryUntil).toISOString(),
+        serverRetryRemainingMs: tikTokServerRetryUntil - Date.now(),
+        connectAllowed: false,
+      }));
+      const interval = setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((cooldownEndRef.current - Date.now()) / 1000));
+        setCooldownRemaining(remaining);
+        if (remaining <= 0) {
+          clearInterval(interval);
+          console.log(`[TIKTOK-RATE-LIMIT-UI-AUDIT] cooldown expired`, JSON.stringify({
+            screenId: 'screen-0',
+            connectAllowed: true,
+          }));
+        }
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setCooldownRemaining(0);
+    }
+  }, [tikTokIsRateLimited, tikTokServerRetryUntil]);
 
   // Section navigation is managed by activeSection state, not URL hash.
   // HashRouter uses the hash for route matching, so we cannot use it for sub-navigation.
@@ -138,11 +197,42 @@ export function SettingsPage() {
     // Connect to TikTok LIVE (non-blocking, runs in main process)
     if (setupConfig.tikTokName.trim()) {
       const username = setupConfig.tikTokName.trim();
-      console.log(`[TIKTOK-UI] Settings connect requested for screen-0: ${username}`);
-      const a = api();
-      a?.connectTikTokScreen("screen-0", username).catch((err: unknown) => {
-        console.error(`[TIKTOK-UI] connect failed:`, err);
-      });
+      const screenState = useTikTokStore.getState().screens['screen-0'];
+      const isCurrentlyRateLimited = screenState?.isRateLimited
+        && screenState?.serverRetryUntil
+        && screenState.serverRetryUntil > Date.now();
+      if (isCurrentlyRateLimited) {
+        console.log(`[TIKTOK-UI] Save skipped connect — rate limit active`, JSON.stringify({
+          screenId: 'screen-0',
+          serverRetryUntil: new Date(screenState.serverRetryUntil!).toISOString(),
+          remainingSec: Math.ceil((screenState.serverRetryUntil! - Date.now()) / 1000),
+        }));
+      } else {
+        console.log(`[TIKTOK-UI] Settings connect requested for screen-0: ${username}`);
+        const a = api();
+        if (!a) {
+          console.error('[TIKTOK-UI] electronAPI unavailable — TikTok LIVE requires desktop app');
+        } else {
+          a.connectTikTokScreen("screen-0", username).then((result: unknown) => {
+            console.log(`[TIKTOK-UI] Settings save connect result:`, result);
+            if (result && typeof result === 'object' && 'isRateLimit' in result && result.isRateLimit) {
+              console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+                source: "settings-connect-result-rate-limited",
+                screenId: "screen-0",
+                now: Date.now(),
+                serverRetryUntilBeforeClear: useTikTokStore.getState().screens['screen-0']?.serverRetryUntil,
+                remainingMs: useTikTokStore.getState().screens['screen-0']?.serverRetryUntil
+                  ? Math.max(0, useTikTokStore.getState().screens['screen-0'].serverRetryUntil! - Date.now())
+                  : null,
+                isRateLimitedBeforeClear: useTikTokStore.getState().screens['screen-0']?.isRateLimited,
+                reason: "IPC connect returned rate-limit error, should NOT clear store",
+              }));
+            }
+          }).catch((err: unknown) => {
+            console.error(`[TIKTOK-UI] Settings save connect failed:`, err);
+          });
+        }
+      }
     }
   };
 
@@ -383,6 +473,29 @@ export function SettingsPage() {
       case "tiktok": {
         const isConnected = tikTokStatus === "connected";
         const isReconnecting = tikTokIsReconnecting;
+        // Use serverRetryUntil as the single authoritative check
+        const isRateLimited = tikTokIsRateLimited && tikTokServerRetryUntil && tikTokServerRetryUntil > Date.now();
+        const serverRetryRemainingSec = isRateLimited ? Math.max(0, Math.ceil((tikTokServerRetryUntil! - Date.now()) / 1000)) : 0;
+
+        // [TIKTOK-DISCONNECT-TRACE][UI] Render-time state audit
+        console.log(`[TIKTOK-DISCONNECT-TRACE][STATE]`, JSON.stringify({
+          screenId: "screen-0",
+          tikTokStatus,
+          isConnected,
+          tikTokUsername,
+          tikTokRoomId,
+          isReconnecting: tikTokIsReconnecting,
+          isRateLimited,
+        }));
+
+        // Log button state for audit
+        console.log(`[TIKTOK-RATE-LIMIT-UI-AUDIT] button state`, JSON.stringify({
+          screenId: "screen-0",
+          disabled: !setupConfig.tikTokName.trim() || isRateLimited,
+          reason: isRateLimited ? `server rate limit active, ${serverRetryRemainingSec}s remaining` : "ready",
+          serverRetryUntil: tikTokServerRetryUntil ? new Date(tikTokServerRetryUntil).toISOString() : null,
+        }));
+
         return (
           <div className="space-y-6">
             <div>
@@ -403,36 +516,107 @@ export function SettingsPage() {
                 {isConnected ? (
                   <Button size="sm" variant="danger"
                     onClick={() => {
-                      console.log(`[TIKTOK-UI] Disconnect clicked`);
+                      const beforeStatus = useTikTokStore.getState().screens["screen-0"];
+                      console.log(`[TIKTOK-DISCONNECT-TRACE][UI]`, JSON.stringify({
+                        screenId: "screen-0",
+                        beforeStatus: beforeStatus?.status,
+                        beforeUsername: beforeStatus?.username,
+                        action: "Disconnect clicked",
+                      }));
                       const a = api();
-                      a?.disconnectTikTokScreen("screen-0");
+                      a?.disconnectTikTokScreen("screen-0")?.then(() => {
+                        const afterStatus = useTikTokStore.getState().screens["screen-0"];
+                        console.log(`[TIKTOK-DISCONNECT-TRACE][UI]`, JSON.stringify({
+                          screenId: "screen-0",
+                          afterStatus: afterStatus?.status,
+                          afterUsername: afterStatus?.username,
+                          action: "IPC returned success",
+                        }));
+                      })?.catch((err: unknown) => {
+                        console.error(`[TIKTOK-UI] Disconnect failed:`, err);
+                      });
                     }}>
                     Disconnect
                   </Button>
                 ) : (
                   <Button size="sm"
                     onClick={() => {
+                      // FRONTEND COOLDOWN GUARD — uses same authoritative deadline as backend
+                      if (isRateLimited) {
+                        console.log(`[TIKTOK-CONNECT-GUARD] frontend blocked`, JSON.stringify({
+                          screenId: "screen-0",
+                          isRateLimited: true,
+                          serverRetryUntil: tikTokServerRetryUntil ? new Date(tikTokServerRetryUntil).toISOString() : null,
+                          serverRetryRemainingSec,
+                        }));
+                        return;
+                      }
                       console.log(`[TIKTOK-UI] Connect clicked`);
                       const username = setupConfig.tikTokName.trim();
                       if (!username) return;
-                      console.log(`[TIKTOK-UI] calling connectTikTokScreen("screen-0", "${username}")`);
                       const a = api();
-                      a?.connectTikTokScreen("screen-0", username);
+                      if (!a) {
+                        console.error('[TIKTOK-UI] electronAPI is not available — TikTok LIVE connection requires the RosaeFinity desktop app');
+                        toast('TikTok LIVE connection is only available in the RosaeFinity desktop application.', 'error');
+                        return;
+                      }
+                      console.log(`[TIKTOK-CONNECT-TRACE] connect button clicked`, JSON.stringify({
+                        screenId: 'screen-0',
+                        username,
+                        preClickIsRateLimited: tikTokIsRateLimited,
+                        preClickServerRetryUntil: tikTokServerRetryUntil,
+                        preClickStoreState: useTikTokStore.getState().screens['screen-0'],
+                      }));
+                      console.log(`[TIKTOK-UI] invoking IPC tiktok:connect screenId=screen-0 username=${username}`);
+                      a.connectTikTokScreen("screen-0", username)
+                        .then((result: unknown) => {
+                          console.log(`[TIKTOK-CONNECT-TRACE] IPC result received`, JSON.stringify({ screenId: 'screen-0', result }));
+                        })
+                        .catch((err: unknown) => {
+                          console.error(`[TIKTOK-UI] IPC error:`, err);
+                          toast(`TikTok connection failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+                        });
                     }}
-                    disabled={!setupConfig.tikTokName.trim()}>
-                    Connect
+                    disabled={!setupConfig.tikTokName.trim() || isRateLimited}>
+                    {isRateLimited ? `Rate Limited — ${serverRetryRemainingSec}s` : "Connect"}
+                  </Button>
+                )}
+                {/* TEMPORARY: Test event injection button */}
+                {isConnected && (
+                  <Button size="sm" variant="secondary" onClick={() => {
+                    console.log(`[TIKTOK-TEST] Injecting test GIFT event`);
+                    const a = api();
+                    if (!a?.injectTikTokTestEvent) {
+                      console.error('[TIKTOK-TEST] injectTikTokTestEvent not available');
+                      return;
+                    }
+                    a.injectTikTokTestEvent("screen-0", {
+                      type: "gift",
+                      user: "test_user",
+                      nickname: "TestUser",
+                      giftName: "Rose",
+                      giftId: 1,
+                      repeatCount: 1,
+                      diamondCount: 1,
+                    })
+                      .then((result: unknown) => console.log(`[TIKTOK-TEST] Result:`, result))
+                      .catch((err: unknown) => console.error(`[TIKTOK-TEST] Error:`, err));
+                  }}>
+                    Test Gift
                   </Button>
                 )}
                 <div className="flex items-center gap-2 text-sm">
-                  <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.6)]" : isReconnecting ? "bg-amber animate-pulse" : "bg-white/20"}`} />
+                  <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-success shadow-[0_0_6px_rgba(34,197,94,0.6)]" : isRateLimited ? "bg-red animate-pulse" : isReconnecting ? "bg-amber animate-pulse" : "bg-white/20"}`} />
                   <span className="text-white/50">
                     {isConnected
                       ? `Connected${tikTokUsername ? ` as ${tikTokUsername}` : ""}`
-                      : isReconnecting
-                        ? `Reconnecting... (attempt ${tikTokReconnectAttempts})`
-                        : tikTokLastError
-                          ? `Error: ${tikTokLastError}`
-                          : "Offline"}
+                      : isRateLimited
+                        ? `Rate limited — server retry in ${serverRetryRemainingSec}s`
+                        : isReconnecting
+                          ? `Reconnecting... (attempt ${tikTokReconnectAttempts})`
+                          : tikTokLastError
+                            ? `Error: ${tikTokLastError}`
+                            : "Offline"}
                   </span>
                 </div>
               </div>
@@ -444,8 +628,8 @@ export function SettingsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
                   <span className="text-xs text-white/40">Status</span>
-                  <span className={`text-xs font-medium ${isConnected ? "text-green" : "text-white/30"}`}>
-                    {isConnected ? "● Connected" : "● Offline"}
+                  <span className={`text-xs font-medium ${isConnected ? "text-green" : isRateLimited ? "text-red" : "text-white/30"}`}>
+                    {isConnected ? "● Connected" : isRateLimited ? `● Rate Limited (${cooldownRemaining}s)` : "● Offline"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
@@ -806,7 +990,13 @@ export function SettingsPage() {
         );
 
       // ═══ ACCOUNT ═══════════════════════════════════════
-      case "account":
+      case "account": {
+        const displayPlan = effectivePlan() === 'pro' ? 'Pro' : 'Free';
+        const expiryLabel = isLifetimePro()
+          ? 'Lifetime'
+          : expiresAt
+            ? new Date(expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+            : '—';
         return (
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-white">👤 Your Account</h3>
@@ -821,15 +1011,22 @@ export function SettingsPage() {
               </div>
               <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <p className="text-xs text-white/40">Plan</p>
-                <p className="text-sm text-yellow-400 font-semibold mt-1">{user?.plan === "pro" ? "Pro" : "Free"}</p>
+                <p className="text-sm text-yellow-400 font-semibold mt-1">{displayPlan}</p>
               </div>
               <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <p className="text-xs text-white/40">Name</p>
                 <p className="text-sm text-white/50 mt-1">{user?.name || "—"}</p>
               </div>
+              {displayPlan === 'Pro' && (
+                <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <p className="text-xs text-white/40">Expires</p>
+                  <p className="text-sm text-white/50 mt-1">{expiryLabel}</p>
+                </div>
+              )}
             </div>
           </div>
         );
+      }
 
       // ═══ IMPORT/EXPORT ═════════════════════════════════
       case "importexport":

@@ -1,275 +1,539 @@
-import { useState, useMemo, Suspense } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { filterTabs } from "../services/api";
+import { useState, useMemo, useEffect, Suspense, useCallback, useRef } from "react";
+import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { cn } from "../lib/utils";
-import { useFavoritesStore } from "../store/favorites-store";
-import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
-import { getOverlayModules, getOverlaysByCategory } from "../overlays/registry";
-import type { AnyOverlayModule, OverlayCategory } from "../overlays/types";
+import { getOverlayModules } from "../overlays/registry";
+import { createCoinJarDemoEventSource } from "../overlays/coin-jar-pro/demoEventSource";
+import { getOverlayWidgetUrl, getSSEBaseUrl } from "../lib/browser-source-url";
+// Removed: useOverlayStore no longer needed — URL is generated directly
+import { useLicenseStore } from "../store/license-store";
+import { sendToOverlay } from "../lib/overlay-bus";
+import { useGoalStore } from "../store/goal-store";
+import { useAppStore } from "../store/app-store";
+import { executeAction } from "../store/event-dispatch";
+import { UpgradeDialog } from "../components/UpgradeDialog";
 import {
-  Image as ImageIcon, Eye, Link2, FlaskConical, SlidersHorizontal,
-  Star, StarOff, Play, CheckCircle2, Circle, Info, LayoutGrid,
-  Gift, Bell, Target, Gamepad2, Sparkles, Trophy, Music,
-  TrendingUp, Crown, Search
+  Image as ImageIcon, Link2, FlaskConical, SlidersHorizontal,
+  Play, CheckCircle2, Circle, LayoutGrid,
+  Gift, Target, Copy, ExternalLink, RotateCcw, Lock
 } from "lucide-react";
 
-const iconMap: Record<string, React.ElementType> = { "layout-grid": LayoutGrid, gift: Gift, bell: Bell, target: Target, "gamepad-2": Gamepad2, sparkles: Sparkles, trophy: Trophy, music: Music, "trending-up": TrendingUp, crown: Crown, star: Star };
-
-// Category color mapping for thumbnail SVG data URIs
-const CATEGORY_COLORS: Record<string, { bg: string; fg: string }> = {
-  alerts:  { bg: '#7c3aed', fg: '#ffffff' },
-  goals:   { bg: '#059669', fg: '#ffffff' },
-  chat:    { bg: '#2563eb', fg: '#ffffff' },
-  events:  { bg: '#d97706', fg: '#ffffff' },
-  graphics:{ bg: '#db2777', fg: '#ffffff' },
+// ─── Overlay card icon map ──────────────────────────
+const iconMap: Record<string, React.ElementType> = {
+  "layout-grid": LayoutGrid,
+  gift: Gift,
+  target: Target,
 };
 
-/** Generate an inline SVG data URI thumbnail for an overlay module */
-function generateThumbnailSvg(mod: AnyOverlayModule): string {
-  const { bg, fg } = CATEGORY_COLORS[mod.category] ?? CATEGORY_COLORS.alerts;
-  // Use a simple icon shape per category
-  const iconPaths: Record<string, string> = {
-    alerts: '<rect x="18" y="8" width="24" height="24" rx="4" fill="' + fg + '" opacity="0.9"/><path d="M26 15l4 4 8-8" stroke="' + bg + '" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
-    goals:  '<circle cx="30" cy="20" r="12" fill="none" stroke="' + fg + '" stroke-width="2.5" opacity="0.9"/><path d="M30 12v8l5 5" stroke="' + fg + '" stroke-width="2.5" fill="none" stroke-linecap="round"/>',
-    chat:   '<rect x="12" y="10" width="36" height="22" rx="6" fill="' + fg + '" opacity="0.15"/><rect x="16" y="16" width="16" height="3" rx="1.5" fill="' + fg + '" opacity="0.7"/><rect x="16" y="22" width="10" height="3" rx="1.5" fill="' + fg + '" opacity="0.5"/>',
-    events: '<polygon points="30,8 36,22 50,24 39,34 42,48 30,41 18,48 21,34 10,24 24,22" fill="' + fg + '" opacity="0.85"/>',
-    graphics:'<rect x="14" y="12" width="32" height="24" rx="4" fill="none" stroke="' + fg + '" stroke-width="2.5" opacity="0.9"/><circle cx="24" cy="24" r="4" fill="' + fg + '" opacity="0.6"/><path d="M14 30l10-8 8 6 8-10 6 8" stroke="' + fg + '" stroke-width="1.5" fill="none" opacity="0.5"/>',
-  };
-  const icon = iconPaths[mod.category] ?? iconPaths.alerts;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="225" viewBox="0 0 60 34">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${bg}"/><stop offset="100%" stop-color="${bg}88"/></linearGradient></defs>
-    <rect width="60" height="34" rx="3" fill="url(#g)"/>
-    ${icon}
-    <text x="30" y="32" text-anchor="middle" font-family="sans-serif" font-size="4" fill="${fg}" opacity="0.5">${mod.name}</text>
-  </svg>`;
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
+// ─── Category accent colors ─────────────────────────
+const CATEGORY_ACCENT: Record<string, string> = {
+  alerts: "#7c3aed",
+  goals: "#059669",
+  chat: "#2563eb",
+  events: "#d97706",
+  graphics: "#db2777",
+};
 
-// Convert registry module to Gallery overlay format
-function moduleToOverlay(mod: AnyOverlayModule) {
-  const meta = (mod as any).metadata;
-  const thumbnail = mod.thumbnail || generateThumbnailSvg(mod);
-  console.log('[OVERLAY ASSET]', mod.id, { thumbnail: thumbnail.substring(0, 80) + '...' });
+// ─── Convert registry module to gallery card data ────
+function moduleToCard(mod: any) {
+  const meta = mod.metadata;
   return {
     id: mod.id,
     name: mod.name,
     description: mod.description,
-    thumbnail,
     category: mod.category,
-    tags: mod.tags,
+    tags: mod.tags ?? [],
     isPremium: meta?.premium ?? false,
     isNew: meta?.beta ?? false,
     isPopular: meta?.featured ?? false,
-    isActive: false,
-    isFavorite: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    previewUrl: "",
     module: mod,
-    config: mod.defaultConfig || {},
+    config: mod.defaultConfig ?? {},
   };
 }
 
+// ─── Overlay Gallery ─────────────────────────────────
 export function OverlayGallery() {
-  const [activeTab, setActiveTab] = useState<OverlayCategory>("all");
-  const [selectedOverlay, setSelectedOverlay] = useState<any>(null);
-  const { isFavorite, toggle } = useFavoritesStore();
+  const navigate = useNavigate();
+  const [selectedId, setSelectedId] = useState<string>("coin-jar-pro");
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const demoRef = useRef<ReturnType<typeof createCoinJarDemoEventSource> | null>(null);
+  const testIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Get all modules from registry
-  const allModules = useMemo(() => getOverlayModules(), []);
+  const { plan, canAccessTier } = useLicenseStore();
+  const isPro = plan === 'pro';
 
-  // Convert modules to overlay format
-  const overlays = useMemo(() => allModules.map(moduleToOverlay), [allModules]);
+  // Look up overlay instances from the store (same source as CustomizePage)
+  const allModules = useMemo(() => {
+    const mods = getOverlayModules();
+    console.log('[OVERLAY-TRACE] gallery input count =', mods.length);
+    console.log('[OVERLAY-TRACE] gallery input ids =', mods.map(m => m.id));
+    console.log('[OVERLAY-TRACE] gallery has goal-progress =', mods.some(m => m.id === 'goal-progress'));
+    return mods;
+  }, []);
+  const cards = useMemo(() => allModules.map(moduleToCard), [allModules]);
 
-  const filtered = overlays.filter(o => {
-    if (activeTab === "all") return true;
-    if (activeTab === "favorite") return isFavorite(o.id);
-    if (activeTab === "premium") return o.isPremium;
-    if (activeTab === "trending") return o.isPopular;
-    return o.category === activeTab;
-  });
+  console.log('[OVERLAY-TRACE] rendered cards count =', cards.length);
+  console.log('[OVERLAY-TRACE] rendered card ids =', cards.map(c => c.id));
 
-  const previewOverlay = selectedOverlay || overlays[0] || null;
+  const selected = useMemo(
+    () => cards.find((c) => c.id === selectedId) ?? cards[0] ?? null,
+    [cards, selectedId],
+  );
+
+  // Generate the exact same Browser Source URL that CoinJarEditor uses
+  // Coin Jar Pro: /coin-jar.html  |  Goal Progress: /goals-widget.html
+  // Both served by the local SSE server on port 18890.
+  const browserSourceUrl = useMemo(() => {
+    const isGoalModule = selected?.id === 'goal-progress' || selected?.id === 'goal-likes' || selected?.id === 'goal-followers' || selected?.id === 'goal-gifts';
+    if (isGoalModule) {
+      const url = `${getSSEBaseUrl()}/goals-widget.html`;
+      console.log('[OVERLAY-LOCAL] Gallery using LOCAL URL for goal module:', selected?.id, url);
+      return url;
+    }
+    const localUrl = getOverlayWidgetUrl().replace('overlay-widget.html', 'coin-jar.html');
+    console.log('[OVERLAY-LOCAL] Gallery using LOCAL URL for', selected?.id, ':', localUrl);
+    return localUrl;
+  }, [selected]);
+
+  // Stable demo event source — create once per session
+  useEffect(() => {
+    demoRef.current = createCoinJarDemoEventSource();
+  }, []);
+
+  // Cleanup test simulation on unmount
+  useEffect(() => {
+    return () => {
+      if (testIntervalRef.current) {
+        clearInterval(testIntervalRef.current);
+        testIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  // ── Copy URL ────────────────────────────────────────
+  const handleCopyUrl = useCallback(() => {
+    if (!browserSourceUrl) return;
+    navigator.clipboard.writeText(browserSourceUrl).then(
+      () => {
+        setCopiedUrl(true);
+        setTimeout(() => setCopiedUrl(false), 2000);
+      },
+      () => {
+        // Fallback: select text
+        const ta = document.createElement("textarea");
+        ta.value = browserSourceUrl;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopiedUrl(true);
+        setTimeout(() => setCopiedUrl(false), 2000);
+      },
+    );
+  }, [browserSourceUrl]);
+
+  // ── Test goal progress: simulate 0 → target over ~7 seconds ──
+  const handleTest = useCallback(() => {
+    if (selected?.id === 'goal-progress') {
+      // Cancel any running simulation
+      if (testIntervalRef.current) {
+        clearInterval(testIntervalRef.current);
+        testIntervalRef.current = null;
+      }
+
+      const cfg = selected?.config ?? {};
+      const target = (cfg.target as number) ?? 7000;
+      const goalType = (cfg.goalType as string) ?? 'likes';
+      const title = (cfg.title as string) ?? 'Goal';
+      const barColor = (cfg.barColor as string) ?? '#8b5cf6';
+      const reachedBehavior = (cfg.reachedBehavior as string) ?? 'increase';
+      const actionId = (cfg.actionId as string) ?? null;
+
+      // Calculate animation steps: ~80 steps, capped for performance
+      const steps = Math.min(80, Math.max(20, target));
+      const stepDuration = Math.max(60, Math.round(7000 / steps));
+      const increment = target / steps;
+      let step = 0;
+
+      // Broadcast initial state at 0
+      sendToOverlay({
+        type: 'goal-progress', current: 0, target, goalType, title, barColor,
+      } as any);
+
+      testIntervalRef.current = setInterval(() => {
+        step++;
+        const isLast = step >= steps;
+        const current = isLast ? target : Math.min(target, Math.round(increment * step));
+
+        // Broadcast progress to preview + browser source
+        sendToOverlay({
+          type: 'goal-progress', current, target, goalType, title, barColor,
+        } as any);
+
+        if (isLast && testIntervalRef.current) {
+          clearInterval(testIntervalRef.current);
+          testIntervalRef.current = null;
+
+          // Execute action on reaching (once)
+          console.log('[GOAL-COMPLETE] target reached:', { target, actionId });
+          if (actionId) {
+            const actions = useAppStore.getState().actions;
+            const action = actions.find((a) => a.id === actionId);
+            console.log('[GOAL-ACTION] lookup:', { actionId, found: !!action, actionName: action?.name, enabled: action?.enabled, totalActions: actions.length });
+            if (action && action.enabled) {
+              try {
+                console.log('[GOAL-ACTION] executing:', action.name);
+                executeAction(action, {
+                  type: 'goal-reached', user: 'Test', goalTitle: title,
+                  goalType, timestamp: Date.now(),
+                });
+                console.log('[GOAL-ACTION] execution started');
+              } catch (err) {
+                console.error('[GOAL-ACTION] execution error:', err);
+              }
+            } else {
+              console.warn('[GOAL-ACTION] action not found or disabled:', { actionId, found: !!action });
+            }
+          } else {
+            console.log('[GOAL-TEST] no actionId configured');
+          }
+
+          // Apply "When Reached" behavior
+          const goals = useGoalStore.getState().goals;
+          const goal = goals.find((g) => g.enabled);
+          if (goal) {
+            if (reachedBehavior === 'increase') {
+              const overshoot = Math.max(0, target - goal.target);
+              const newTarget = goal.target + goal.target;
+              useGoalStore.getState().updateGoal(goal.id, { target: newTarget });
+              useGoalStore.getState().updateRuntime(goal.id, {
+                current: overshoot, reached: false, lastCompletedTarget: 0,
+              });
+              useGoalStore.getState().broadcastGoalProgress(goal.id);
+            } else if (reachedBehavior === 'double') {
+              useGoalStore.getState().updateGoal(goal.id, { target: goal.target * 2 });
+              useGoalStore.getState().updateRuntime(goal.id, {
+                current: 0, reached: false, lastCompletedTarget: 0,
+              });
+              useGoalStore.getState().broadcastGoalProgress(goal.id);
+            }
+          }
+        }
+      }, stepDuration);
+      return;
+    }
+    const w = window as any;
+    if (w.__coinJarProTest) {
+      w.__coinJarProTest();
+    } else if (w.__coinJarProRealGiftTest) {
+      w.__coinJarProRealGiftTest({
+        giftName: "Rose",
+        diamonds: 10,
+        repeatCount: 1,
+        username: "Test User",
+      });
+    }
+  }, [selected]);
+
+  // ── Customize ───────────────────────────────────────
+  const handleCustomize = useCallback(() => {
+    console.log('[GOAL-PROGRESS] handleCustomize called, selected:', selected?.id);
+    if (selected?.id === "coin-jar-pro") {
+      navigate("/overlays/coin-jar");
+    } else if (selected?.id === "goal-progress" || selected?.id === "goal-likes" || selected?.id === "goal-followers" || selected?.id === "goal-gifts") {
+      navigate(`/customize/${selected.id}`);
+    }
+  }, [selected, navigate]);
+
+  // ── Copy URL button label ───────────────────────────
+  const copyLabel = copiedUrl ? "Copied!" : "Copy URL";
+  const copyIcon = copiedUrl ? CheckCircle2 : Copy;
 
   return (
-    <div className="flex h-full">
-      {/* Main Content */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="px-6 pt-6 pb-4 shrink-0">
-          <div className="flex items-center gap-3 mb-4">
+    <div className="flex h-full bg-[#09090b]">
+      {/* ── Left Sidebar: Overlay List ──────────────── */}
+      <aside className="w-[280px] shrink-0 border-r border-white/[0.06] flex flex-col bg-[#0c0c0e]">
+        {/* Header */}
+        <div className="px-5 pt-6 pb-4">
+          <div className="flex items-center gap-3 mb-1">
             <div className="w-8 h-8 rounded-xl bg-primary/20 flex items-center justify-center border border-primary/30">
-              <ImageIcon className="w-4 h-4 text-primary-light" />
+              <LayoutGrid className="w-4 h-4 text-primary-light" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white">Overlay Gallery</h1>
-              <p className="text-xs text-white/40">Browse, customize, and manage your stream overlays</p>
+              <h1 className="text-lg font-bold text-white tracking-tight">
+                Overlay Gallery
+              </h1>
+              <p className="text-[11px] text-white/40 leading-snug">
+                Browse, preview &amp; manage your overlays
+              </p>
             </div>
-          </div>
-
-          {/* Filter Tabs */}
-          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
-            {filterTabs.map((tab) => {
-              const Icon = iconMap[tab.icon] || LayoutGrid;
-              const isActive = activeTab === tab.id;
-              return (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                  className={cn("relative flex items-center gap-1.5 px-3.5 h-8 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0", isActive ? "text-white" : "text-white/40 hover:text-white/60")}>
-                  {isActive && <motion.div layoutId="ft" className="absolute inset-0 rounded-lg bg-primary/20 border border-primary/30" transition={{ type: "spring", stiffness: 380, damping: 30 }} />}
-                  <div className="relative z-10 flex items-center gap-1.5"><Icon className="w-3.5 h-3.5" />{tab.label}</div>
-                </button>
-              );
-            })}
           </div>
         </div>
 
-        {/* Grid */}
-        <div className="flex-1 overflow-y-auto px-6 pb-6">
-          {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20">
-              <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center mb-4"><Search className="w-6 h-6 text-white/20" /></div>
-              <h3 className="text-sm font-semibold text-white mb-1">No overlays found</h3>
-              <p className="text-xs text-white/40 text-center max-w-xs">Try a different filter category or check if overlay modules are registered.</p>
-            </div>
-          ) : (
-            <AnimatePresence mode="popLayout">
-              <div className="space-y-3">
-                {filtered.map((overlay, i) => {
-                  const fav = isFavorite(overlay.id);
-                  const badge = overlay.isPremium ? { v: "premium" as const, l: "PRO" } : overlay.isNew ? { v: "new" as const, l: "NEW" } : overlay.isPopular ? { v: "popular" as const, l: "POPULAR" } : { v: "free" as const, l: "FREE" };
-                  return (
-                    <motion.div key={overlay.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
-                      className="group relative rounded-2xl border border-white/[0.06] bg-card overflow-hidden hover:border-primary/30 hover:shadow-[0_0_30px_rgba(124,58,237,0.15)] hover:scale-[1.005] transition-all duration-300">
-                      <div className="flex">
-                        <div className="relative w-48 shrink-0 overflow-hidden">
-                          <img src={overlay.thumbnail} alt={overlay.name} className="w-full h-full object-cover" loading="lazy"
-                            onError={(e) => {
-                              const target = e.currentTarget;
-                              console.error('[OVERLAY ASSET FAILED]', { overlayId: overlay.id, src: target.src, currentSrc: target.currentSrc });
-                              target.style.display = 'none';
-                            }}
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <button onClick={() => setSelectedOverlay(overlay)} className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/20">
-                              <Play className="w-4 h-4 text-white ml-0.5" />
-                            </button>
-                          </div>
-                          <div className="absolute top-3 left-3">
-                            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg backdrop-blur-md border text-[10px] font-medium ${overlay.isActive ? "bg-success/20 border-success/30 text-success" : "bg-white/[0.06] border-white/[0.1] text-white/40"}`}>
-                              {overlay.isActive ? <CheckCircle2 className="w-2.5 h-2.5" /> : <Circle className="w-2.5 h-2.5" />}
-                              {overlay.isActive ? "Active" : "Inactive"}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex-1 min-w-0 p-4 flex flex-col justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <h3 className="text-sm font-semibold text-white truncate">{overlay.name}</h3>
-                              <Badge variant={badge.v} className="text-[10px] px-1.5 py-0 shrink-0">{badge.l}</Badge>
-                            </div>
-                            <p className="text-xs text-white/40 line-clamp-2 leading-relaxed mb-3">{overlay.description}</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {overlay.tags.map(t => <span key={t} className="px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-[10px] text-white/30 capitalize">{t}</span>)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-center justify-center gap-1.5 px-4 border-l border-white/[0.06] bg-white/[0.02]">
-                          {[
-                            { icon: Eye, label: "Preview", action: () => setSelectedOverlay(overlay) },
-                            { icon: Link2, label: "Copy URL" },
-                            { icon: FlaskConical, label: "Test" },
-                            { icon: SlidersHorizontal, label: "Customize" },
-                          ].map((a) => (
-                            <button key={a.label} onClick={a.action} className="w-8 h-8 rounded-lg flex items-center justify-center text-white/30 hover:text-white hover:bg-white/[0.06] transition-all" title={a.label}>
-                              <a.icon className="w-3.5 h-3.5" />
-                            </button>
-                          ))}
-                          <div className="w-8 h-[1px] bg-white/[0.06] my-0.5" />
-                          <button onClick={() => toggle(overlay.id)} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${fav ? "text-warning" : "text-white/30 hover:text-warning/60"}`}>
-                            {fav ? <Star className="w-3.5 h-3.5 fill-warning" /> : <StarOff className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            </AnimatePresence>
-          )}
-        </div>
-      </div>
-
-      {/* Preview Panel */}
-      <div className="w-[340px] h-full bg-background/95 backdrop-blur-xl border-l border-white/[0.04] flex flex-col shrink-0 overflow-hidden">
-        <div className="px-4 py-4 border-b border-white/[0.04]">
-          <div className="flex items-center justify-between mb-1">
-            <h2 className="text-sm font-semibold text-white">Preview</h2>
-            <div className="flex gap-1">
-              <Button variant="ghost" size="icon-sm"><Eye className="w-3.5 h-3.5" /></Button>
-            </div>
-          </div>
-          {previewOverlay ? (
-            <p className="text-xs text-white/60 truncate">{previewOverlay.name}</p>
-          ) : (
-            <p className="text-xs text-white/30">No overlay selected</p>
-          )}
-        </div>
-
-        {/* Preview Box */}
-        <div className="flex-1 flex items-center justify-center p-4 bg-[#050505] border-b border-white/[0.04]">
-          {previewOverlay ? (
-            <motion.div key={previewOverlay.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-              className="relative w-[280px] h-[158px] rounded-xl border border-white/[0.08] shadow-2xl bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center overflow-hidden">
-              {previewOverlay.module?.renderer ? (
-                <div className="w-full h-full overflow-hidden">
-                  <Suspense fallback={
-                    <div className="w-full h-full flex items-center justify-center">
-                      <Play className="w-8 h-8 text-primary/30 animate-pulse" />
-                    </div>
-                  }>
+        {/* Overlay list */}
+        <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1.5">
+          {cards.map((card) => {
+            const active = card.id === selectedId;
+            const accent = CATEGORY_ACCENT[card.category] ?? "#7c3aed";
+            return (
+              <button
+                key={card.id}
+                onClick={() => setSelectedId(card.id)}
+                className={cn(
+                  "w-full text-left rounded-xl p-3 transition-all duration-200 border",
+                  active
+                    ? "bg-white/[0.06] border-primary/40 shadow-[0_0_20px_rgba(124,58,237,0.12)]"
+                    : "bg-white/[0.02] border-transparent hover:bg-white/[0.04] hover:border-white/[0.08]",
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                    style={{ backgroundColor: `${accent}22`, border: `1px solid ${accent}33` }}
+                  >
                     {(() => {
-                      const Renderer = previewOverlay.module.renderer;
-                      console.log('[OVERLAY ASSET] preview renderer', previewOverlay.id, 'mode=preview');
-                      return <Renderer config={previewOverlay.config} mode="preview" />;
+                      const Icon = iconMap[card.category] ?? Target;
+                      return <Icon className="w-4 h-4" style={{ color: accent }} />;
                     })()}
-                  </Suspense>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "text-sm font-semibold truncate",
+                          active ? "text-white" : "text-white/70",
+                        )}
+                      >
+                        {card.name}
+                      </span>
+                      {card.isPremium ? (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                          PRO
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                          FREE
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-white/35 truncate leading-snug mt-0.5">
+                      {card.description}
+                    </p>
+                  </div>
+                  {active && (
+                    <div className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                  )}
                 </div>
-              ) : (
-                <div className="text-center px-4">
-                  <Play className="w-8 h-8 text-primary/30 mx-auto mb-2" />
-                  <p className="text-sm font-medium text-white/70">{previewOverlay.name}</p>
-                  <p className="text-xs text-white/30 mt-1">No renderer available</p>
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+
+      {/* ── Main Content ────────────────────────────── */}
+      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {selected ? (
+          <>
+            {/* ── Info Bar ─────────────────────────── */}
+            <div className="px-6 py-4 flex items-center justify-between border-b border-white/[0.04] shrink-0">
+              <div className="flex items-center gap-4">
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="text-xl font-bold text-white">{selected.name}</h2>
+                    {selected.isPremium ? (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        PRO
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                        FREE
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[13px] text-white/40 mt-1 max-w-xl leading-relaxed">
+                    {selected.description}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* ── Live Preview ──────────────────────── */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              <div className="px-6 pt-4 pb-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">
+                    Live Preview
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 mx-6 mb-4 flex items-center justify-center rounded-2xl bg-[#050505] border border-white/[0.06] overflow-hidden">
+                <Suspense
+                  fallback={
+                    <div className="flex flex-col items-center gap-3 text-white/30">
+                      <RotateCcw className="w-6 h-6 animate-spin" />
+                      <span className="text-xs">Loading overlay…</span>
+                    </div>
+                  }
+                >
+                  {selected.module?.renderer ? (
+                    <div className="w-full h-full flex items-center justify-center overflow-hidden">
+                      {(() => {
+                        const Renderer = selected.module.renderer;
+                        const events =
+                          selected.id === "coin-jar-pro"
+                            ? demoRef.current
+                            : undefined;
+                        if (selected.id === "coin-jar-pro") {
+                          console.log('[OVERLAY-GALLERY] passing demo events to renderer:', !!events, 'demoRef:', !!demoRef.current);
+                        }
+                        return (
+                          <Renderer
+                            config={selected.config}
+                            mode="preview"
+                            events={events}
+                            size={{ width: 400, height: 500 }}
+                          />
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="text-center px-8">
+                      <Play className="w-10 h-10 text-white/10 mx-auto mb-3" />
+                      <p className="text-sm font-medium text-white/50">
+                        {selected.name}
+                      </p>
+                      <p className="text-xs text-white/25 mt-1">
+                        Preview not available
+                      </p>
+                    </div>
+                  )}
+                </Suspense>
+              </div>
+            </div>
+
+            {/* ── Action Bar ────────────────────────── */}
+            <div className="px-6 py-4 border-t border-white/[0.04] flex items-center gap-3 shrink-0">
+              {/* RosaeFinity Official label */}
+              <div className="flex items-center gap-2 mr-auto">
+                <div className="w-6 h-6 rounded-md bg-primary/20 border border-primary/30 flex items-center justify-center">
+                  <ImageIcon className="w-3 h-3 text-primary-light" />
+                </div>
+                <span className="text-xs font-semibold text-white/50">
+                  RosaeFinity Official
+                </span>
+              </div>
+
+              {/* Pro lock indicator for Coin Jar Pro */}
+              {selected.isPremium && !isPro && (
+                <div className="flex items-center gap-1.5 mr-2 px-3 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-medium">
+                  <Lock className="w-3 h-3" />
+                  PRO FEATURE
                 </div>
               )}
-            </motion.div>
-          ) : (
-            <div className="w-[280px] h-[158px] rounded-xl border border-white/[0.08] bg-gradient-to-br from-card to-[#1a1a24] flex items-center justify-center">
-              <div className="text-center px-4 text-white/30">
-                <p className="text-sm font-medium mb-1">No overlay available</p>
-                <p className="text-xs">Register overlay modules to see previews</p>
-              </div>
-            </div>
-          )}
-        </div>
 
-        {/* Quick Settings */}
-        <div className="p-4 space-y-3 overflow-y-auto">
-          <p className="text-xs font-medium text-white/40 uppercase tracking-wider mb-3">Quick Settings</p>
-          {previewOverlay ? [
-            { label: "Transparency", value: "90%" },
-            { label: "Scale", value: "100%" },
-            { label: "Border Radius", value: "12px" },
-            { label: "Animation Speed", value: "Normal" },
-          ].map((s) => (
-            <div key={s.label} className="flex items-center justify-between">
-              <span className="text-xs text-white/40">{s.label}</span>
-              <span className="text-xs text-white/60">{s.value}</span>
+              {/* Copy URL */}
+              <button
+                onClick={() => {
+                  if (selected.isPremium && !isPro) {
+                    setUpgradeDialogOpen(true);
+                    return;
+                  }
+                  handleCopyUrl();
+                }}
+                className={cn(
+                  "flex items-center gap-2 px-4 h-9 rounded-lg text-xs font-medium transition-all border",
+                  copiedUrl
+                    ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                    : selected.isPremium && !isPro
+                    ? "bg-white/[0.04] border-white/[0.08] text-white/40 cursor-not-allowed opacity-60"
+                    : "bg-white/[0.04] border-white/[0.08] text-white/60 hover:text-white hover:bg-white/[0.08] hover:border-white/[0.15]",
+                )}
+                disabled={selected.isPremium && !isPro}
+              >
+                {(() => {
+                  const Icon = copyIcon;
+                  return <Icon className="w-3.5 h-3.5" />;
+                })()}
+                {copyLabel}
+              </button>
+
+              {/* Test */}
+              <button
+                onClick={(e) => {
+                  // TEMPORARY: elementFromPoint diagnostic
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  const cx = rect.left + rect.width / 2;
+                  const cy = rect.top + rect.height / 2;
+                  const topEl = document.elementFromPoint(cx, cy);
+                  console.log('[GOAL-PROGRESS-CLICK] Test button center:', cx, cy, 'top element:', topEl?.tagName, topEl?.textContent?.trim()?.slice(0, 30), 'isSelf:', topEl === e.currentTarget || topEl?.closest?.('button') === e.currentTarget);
+
+                  if (selected.isPremium && !isPro) {
+                    setUpgradeDialogOpen(true);
+                    return;
+                  }
+                  handleTest();
+                }}
+                className={cn(
+                  "flex items-center gap-2 px-4 h-9 rounded-lg text-xs font-medium transition-all border",
+                  selected.isPremium && !isPro
+                    ? "bg-white/[0.04] border-white/[0.08] text-white/40 cursor-not-allowed opacity-60"
+                    : "bg-white/[0.04] border-white/[0.08] text-white/60 hover:text-white hover:bg-white/[0.08] hover:border-white/[0.15]",
+                )}
+                disabled={selected.isPremium && !isPro}
+              >
+                <FlaskConical className="w-3.5 h-3.5" />
+                Test
+              </button>
+
+              {/* Customize */}
+              <button
+                onClick={() => {
+                  if (selected.isPremium && !isPro) {
+                    setUpgradeDialogOpen(true);
+                    return;
+                  }
+                  handleCustomize();
+                }}
+                className={cn(
+                  "flex items-center gap-2 px-4 h-9 rounded-lg text-xs font-semibold transition-all border",
+                  selected.isPremium && !isPro
+                    ? "bg-primary/10 border-primary/20 text-primary/40 cursor-not-allowed opacity-60"
+                    : "bg-primary/20 border-primary/30 text-primary-light hover:bg-primary/30",
+                )}
+                disabled={selected.isPremium && !isPro}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                Customize
+              </button>
+
+              {/* Upgrade Dialog */}
+              <UpgradeDialog
+                open={upgradeDialogOpen}
+                onClose={() => setUpgradeDialogOpen(false)}
+                reason="feature_locked"
+              />
             </div>
-          )) : (
-            <p className="text-xs text-white/30">Select an overlay to customize</p>
-          )}
-        </div>
-      </div>
+          </>
+        ) : (
+          /* ── Empty state ──────────────────────────── */
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mx-auto mb-4">
+                <Play className="w-7 h-7 text-white/15" />
+              </div>
+              <p className="text-sm font-medium text-white/40 mb-1">
+                Select an overlay
+              </p>
+              <p className="text-xs text-white/25">
+                Choose an overlay from the list to see a live preview
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

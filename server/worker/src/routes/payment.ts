@@ -5,7 +5,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env } from '../config.js';
-import { getPrisma } from '../db.js';
+import { getPrisma, createTransactionalClient } from '../db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { BadRequestError, NotFoundError } from '../middleware/error-handler.js';
 import type { ApiResponse, JwtPayload } from '../types.js';
@@ -128,6 +128,7 @@ payment.get('/all', authenticate, requireRole('ADMIN'), async (c) => {
 
 // ── Get payment detail ──
 payment.get('/:id', authenticate, async (c) => {
+  const user = c.get('user');
   const prisma = getPrisma(c.env);
   const id = c.req.param('id');
 
@@ -136,6 +137,7 @@ payment.get('/:id', authenticate, async (c) => {
     include: { user: true, approvedBy: true, plan: true },
   });
   if (!paymentRecord) throw new NotFoundError('Payment not found');
+  if (paymentRecord.userId !== user.sub) throw new NotFoundError('Payment not found');
 
   const response: ApiResponse = { success: true, data: paymentRecord };
   return c.json(response);
@@ -155,43 +157,52 @@ payment.post('/:id/approve', authenticate, requireRole('ADMIN'), async (c) => {
 
   const expiresAt = new Date(Date.now() + PRO_SUBSCRIPTION_DAYS * 24 * 60 * 60 * 1000);
 
-  // Sequential operations (Neon HTTP adapter does not support interactive $transaction)
-  const updatedPayment = await prisma.payment.update({
-    where: { id: paymentId },
-    data: { status: 'PAID', approvedById: user.sub, approvedAt: new Date() },
-  });
+  // Use interactive $transaction via WebSocket adapter for atomicity.
+  // PrismaNeonHTTP (used by getPrisma) does not support $transaction,
+  // so we create a per-request transactional client with a WebSocket pool.
+  const txPrisma = createTransactionalClient(c.env);
+  try {
+    await txPrisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { id: paymentId },
+        data: { status: 'PAID', approvedById: user.sub, approvedAt: new Date() },
+      });
 
-  const existingSub = await prisma.subscription.findFirst({
-    where: { userId: paymentRecord.userId, planId: 'pro' },
-  });
+      const existingSub = await tx.subscription.findFirst({
+        where: { userId: paymentRecord.userId, planId: 'pro' },
+      });
 
-  if (existingSub) {
-    await prisma.subscription.update({
-      where: { id: existingSub.id },
-      data: { status: 'active', provider: 'manual', currentPeriodStart: new Date(), currentPeriodEnd: expiresAt },
+      if (existingSub) {
+        await tx.subscription.update({
+          where: { id: existingSub.id },
+          data: { status: 'active', provider: 'manual', currentPeriodStart: new Date(), currentPeriodEnd: expiresAt },
+        });
+      } else {
+        await tx.subscription.create({
+          data: { userId: paymentRecord.userId, planId: 'pro', status: 'active', provider: 'manual', currentPeriodStart: new Date(), currentPeriodEnd: expiresAt },
+        });
+      }
+
+      const existingLicense = await tx.license.findFirst({
+        where: { userId: paymentRecord.userId, planId: 'pro' },
+      });
+
+      if (existingLicense) {
+        await tx.license.update({
+          where: { id: existingLicense.id },
+          data: { status: 'active', expiresAt, activatedAt: new Date(), lastValidatedAt: new Date() },
+        });
+      } else {
+        await tx.license.create({
+          data: { userId: paymentRecord.userId, planId: 'pro', status: 'active', expiresAt, activatedAt: new Date(), lastValidatedAt: new Date() },
+        });
+      }
+
+      await tx.user.update({ where: { id: paymentRecord.userId }, data: { accountType: 'pro' } });
     });
-  } else {
-    await prisma.subscription.create({
-      data: { userId: paymentRecord.userId, planId: 'pro', status: 'active', provider: 'manual', currentPeriodStart: new Date(), currentPeriodEnd: expiresAt },
-    });
+  } finally {
+    await txPrisma.$disconnect();
   }
-
-  const existingLicense = await prisma.license.findFirst({
-    where: { userId: paymentRecord.userId, planId: 'pro' },
-  });
-
-  if (existingLicense) {
-    await prisma.license.update({
-      where: { id: existingLicense.id },
-      data: { status: 'active', expiresAt, activatedAt: new Date(), lastValidatedAt: new Date() },
-    });
-  } else {
-    await prisma.license.create({
-      data: { userId: paymentRecord.userId, planId: 'pro', status: 'active', expiresAt, activatedAt: new Date(), lastValidatedAt: new Date() },
-    });
-  }
-
-  await prisma.user.update({ where: { id: paymentRecord.userId }, data: { accountType: 'pro' } });
 
   const result = await prisma.payment.findUnique({
     where: { id: paymentId },

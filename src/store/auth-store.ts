@@ -9,6 +9,7 @@ import type { AuthUser, AuthSession, AccountType } from '../services/auth/types'
 import { getAuthProvider, initAuthProvider, isAuthProviderInitialized } from '../services/auth/auth-factory';
 import { sessionManager } from '../services/auth/session-manager';
 import { BackendAuthProvider } from '../services/auth/providers/backend-provider';
+import { resetAuthRedirectLock } from '../lib/auth-fetch';
 
 // Initialize BackendAuthProvider if no provider registered yet.
 if (!isAuthProviderInitialized()) {
@@ -114,11 +115,19 @@ export const useAuthStore = create<AuthState>()(
             console.log('[AUTH-FLOW] isLoading = false (no session, cleared stale user)');
           }
 
-          // Listen for route changes (hash changes) to catch tokens that expire
-          // while the user is idle on a page. When navigating, if the access token
-          // is expired, clear auth state immediately so RouteGuard redirects to login.
+          // Listen for route changes to catch tokens that expire while the user
+          // is idle on a page. When navigating, if the access token is expired,
+          // clear auth state immediately so RouteGuard redirects to login.
           // This is defense-in-depth — the primary handler is authFetch's 401 handler.
-          window.addEventListener('hashchange', () => {
+          //
+          // We listen to BOTH hashchange (browser) and popstate (Electron, where
+          // safeNavigate uses history.replaceState + PopStateEvent dispatch).
+          const checkTokenExpiry = () => {
+            const hash = window.location.hash;
+            // Never logout on auth or root — would create an infinite loop
+            if (hash === '#/auth' || hash === '#/' || hash === '' || hash === '#') {
+              return;
+            }
             const { currentUser, session } = get();
             if (currentUser && session?.accessToken) {
               const cached = sessionManager.getCachedSession();
@@ -129,15 +138,17 @@ export const useAuthStore = create<AuthState>()(
                 const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
                 const payload = JSON.parse(decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')));
                 if (typeof payload.exp === 'number' && Date.now() >= (payload.exp * 1000) - 30_000) {
-                  console.log('[AUTH-FLOW] hashchange: token expired, clearing auth');
+                  console.log('[AUTH-FLOW] route-change: token expired, clearing auth');
                   get().logout();
                 }
               } catch {
-                console.log('[AUTH-FLOW] hashchange: token unparseable, clearing auth');
+                console.log('[AUTH-FLOW] route-change: token unparseable, clearing auth');
                 get().logout();
               }
             }
-          });
+          };
+          window.addEventListener('hashchange', checkTokenExpiry);
+          window.addEventListener('popstate', checkTokenExpiry);
 
           // Listen for auth state changes (post-initialization only)
           // IMPORTANT: These callbacks MUST NOT set isLoading=true.
@@ -201,6 +212,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(result.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -240,6 +252,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(result.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -262,6 +275,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(r.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -284,6 +298,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(r.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -306,6 +321,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(r.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -328,6 +344,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(r.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });
@@ -350,6 +367,7 @@ export const useAuthStore = create<AuthState>()(
               initialized: true,
             });
             sessionManager.saveSession(r.session);
+            resetAuthRedirectLock();
           }
         } catch (err: any) {
           set({ isLoading: false, error: err.message });

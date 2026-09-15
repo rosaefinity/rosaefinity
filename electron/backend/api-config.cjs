@@ -3,7 +3,7 @@
 // Single source of truth for the API base URL.
 // ═══════════════════════════════════════════════
 
-const API_BASE_URL = process.env.ROSAE_API_URL || "http://localhost:3000";
+const API_BASE_URL = process.env.ROSAE_API_URL || "https://rosaefinity-api.harvando28.workers.dev";
 const API_PREFIX = process.env.ROSAE_API_PREFIX || "/api";
 
 module.exports = {

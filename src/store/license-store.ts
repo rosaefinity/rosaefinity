@@ -1,6 +1,7 @@
 // =============================================
 // RosaeFinity — License Store (Zustand)
-// Backend-authoritative: all checks go through IPC (Electron) or API (web).
+// Backend-authoritative: always fetches subscription from REST API.
+// Electron and browser use the SAME code path — no IPC for license status.
 // Frontend NEVER determines Pro status locally.
 // =============================================
 
@@ -31,6 +32,14 @@ interface LicenseStore {
   checkLimit: (type: 'maxActions' | 'maxScenes' | 'maxOverlayPresets', current: number) => { allowed: boolean; limit: number; remaining: number };
   canAccessTier: (requiredTier: string) => boolean;
 
+  // — Centralized subscription state —
+  /** Whether Pro subscription is currently active (plan=pro AND not expired) */
+  isProActive: () => boolean;
+  /** Whether user is lifetime Pro (plan=pro AND no expiration date) */
+  isLifetimePro: () => boolean;
+  /** Effective plan considering expiration: 'pro' if active, 'free' otherwise */
+  effectivePlan: () => 'pro' | 'free';
+
   // — Activation —
   activate: (opts?: { paymentId?: string }) => Promise<{ success: boolean; error?: string }>;
   deactivate: () => Promise<void>;
@@ -51,19 +60,28 @@ const DEFAULT_FEATURES: LicenseV2Features = {
 };
 
 /**
- * Fetch subscription from the backend API (web mode).
- * Used when Electron IPC is unavailable.
+ * Fetch subscription from the backend API.
+ * Used by both Electron and browser — single unified code path.
  */
 async function fetchSubscriptionFromAPI(): Promise<{ plan: string; status: string; features: LicenseV2Features; expiresAt: number | null } | null> {
   const session = useAuthStore.getState().session;
-  if (!session?.accessToken) return null;
+  console.log('[ENTITLEMENT-ELECTRON] auth initialized', { hasSession: !!session, hasToken: !!session?.accessToken });
+  if (!session?.accessToken) {
+    console.log('[ENTITLEMENT-ELECTRON] access token NOT present — returning null');
+    return null;
+  }
+  console.log('[ENTITLEMENT-ELECTRON] access token present');
   try {
-    const res = await fetch(`${API_URL}/v1/auth/subscription`, {
+    const url = `${API_URL}/v1/auth/subscription`;
+    console.log('[ENTITLEMENT-ELECTRON] subscription request URL', { url, isElectron: !!api() });
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
+    console.log('[ENTITLEMENT-ELECTRON] subscription HTTP response', { status: res.status, ok: res.ok });
     const json = await res.json();
+    console.log('[ENTITLEMENT-ELECTRON] subscription raw response', { success: json.success, plan: json.data?.plan, status: json.data?.status });
     if (json.success && json.data) {
-      console.log('[ENTITLEMENT] fetched subscription from API:', json.data);
+      console.log('[ENTITLEMENT-ELECTRON] fetched subscription from API:', json.data);
       return {
         plan: json.data.plan || 'free',
         status: json.data.status || 'active',
@@ -73,7 +91,7 @@ async function fetchSubscriptionFromAPI(): Promise<{ plan: string; status: strin
     }
     return null;
   } catch (err) {
-    console.error('[ENTITLEMENT] API fetch failed:', err);
+    console.error('[ENTITLEMENT-ELECTRON] API fetch failed:', err);
     return null;
   }
 }
@@ -90,84 +108,77 @@ export const useLicenseStore = create<LicenseStore>()(
     lastError: null,
     userId: null,
 
-    // — Initialize from backend —
+    // — Initialize from backend (single path: always fetch from REST API) —
     initialize: async (userId: string) => {
       if (get().isInitialized && get().userId === userId) return;
+      const prevPlan = get().plan;
+      const wasInit = get().isInitialized;
       set({ isLoading: true, lastError: null, userId });
       try {
-        const a = api();
-        if (a) {
-          // Electron: use IPC
-          const result = await safeInvoke(a.licenseV2Status, userId);
-          if (result.success && result.data) {
-            const s = result.data as LicenseV2Status;
-            set({
-              plan: s.plan,
-              status: s.status,
-              features: s.features,
-              expiresAt: s.expiresAt,
-              isInitialized: true,
-              isLoading: false,
-            });
-          } else {
-            set({ isInitialized: true, isLoading: false, lastError: result.error });
-          }
+        console.log('[ENTITLEMENT-ELECTRON] initLicense start', { userId, isElectron: !!api(), wasInitialized: wasInit });
+        const sub = await fetchSubscriptionFromAPI();
+        if (sub) {
+          console.log('[ENTITLEMENT-ELECTRON] normalized subscription', { plan: sub.plan, status: sub.status });
+          console.log('[ENTITLEMENT-ELECTRON] store before update', { prevPlan });
+          set({
+            plan: sub.plan as 'free' | 'pro',
+            status: sub.status as 'active' | 'expired' | 'suspended',
+            features: sub.features,
+            expiresAt: sub.expiresAt,
+            isInitialized: true,
+            isLoading: false,
+          });
+          console.log('[ENTITLEMENT-ELECTRON] store after update', { plan: sub.plan, wasStaleFree: prevPlan === 'free' && sub.plan === 'pro' });
         } else {
-          // Web mode: fetch subscription from REST API
-          const sub = await fetchSubscriptionFromAPI();
-          if (sub) {
-            set({
-              plan: sub.plan as 'free' | 'pro',
-              status: sub.status as 'active' | 'expired' | 'suspended',
-              features: sub.features,
-              expiresAt: sub.expiresAt,
-              isInitialized: true,
-              isLoading: false,
-            });
-          } else {
-            console.log('[ENTITLEMENT] no subscription found, defaulting to free');
-            set({ isInitialized: true, isLoading: false });
-          }
+          console.log('[ENTITLEMENT-ELECTRON] no subscription found, defaulting to free');
+          set({ isInitialized: true, isLoading: false });
         }
       } catch (err: any) {
-        console.error('[ENTITLEMENT] initialize error:', err);
+        console.error('[ENTITLEMENT-ELECTRON] initialize error:', err);
         set({ isInitialized: true, isLoading: false, lastError: err.message });
       }
     },
 
-    // — Refresh from backend —
+    // — Refresh from backend (single path: always fetch from REST API) —
     refresh: async () => {
       const { userId } = get();
       if (!userId) return;
       try {
-        const a = api();
-        if (a) {
-          // Electron: use IPC
-          const result = await safeInvoke(a.licenseV2Status, userId);
-          if (result.success && result.data) {
-            const s = result.data as LicenseV2Status;
-            set({
-              plan: s.plan,
-              status: s.status,
-              features: s.features,
-              expiresAt: s.expiresAt,
-            });
-          }
-        } else {
-          // Web mode: fetch from API
-          const sub = await fetchSubscriptionFromAPI();
-          if (sub) {
-            set({
-              plan: sub.plan as 'free' | 'pro',
-              status: sub.status as 'active' | 'expired' | 'suspended',
-              features: sub.features,
-              expiresAt: sub.expiresAt,
-            });
-          }
+        console.log('[ENTITLEMENT-ELECTRON] refresh start', { userId });
+        const sub = await fetchSubscriptionFromAPI();
+        if (sub) {
+          console.log('[ENTITLEMENT-ELECTRON] refresh normalized', { plan: sub.plan, status: sub.status });
+          set({
+            plan: sub.plan as 'free' | 'pro',
+            status: sub.status as 'active' | 'expired' | 'suspended',
+            features: sub.features,
+            expiresAt: sub.expiresAt,
+          });
         }
       } catch (err: any) {
         set({ lastError: err.message });
       }
+    },
+
+    // — Centralized subscription state —
+    isProActive: () => {
+      const { plan, expiresAt, isInitialized } = get();
+      if (!isInitialized || plan !== 'pro') return false;
+      if (!expiresAt) return true; // Lifetime Pro
+      return Date.now() < expiresAt;
+    },
+
+    isLifetimePro: () => {
+      const { plan, expiresAt, isInitialized } = get();
+      return isInitialized && plan === 'pro' && !expiresAt;
+    },
+
+    effectivePlan: () => {
+      const { plan, expiresAt, isInitialized } = get();
+      if (!isInitialized) return 'free';
+      if (plan !== 'pro') return 'free';
+      if (expiresAt && Date.now() >= expiresAt) return 'free';
+      return 'pro';
     },
 
     // — Feature check (sync, reads from cached features) —

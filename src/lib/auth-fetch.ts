@@ -6,6 +6,7 @@
 
 import { getAuthProvider } from '../services/auth/auth-factory';
 import { useAuthStore } from '../store/auth-store';
+import { safeNavigate } from './safe-navigate';
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
 const ACCESS_TOKEN_KEY = 'rf_access_token';
@@ -50,17 +51,53 @@ async function attemptRefresh(): Promise<boolean> {
  */
 const AUTH_FAILURE_MESSAGE = 'Your session has expired. Please sign in again.';
 
+// ── Redirect lock ──
+// Prevents multiple concurrent 401 responses from each initiating a
+// separate navigation. Once a redirect is in progress, subsequent
+// calls are no-ops.
+let _authRedirectInProgress = false;
+
 function handleAuthFailure(): never {
+  const currentHash = window.location.hash;
+  const targetHash = '#/auth';
+
+  console.log('[AUTH-REDIRECT]', {
+    reason: '401 after refresh failed',
+    currentHash,
+    targetHash,
+    redirectInProgress: _authRedirectInProgress,
+  });
+
+  // If a redirect is already in progress (another 401 fired first),
+  // just throw — do NOT call logout() again or navigate again.
+  if (_authRedirectInProgress) {
+    console.log('[AUTH-REDIRECT] redirect already in progress — skipping duplicate');
+    const err = new Error(AUTH_FAILURE_MESSAGE);
+    err.name = 'AuthFailureError';
+    throw err;
+  }
+
+  _authRedirectInProgress = true;
+
   // Clear auth state synchronously
   const { logout } = useAuthStore.getState();
   logout();
 
-  // Redirect to login
-  window.location.hash = '#/auth';
+  // Redirect to login — safeNavigate() is idempotent (skips if already on #/auth)
+  // and uses history.replaceState() in Electron to avoid full renderer reload.
+  safeNavigate('/auth', 'handleAuthFailure:401');
 
   const err = new Error(AUTH_FAILURE_MESSAGE);
   err.name = 'AuthFailureError';
   throw err;
+}
+
+/**
+ * Reset the redirect lock. Called after successful login so future 401s
+ * can redirect again.
+ */
+export function resetAuthRedirectLock(): void {
+  _authRedirectInProgress = false;
 }
 
 /** Check whether an error is a centralized auth failure (401 after refresh). */

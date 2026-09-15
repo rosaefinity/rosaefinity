@@ -1,8 +1,3 @@
-// =============================================
-// RosaeFinity Server — Prisma Schema
-// PostgreSQL database models for all modules.
-// =============================================
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,39 +7,35 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ── Users ──
 model User {
-  id            String    @id @default(uuid())
-  email         String?   @unique
-  passwordHash  String?   // bcrypt hashed password (null for OAuth/anonymous users)
-  displayName   String?
-  avatarUrl     String?
-  authProvider  String    @default("email") // email | google | github | discord | microsoft | anonymous
-  providerId    String?   // OAuth provider user ID
-  accountType   String    @default("free") // guest | free | pro | enterprise (subscription tier)
-  role          String    @default("USER") // USER | ADMIN (authorization)
-  isAnonymous   Boolean   @default(false)
-  emailVerified Boolean   @default(false)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  // Relations
-  sessions      Session[]
-  devices       Device[]
-  licenses      License[]
-  subscriptions Subscription[]
-  syncRecords   SyncRecord[]
-  apiKeys       ApiKey[]
-  auditLogs     AuditLog[]
-  notifications Notification[]
-  payments      Payment[]      @relation("UserPayments")
-  approvedPayments Payment[]   @relation("ApprovedPayments")
+  id               String         @id @default(uuid())
+  email            String?        @unique
+  passwordHash     String?
+  displayName      String?
+  avatarUrl        String?
+  authProvider     String         @default("email")
+  providerId       String?
+  accountType      String         @default("free")
+  isAnonymous      Boolean        @default(false)
+  emailVerified    Boolean        @default(false)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  role             String         @default("USER")
+  apiKeys          ApiKey[]
+  auditLogs        AuditLog[]
+  devices          Device[]
+  licenses         License[]
+  notifications    Notification[]
+  approvedPayments Payment[]      @relation("ApprovedPayments")
+  payments         Payment[]      @relation("UserPayments")
+  sessions         Session[]
+  subscriptions    Subscription[]
+  syncRecords      SyncRecord[]
 
   @@index([email])
   @@index([authProvider, providerId])
 }
 
-// ── Sessions ──
 model Session {
   id           String   @id @default(uuid())
   userId       String
@@ -56,7 +47,6 @@ model Session {
   expiresAt    DateTime
   createdAt    DateTime @default(now())
   lastActiveAt DateTime @default(now())
-
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -64,258 +54,236 @@ model Session {
   @@index([refreshToken])
 }
 
-// ── Devices ──
 model Device {
-  id              String   @id @default(uuid())
-  userId          String
-  deviceId        String   @unique // Client-generated device ID
-  name            String
-  platform        String
-  appVersion      String?
+  id                 String   @id @default(uuid())
+  userId             String
+  deviceId           String   @unique
+  name               String
+  platform           String
+  appVersion         String?
   machineFingerprint String?
-  status          String   @default("active") // active | inactive | revoked
-  lastSeenAt      DateTime @default(now())
-  activatedAt     DateTime @default(now())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status             String   @default("active")
+  lastSeenAt         DateTime @default(now())
+  activatedAt        DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([deviceId])
   @@index([status])
 }
 
-// ── Plans ──
 model Plan {
-  id              String   @id // guest | free | pro | enterprise
-  name            String
-  description     String?
-  features        String[] // Feature flags
-  maxActions      Int      @default(0)
-  maxSounds       Int      @default(0)
-  maxOverlays     Int      @default(0)
-  maxProfiles     Int      @default(0)
-  maxScreens      Int      @default(1)
-  maxPointsUsers  Int      @default(0)
-  maxDevices      Int      @default(1)
-  isTrialAvailable Boolean @default(false)
-  trialDurationDays Int    @default(0)
-  sortOrder       Int      @default(0)
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  licenses        License[]
-  subscriptions   Subscription[]
-  payments        Payment[]
+  id                String         @id
+  name              String
+  description       String?
+  features          String[]
+  maxActions        Int            @default(0)
+  maxSounds         Int            @default(0)
+  maxOverlays       Int            @default(0)
+  maxProfiles       Int            @default(0)
+  maxScreens        Int            @default(1)
+  maxPointsUsers    Int            @default(0)
+  maxDevices        Int            @default(1)
+  isTrialAvailable  Boolean        @default(false)
+  trialDurationDays Int            @default(0)
+  sortOrder         Int            @default(0)
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  licenses          License[]
+  payments          Payment[]
+  subscriptions     Subscription[]
 }
 
-// ── Licenses ──
 model License {
-  id              String   @id @default(uuid())
-  userId          String
-  planId          String
-  licenseKey      String?  @unique
-  status          String   @default("inactive") // active | expired | revoked | grace | inactive
-  activatedAt     DateTime @default(now())
-  expiresAt       DateTime?
-  trialStartedAt  DateTime?
-  trialEndedAt    DateTime?
+  id                String    @id @default(uuid())
+  userId            String
+  planId            String
+  licenseKey        String?   @unique
+  status            String    @default("inactive")
+  activatedAt       DateTime  @default(now())
+  expiresAt         DateTime?
+  trialStartedAt    DateTime?
+  trialEndedAt      DateTime?
   gracePeriodEndsAt DateTime?
-  lastValidatedAt DateTime?
-  email           String?
-  metadata        Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plan            Plan     @relation(fields: [planId], references: [id])
+  lastValidatedAt   DateTime?
+  email             String?
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  plan              Plan      @relation(fields: [planId], references: [id])
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([licenseKey])
   @@index([status])
 }
 
-// ── Subscriptions ──
 model Subscription {
-  id              String   @id @default(uuid())
-  userId          String
-  planId          String
-  status          String   @default("inactive") // active | cancelled | expired | past_due | inactive
-  provider        String   // stripe | paypal | lemon_squeezy | mock
-  providerId      String?  // External subscription ID
+  id                 String    @id @default(uuid())
+  userId             String
+  planId             String
+  status             String    @default("inactive")
+  provider           String
+  providerId         String?
   currentPeriodStart DateTime?
   currentPeriodEnd   DateTime?
-  cancelAtPeriodEnd  Boolean @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plan            Plan     @relation(fields: [planId], references: [id])
+  cancelAtPeriodEnd  Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  plan               Plan      @relation(fields: [planId], references: [id])
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([provider, providerId])
 }
 
-// ── Payments ──
 model Payment {
   id              String    @id @default(uuid())
   userId          String
   planId          String    @default("free")
-  amount          Int       // Amount in IDR (e.g. 150000)
-  paymentMethod   String    @default("qris") // qris | bank_transfer | e_wallet
-  status          String    @default("PENDING") // PENDING | PAID | REJECTED | EXPIRED
+  amount          Int
+  paymentMethod   String    @default("qris")
+  status          String    @default("PENDING")
   paymentProofUrl String?
   adminNotes      String?
   approvedById    String?
   approvedAt      DateTime?
-  expiresAt       DateTime? // Payment expires if not approved within window
+  expiresAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
-
-  user            User      @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
-  approvedBy      User?     @relation("ApprovedPayments", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedBy      User?     @relation("ApprovedPayments", fields: [approvedById], references: [id])
   plan            Plan      @relation(fields: [planId], references: [id])
+  user            User      @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
 }
 
-// ── Sync Records ──
 model SyncRecord {
-  id           String   @id @default(uuid())
-  userId       String
-  entityType   String   // action | sound | overlay | settings | alert | goal | preference
-  entityId     String
-  data         Json
-  version      Int      @default(1)
-  checksum     String
-  serverVersion Int     @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid())
+  userId        String
+  entityType    String
+  entityId      String
+  data          Json
+  version       Int      @default(1)
+  checksum      String
+  serverVersion Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, entityType, entityId])
   @@index([userId, entityType])
   @@index([updatedAt])
 }
 
-// ── Update History ──
 model UpdateHistory {
-  id            String   @id @default(uuid())
-  userId        String?
-  fromVersion   String
-  toVersion     String
-  channel       String   @default("stable")
-  status        String   // downloaded | installed | failed | rolled_back
-  platform      String?
-  appVersion    String?
-  installedAt   DateTime @default(now())
-  metadata      Json?
+  id          String   @id @default(uuid())
+  userId      String?
+  fromVersion String
+  toVersion   String
+  channel     String   @default("stable")
+  status      String
+  platform    String?
+  appVersion  String?
+  installedAt DateTime @default(now())
+  metadata    Json?
 
   @@index([toVersion])
   @@index([installedAt])
 }
 
-// ── Analytics Events ──
 model AnalyticsEvent {
-  id            String   @id @default(uuid())
-  userId        String?
-  eventType     String   // app_start | feature_usage | crash_report | performance_metric
-  eventData     Json
-  appVersion    String?
-  platform      String?
-  sessionId     String?
-  createdAt     DateTime @default(now())
+  id         String   @id @default(uuid())
+  userId     String?
+  eventType  String
+  eventData  Json
+  appVersion String?
+  platform   String?
+  sessionId  String?
+  createdAt  DateTime @default(now())
 
   @@index([eventType])
   @@index([createdAt])
   @@index([userId])
 }
 
-// ── Plugins ──
 model Plugin {
-  id            String   @id @default(uuid())
-  name          String   @unique
-  displayName   String
-  description   String?
-  author        String?
-  version       String
-  manifest      Json
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String   @id @default(uuid())
+  name        String   @unique
+  displayName String
+  description String?
+  author      String?
+  version     String
+  manifest    Json
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
-// ── API Keys ──
 model ApiKey {
-  id            String   @id @default(uuid())
-  userId        String
-  name          String
-  keyHash       String   @unique
-  keyPrefix     String   // First 8 chars for display
-  scopes        String[]
-  expiresAt     DateTime?
-  lastUsedAt    DateTime?
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String    @id @default(uuid())
+  userId     String
+  name       String
+  keyHash    String    @unique
+  keyPrefix  String
+  scopes     String[]
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([keyHash])
 }
 
-// ── Refresh Tokens ──
 model RefreshToken {
-  id            String   @id @default(uuid())
-  token         String   @unique
-  userId        String
-  sessionId     String?
+  id                String   @id @default(uuid())
+  token             String   @unique
+  userId            String
+  sessionId         String?
   deviceFingerprint String?
-  expiresAt     DateTime
-  isRevoked     Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  expiresAt         DateTime
+  isRevoked         Boolean  @default(false)
+  createdAt         DateTime @default(now())
 
   @@index([token])
   @@index([userId])
 }
 
-// ── Audit Logs ──
 model AuditLog {
-  id            String   @id @default(uuid())
-  userId        String?
-  action        String
-  resource      String
-  resourceId    String?
-  details       Json?
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
-
-  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([action])
   @@index([createdAt])
 }
 
-// ── Notifications ──
 model Notification {
-  id            String   @id @default(uuid())
-  userId        String
-  type          String   // info | warning | error | update | license
-  title         String
-  message       String
-  isRead        Boolean  @default(false)
-  actionUrl     String?
-  metadata      Json?
-  createdAt     DateTime @default(now())
-
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id        String   @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  actionUrl String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead])
   @@index([createdAt])

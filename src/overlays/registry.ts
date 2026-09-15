@@ -1,6 +1,10 @@
 import type { AnyOverlayModule } from './types';
 import { giftAlertOverlay } from './gift-alert';
 import { coinJarProOverlay } from './coin-jar-pro';
+import { goalProgressOverlay } from './goal-progress';
+import { goalLikesOverlay } from './goal-likes';
+import { goalFollowersOverlay } from './goal-followers';
+import { goalGiftsOverlay } from './goal-gifts';
 
 // ─── Registry Builder ───
 
@@ -65,9 +69,19 @@ const _initialModules: AnyOverlayModule[] = [
   giftAlertOverlay as unknown as AnyOverlayModule,
   // Coin Jar Pro
   coinJarProOverlay as unknown as AnyOverlayModule,
+  // Goal Likes (renamed from Goal Progress — fixed to likes only)
+  goalProgressOverlay as unknown as AnyOverlayModule,
+  // Goal Followers
+  goalFollowersOverlay as unknown as AnyOverlayModule,
+  // Goal Gifts
+  goalGiftsOverlay as unknown as AnyOverlayModule,
 ];
 
 const { registry: overlayRegistry, byId, byCategory } = registryBuilder(_initialModules);
+
+console.log('[OVERLAY-TRACE] registry count =', overlayRegistry.length);
+console.log('[OVERLAY-TRACE] registry ids =', overlayRegistry.map(m => m.id));
+console.log('[OVERLAY-TRACE] has goal-progress (Goal Likes) =', overlayRegistry.some(m => m.id === 'goal-progress'));
 
 export { overlayRegistry };
 

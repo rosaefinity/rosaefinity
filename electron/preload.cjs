@@ -23,22 +23,54 @@ contextBridge.exposeInMainWorld("electronAPI", {
   showItemInFolder: (p) => ipcRenderer.send("show-item-in-folder", p),
 
   // ── TikTok Connection (per-screen) ──
-  connectTikTokScreen: (screenId, username) => ipcRenderer.send("tiktok:connect", { screenId, username }),
-  disconnectTikTokScreen: (screenId) => ipcRenderer.send("tiktok:disconnect", { screenId }),
-  connectTikTok: (username) => ipcRenderer.send("tiktok:connect", { screenId: "screen-0", username }),
-  disconnectTikTok: () => ipcRenderer.send("tiktok:disconnect", { screenId: "screen-0" }),
+  connectTikTokScreen: (screenId, username) => {
+    console.log(`[TIKTOK-PRELOAD] connectTikTokScreen called screenId=${screenId} username=${username}`);
+    return ipcRenderer.invoke("tiktok:connect", { screenId, username });
+  },
+  disconnectTikTokScreen: (screenId) => {
+    console.log(`[TIKTOK-PRELOAD] disconnectTikTokScreen called screenId=${screenId}`);
+    console.log(`[TIKTOK-PRELOAD] invoking tiktok:disconnect`);
+    return ipcRenderer.invoke("tiktok:disconnect", { screenId }).then((result) => {
+      console.log(`[TIKTOK-PRELOAD] tiktok:disconnect returned`, result);
+      return result;
+    }).catch((err) => {
+      console.error(`[TIKTOK-PRELOAD] tiktok:disconnect failed`, err);
+      throw err;
+    });
+  },
+  connectTikTok: (username) => {
+    console.log(`[TIKTOK-PRELOAD] connectTikTok called username=${username}`);
+    return ipcRenderer.invoke("tiktok:connect", { screenId: "screen-0", username });
+  },
+  disconnectTikTok: () => {
+    console.log(`[TIKTOK-PRELOAD] disconnectTikTok called`);
+    return ipcRenderer.invoke("tiktok:disconnect", { screenId: "screen-0" });
+  },
   onConnected: (cb) => {
     const listener = (_, d) => cb(d);
     ipcRenderer.on("tiktok:connected", listener);
     return () => ipcRenderer.removeListener("tiktok:connected", listener);
   },
   onDisconnected: (cb) => {
-    const listener = (_, d) => cb(d);
+    const listener = (_, d) => {
+      console.log(`[TIKTOK-DISCONNECT-TRACE][PRELOAD]`, JSON.stringify({
+        screenId: d?.screenId,
+        reason: d?.reason,
+        timestamp: Date.now(),
+      }));
+      cb(d);
+    };
     ipcRenderer.on("tiktok:disconnected", listener);
     return () => ipcRenderer.removeListener("tiktok:disconnected", listener);
   },
   onEvent: (cb) => {
-    const listener = (_, d) => cb(d);
+    const listener = (_, d) => {
+      // STEP 4 DIAGNOSTIC: Log preload event delivery
+      if (d?.type === "gift") {
+        console.log(`[TIKTOK-PRELOAD-EVENT]`, JSON.stringify({ type: d.type, screenId: d.screenId, giftName: d.giftName, giftId: d.giftId, user: d.user, diamondCount: d.diamondCount }));
+      }
+      cb(d);
+    };
     ipcRenderer.on("tiktok:event", listener);
     return () => ipcRenderer.removeListener("tiktok:event", listener);
   },
@@ -62,11 +94,35 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("tiktok:reconnecting", listener);
     return () => ipcRenderer.removeListener("tiktok:reconnecting", listener);
   },
+  onRateLimited: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("tiktok:rate-limited", listener);
+    return () => ipcRenderer.removeListener("tiktok:rate-limited", listener);
+  },
+  onCooldownExpired: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("tiktok:cooldown-expired", listener);
+    return () => ipcRenderer.removeListener("tiktok:cooldown-expired", listener);
+  },
+
+  // ── TEMPORARY: Test event injection ──
+  injectTikTokTestEvent: (screenId, event) => ipcRenderer.invoke("tiktok:test-inject-event", { screenId, event }),
 
   // ── Overlay ──
   openOverlay: () => ipcRenderer.send("overlay:open"),
   closeOverlay: () => ipcRenderer.send("overlay:close"),
   sendToOverlay: (data) => ipcRenderer.send("overlay:send", data),
+  pushGoalConfig: (config) => ipcRenderer.send("goal:config", config),
+  overlayGenerateToken: (userId) => ipcRenderer.invoke("overlay:generate-token", userId),
+  overlayPushState: (token, goals) => ipcRenderer.invoke("overlay:push-state", { token, goals }),
+
+  // ── Overlay Instance Sync (v3.1 browser source) ──
+  syncOverlayInstances: (instances) => ipcRenderer.send("overlay:sync-instances", instances),
+  // Immediate push: populates instance map right after Dexie load,
+  // before Browser Source /config requests can arrive
+  pushOverlayInstances: (instances) => ipcRenderer.send("overlay:push-instances", instances),
+  notifyOverlayUpdated: (instance) => ipcRenderer.send("overlay:updated", instance),
+  notifyOverlayDeleted: (instanceId) => ipcRenderer.send("overlay:deleted", instanceId),
   onOverlayEvent: (cb) => {
     const listener = (_, d) => cb(d);
     ipcRenderer.on("overlay:event", listener);
@@ -170,10 +226,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   licenseValidateSound: (count) => ipcRenderer.invoke("license:validateSound", count),
   licenseUserData: () => ipcRenderer.invoke("license:userData"),
 
-  // ── License V2 (backend-backed) ──
-  licenseV2Status: (userId) => ipcRenderer.invoke("license:status", userId),
-  licenseV2Activate: (userId, opts) => ipcRenderer.invoke("license:activate", { userId, ...opts }),
-  licenseV2Deactivate: (userId) => ipcRenderer.invoke("license:deactivate", userId),
+  // ── License V2 (backend-backed via Worker API) ──
+  licenseV2Status: (userId) => ipcRenderer.invoke("licenseV2:status", userId),
+  licenseV2Activate: (userId, opts) => ipcRenderer.invoke("licenseV2:activate", { userId, ...opts }),
+  licenseV2Deactivate: (userId) => ipcRenderer.invoke("licenseV2:deactivate", userId),
 
   // ── Authentication ──
   authRegister: (opts) => ipcRenderer.invoke("auth:register", opts),
@@ -198,6 +254,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   adminExtendLicense: (userId, days) => ipcRenderer.invoke("admin:extendLicense", userId, days),
   adminDowngradeUser: (userId) => ipcRenderer.invoke("admin:downgradeUser", userId),
 
+  // ── Device management (backend-proxied via Worker API) ──
+  deviceRegister: (userId, info) => ipcRenderer.invoke("device:register", { userId, ...info }),
+  deviceList: (userId) => ipcRenderer.invoke("device:list", userId),
+  deviceRemove: (userId, machineId) => ipcRenderer.invoke("device:remove", { userId, machineId }),
+
   // ── Spotify ──
   spotifySetConfig: (config) => ipcRenderer.send("spotify:setConfig", config),
   spotifyAuth: (opts) => ipcRenderer.invoke("spotify:auth", opts),
@@ -217,4 +278,54 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // ── Screen Capture ──
   getCaptureSources: () => ipcRenderer.invoke("capture:getSources"),
   setCaptureSource: (sourceId) => ipcRenderer.invoke("capture:setSource", sourceId),
+
+  // ── Auto Update ──
+  updateCheck: (opts) => ipcRenderer.invoke("update:check", opts),
+  updateDownload: () => ipcRenderer.invoke("update:download"),
+  updateInstall: () => ipcRenderer.invoke("update:install"),
+  updateCancel: () => ipcRenderer.invoke("update:cancel"),
+  updateSetChannel: (channel) => ipcRenderer.invoke("update:set-channel", channel),
+  updateSetPreferences: (prefs) => ipcRenderer.invoke("update:set-preferences", prefs),
+  updateGetInfo: () => ipcRenderer.invoke("update:get-info"),
+  updateGetPreferences: () => ipcRenderer.invoke("update:get-preferences"),
+  updateSkipVersion: (version) => ipcRenderer.invoke("update:skip-version", version),
+  updateUnskipVersion: (version) => ipcRenderer.invoke("update:unskip-version", version),
+  updateGetIgnored: () => ipcRenderer.invoke("update:get-ignored"),
+
+  // ── Auto Update Events ──
+  onUpdateStatus: (cb) => {
+    const listener = (_, status) => cb(status);
+    ipcRenderer.on("update:status", listener);
+    return () => ipcRenderer.removeListener("update:status", listener);
+  },
+  onUpdateProgress: (cb) => {
+    const listener = (_, progress) => cb(progress);
+    ipcRenderer.on("update:progress", listener);
+    return () => ipcRenderer.removeListener("update:progress", listener);
+  },
+  onUpdateAvailable: (cb) => {
+    const listener = (_, info) => cb(info);
+    ipcRenderer.on("update:available", listener);
+    return () => ipcRenderer.removeListener("update:available", listener);
+  },
+  onUpdateNotAvailable: (cb) => {
+    const listener = (_, data) => cb(data);
+    ipcRenderer.on("update:not-available", listener);
+    return () => ipcRenderer.removeListener("update:not-available", listener);
+  },
+  onUpdateDownloaded: (cb) => {
+    const listener = (_, info) => cb(info);
+    ipcRenderer.on("update:downloaded", listener);
+    return () => ipcRenderer.removeListener("update:downloaded", listener);
+  },
+  onUpdateError: (cb) => {
+    const listener = (_, data) => cb(data);
+    ipcRenderer.on("update:error", listener);
+    return () => ipcRenderer.removeListener("update:error", listener);
+  },
+  onUpdateReleaseNotes: (cb) => {
+    const listener = (_, notes) => cb(notes);
+    ipcRenderer.on("update:release-notes", listener);
+    return () => ipcRenderer.removeListener("update:release-notes", listener);
+  },
 });

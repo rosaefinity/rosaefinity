@@ -2,10 +2,11 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuthStore } from "../../store/auth-store";
 import { Button } from "../ui/button";
+import { RosaeFinityLogo } from "../branding/RosaeFinityLogo";
 import { useNavigate } from "react-router-dom";
 import {
-  Mail, Lock, Eye, EyeOff, Sparkles,
-  Globe, AlertCircle, Loader2
+  Mail, Lock, Eye, EyeOff,
+  AlertCircle, Loader2
 } from "lucide-react";
 
 // Admin users stay in same app, go to admin users page
@@ -16,7 +17,7 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
-  const { login, loginWithGoogle, isLoading, error, clearError } = useAuthStore();
+  const { login, isLoading, error, clearError } = useAuthStore();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -42,23 +43,6 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    clearError();
-    try {
-      await loginWithGoogle();
-      const state = useAuthStore.getState();
-      if (state.isAuthenticated && state.currentUser) {
-        if (state.currentUser.accountType === 'admin') {
-          navigate(ADMIN_URL);
-        } else {
-          navigate("/");
-        }
-      }
-    } catch {
-      // Error is handled by the store
-    }
-  };
-
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       {/* Background Effects */}
@@ -80,9 +64,9 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ type: "spring", stiffness: 200, damping: 15 }}
-            className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary via-secondary to-accent mb-4 shadow-lg shadow-primary/30"
+            className="inline-flex items-center justify-center mb-4"
           >
-            <Sparkles className="w-8 h-8 text-white" />
+            <RosaeFinityLogo className="w-20 h-20" />
           </motion.div>
           <h1 className="text-2xl font-bold text-white">RosaeFinity</h1>
           <p className="text-sm text-white/40 mt-1">Sign in to your account</p>
@@ -165,23 +149,6 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
             </Button>
           </form>
 
-          {/* Divider */}
-          <div className="relative my-5">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/[0.06]" /></div>
-            <div className="relative flex justify-center"><span className="px-3 text-xs text-white/30 bg-card">or continue with</span></div>
-          </div>
-
-          {/* Google */}
-          <Button
-            variant="google"
-            className="w-full gap-3"
-            onClick={handleGoogleLogin}
-            disabled={isLoading}
-          >
-            <Globe className="w-4 h-4" />
-            Continue with Google
-          </Button>
-
           {/* Register Link */}
           <p className="text-center text-xs text-white/30 mt-5">
             Don't have an account?{" "}
@@ -189,14 +156,6 @@ export function LoginPage({ onSwitchToRegister }: LoginPageProps) {
               Sign Up
             </button>
           </p>
-
-          {/* Demo Credentials */}
-          <div className="mt-4 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-            <p className="text-[10px] text-white/30 text-center mb-1">Demo Account</p>
-            <p className="text-[10px] text-white/20 text-center">
-              Email: <span className="text-white/40">admin@rosaefinity.app</span> | Pass: <span className="text-white/40">demo123</span>
-            </p>
-          </div>
         </div>
       </motion.div>
     </div>

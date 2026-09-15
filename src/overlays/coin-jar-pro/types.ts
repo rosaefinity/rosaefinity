@@ -296,6 +296,7 @@ export interface RecentGift {
   username: string;
   avatarUrl?: string;
   giftName: string;
+  giftImageUrl?: string;
   giftCount: number;
   coinValue: number;
   timestamp: number;
@@ -333,6 +334,8 @@ export interface Particle {
   type: 'coin' | 'heart' | 'gift' | 'flower';
   x: number;
   y: number;
+  targetX: number;
+  targetY: number;
   scale: number;
   rotation: number;
   opacity: number;
@@ -365,10 +368,16 @@ export interface AccumulatedGift {
   type: 'coin' | 'heart' | 'gift' | 'flower' | 'diamond';
   x: number;
   y: number;
+  targetX: number;
+  targetY: number;
   scale: number;
   rotation: number;
   opacity: number;
   giftData: RecentGift;
+  /** Direct reference to image URL — survives state batching without relying on giftData nested reference */
+  giftImageUrl: string;
+  /** Gift name — direct reference for rendering */
+  giftName: string;
   timestamp: number;
   settled: boolean;
 }

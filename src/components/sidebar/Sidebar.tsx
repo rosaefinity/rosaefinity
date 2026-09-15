@@ -1,12 +1,14 @@
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useAuthStore } from "../../store/auth-store";
 import { useLicenseStore } from "../../store/license-store";
+import { RosaeFinityLogo } from "../branding/RosaeFinityLogo";
 import {
   LayoutDashboard, Settings, Zap, Bell, Volume2,
   Monitor, Camera, MessageSquare, Music,
-  Sparkles, Folder, Activity, Download, Cloud, CreditCard,
+  Folder, Download, CreditCard,
   Shield, LogOut, Users
 } from "lucide-react";
 
@@ -24,9 +26,7 @@ const SIDEBAR_ITEMS = [
   { id: "chat",      label: "Chat",    icon: MessageSquare,   path: "/chat" },
   { id: "song",      label: "Song",    icon: Music,           path: "/song" },
   { id: "divider2",  label: "", icon: undefined, path: "", divider: true },
-  { id: "diagnostics", label: "Diagnostics", icon: Activity, path: "/diagnostics" },
   { id: "update",     label: "Updates",    icon: Download,   path: "/update" },
-  { id: "sync",       label: "Cloud Sync", icon: Cloud,      path: "/sync" },
   { id: "divider3",   label: "", icon: undefined, path: "", divider: true },
   { id: "admin-users", label: "Users", icon: Users, path: "/admin/users", adminOnly: true },
   { id: "admin-payments", label: "Payments", icon: CreditCard, path: "/admin/payments", adminOnly: true },
@@ -36,8 +36,21 @@ export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout, hasRole } = useAuthStore();
-  const { plan } = useLicenseStore();
+  const { plan, isInitialized, expiresAt, isProActive } = useLicenseStore();
   const isAdmin = hasRole('admin');
+
+  // Reactive expiration: re-render when subscription expires mid-session
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (plan !== 'pro' || !expiresAt) return;
+    const msUntilExpiry = expiresAt - Date.now();
+    if (msUntilExpiry <= 0) { setNow(Date.now()); return; }
+    const timer = setTimeout(() => setNow(Date.now()), msUntilExpiry + 1000);
+    return () => clearTimeout(timer);
+  }, [plan, expiresAt]);
+
+  // Use centralized helper for Pro status
+  const showUpgrade = !isProActive();
 
   const handleLogout = async () => {
     await logout();
@@ -48,12 +61,8 @@ export function Sidebar() {
     <aside className="w-[220px] h-screen bg-sidebar border-r border-white/[0.04] flex flex-col shrink-0">
       {/* Logo */}
       <div className="flex items-center gap-3 px-5 h-20 shrink-0 border-b border-white/[0.04]">
-        <div className="relative shrink-0">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-primary via-secondary to-accent flex items-center justify-center shadow-lg shadow-primary/30">
-            <Sparkles className="w-5 h-5 text-white drop-shadow-sm" />
-          </div>
-          <div className="absolute -inset-2 bg-gradient-to-br from-primary/40 via-secondary/40 to-accent/40 rounded-2xl blur-xl -z-10 animate-pulse" />
-          <div className="absolute -inset-1 bg-gradient-to-br from-primary/20 via-secondary/20 to-accent/20 rounded-2xl blur-2xl -z-20" />
+        <div className="shrink-0">
+          <RosaeFinityLogo className="w-14 h-14" />
         </div>
         <div className="flex flex-col leading-tight">
           <span className="text-lg font-extrabold tracking-tight">
@@ -68,6 +77,7 @@ export function Sidebar() {
       <nav className="flex-1 min-h-0 px-3 py-3 space-y-0.5 overflow-y-auto scrollbar-thin">
         {SIDEBAR_ITEMS
           .filter(item => !(item as any).adminOnly || isAdmin)
+          .filter(item => item.id !== 'payment' || showUpgrade)
           .map((item, index) => {
           if (item.divider) {
             return <div key={`divider-${index}`} className="h-px bg-white/[0.06] mx-2 my-3" />;

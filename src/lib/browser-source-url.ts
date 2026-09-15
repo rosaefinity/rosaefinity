@@ -11,21 +11,8 @@ const SSE_PORT = 18890;
  * so we must default to 127.0.0.1.
  */
 export function getBrowserSourceHost(): string {
-  if (typeof window === 'undefined') {
-    return '127.0.0.1';
-  }
-
-  // In Electron file:// protocol, hostname is empty string
-  // In browser (http://localhost:5173), hostname is 'localhost'
-  // In production browser access, hostname could be actual host
-  const hostname = window.location.hostname;
-
-  // If hostname is empty or we're in file:// protocol, use 127.0.0.1
-  if (!hostname || window.location.protocol === 'file:') {
-    return '127.0.0.1';
-  }
-
-  return hostname;
+  // Always use 127.0.0.1 — TikTok LIVE Studio requires this, not "localhost"
+  return '127.0.0.1';
 }
 
 /**
@@ -48,7 +35,7 @@ export function getSSEBaseUrl(): string {
  * Used in OBS Browser Source configuration.
  */
 export function getBrowserSourceUrl(browserSourceId: string): string {
-  return `${getSSEBaseUrl()}/overlay/${browserSourceId}`;
+  return `${getSSEBaseUrl()}/overlay/${browserSourceId}.html`;
 }
 
 /**

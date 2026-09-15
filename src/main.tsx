@@ -15,12 +15,21 @@ window.onunhandledrejection = (event) => {
   console.error('[RENDERER-FATAL] stack:', event.reason?.stack);
 };
 
+console.log('[RENDERER-BOOT] pid=' + (window.process?.pid || 'unknown') + ' renderer_id=' + (window.__RENDERER_ID || Math.random().toString(36).slice(2)));
+window.__RENDERER_ID = window.__RENDERER_ID || Math.random().toString(36).slice(2);
 console.log('[RENDERER] main.tsx loaded — React mounting...');
 
+// Disable StrictMode in Electron to prevent double-render crashes
+const useStrictMode = !window.electronAPI;
+
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+  useStrictMode ? (
+    <StrictMode>
+      <App />
+    </StrictMode>
+  ) : (
     <App />
-  </StrictMode>,
+  ),
 )
 
 console.log('[RENDERER] main.tsx render() called');

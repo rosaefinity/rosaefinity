@@ -1,5 +1,6 @@
 import React, { Component, type ReactNode } from "react";
-import { AlertTriangle, RefreshCw, RotateCcw, Copy, Activity } from "lucide-react";
+import { AlertTriangle, RefreshCw, RotateCcw, Copy } from "lucide-react";
+import { safeNavigate } from "../lib/safe-navigate";
 
 interface Props {
   children: ReactNode;
@@ -38,14 +39,13 @@ export class ErrorBoundary extends Component<Props, State> {
     }
   }
 
-  handleReload = () => { window.location.hash = "#/"; };
+  handleReload = () => { safeNavigate('/', 'ErrorBoundary:handleReload'); };
   handleRetry = () => { this.setState({ hasError: false, error: null, errorInfo: null }); };
   handleCopyError = () => {
     const { error, errorInfo } = this.state;
     const text = `Error: ${error?.message}\n\nStack: ${error?.stack}\n\nComponent Stack: ${errorInfo?.componentStack || 'N/A'}`;
     navigator.clipboard.writeText(text);
   };
-  handleOpenDiagnostics = () => { window.location.hash = "#/diagnostics"; };
 
   render() {
     if (this.state.hasError) {
@@ -72,9 +72,6 @@ export class ErrorBoundary extends Component<Props, State> {
             </button>
             <button onClick={this.handleCopyError} className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 rounded-lg text-sm font-medium transition-colors">
               <Copy className="w-4 h-4" /> Copy Error
-            </button>
-            <button onClick={this.handleOpenDiagnostics} className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 rounded-lg text-sm font-medium transition-colors">
-              <Activity className="w-4 h-4" /> Diagnostics
             </button>
           </div>
           {import.meta.env.DEV && this.state.error && (

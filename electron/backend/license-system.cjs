@@ -110,7 +110,7 @@ function activateLicense(key, email) {
   licenseData.licenseKey = cleanKey;
   licenseData.email = email || null;
   licenseData.activatedAt = Date.now();
-  licenseData.expiresAt = Date.now() + 365 * 24 * 60 * 60 * 1000; // 1 year
+  licenseData.expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 days
 
   saveLicense();
   console.log(`[LICENSE] ✅ Pro activated: ${cleanKey} (${email || 'no email'})`);

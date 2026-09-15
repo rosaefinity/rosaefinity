@@ -36,16 +36,15 @@ const CanvasPage = lazy(() => import("./pages/CanvasPage"));
 const CapturePage = lazy(() => import("./pages/CapturePage"));
 const OverlayPage = lazy(() => import("./pages/OverlayPage"));
 const MediaLibraryPage = lazy(() => import("./pages/MediaLibraryPage"));
-const DiagnosticsPage = lazy(() => import("./pages/DiagnosticsPage"));
 const LicensePage = lazy(() => import("./pages/LicensePage"));
 const UpdatePage = lazy(() => import("./pages/UpdatePage"));
-const SyncPage = lazy(() => import("./pages/SyncPage"));
 const WorkflowPage = lazy(() => import("./pages/WorkflowPage"));
 const StressTestPage = lazy(() => import("./pages/StressTestPage"));
 const PerformancePage = lazy(() => import("./pages/PerformancePage"));
 const PaymentPage = lazy(() => import("./pages/PaymentPage"));
 const AdminUsersPage = lazy(() => import("./pages/AdminUsersPage"));
 const AdminPaymentsPage = lazy(() => import("./pages/AdminPaymentsPage"));
+const CoinJarEditor = lazy(() => import("./pages/CoinJarEditor"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30000, retry: 2, refetchOnWindowFocus: false } },
@@ -117,15 +116,14 @@ function App() {
                     <Route path="/alerts" element={<ErrorBoundary pageName="Alerts"><AlertsPage /></ErrorBoundary>} />
                     <Route path="/sounds" element={<ErrorBoundary pageName="Sounds"><SoundsPage /></ErrorBoundary>} />
                     <Route path="/overlay" element={<ErrorBoundary pageName="Overlay"><OverlayPage /></ErrorBoundary>} />
+                    <Route path="/overlays/coin-jar" element={<ErrorBoundary pageName="Coin Jar"><CoinJarEditor /></ErrorBoundary>} />
                     <Route path="/capture" element={<ErrorBoundary pageName="Capture"><CapturePage /></ErrorBoundary>} />
                     <Route path="/canvas" element={<ErrorBoundary pageName="Canvas"><CanvasPage /></ErrorBoundary>} />
                     <Route path="/chat" element={<ErrorBoundary pageName="Chat"><ChatPage /></ErrorBoundary>} />
                     <Route path="/song" element={<ErrorBoundary pageName="Song"><SongPage /></ErrorBoundary>} />
                     <Route path="/media" element={<ErrorBoundary pageName="Media"><MediaLibraryPage /></ErrorBoundary>} />
-                    <Route path="/diagnostics" element={<ErrorBoundary pageName="Diagnostics"><DiagnosticsPage /></ErrorBoundary>} />
                     <Route path="/license" element={<ErrorBoundary pageName="License"><LicensePage /></ErrorBoundary>} />
                     <Route path="/update" element={<ErrorBoundary pageName="Updates"><UpdatePage /></ErrorBoundary>} />
-                    <Route path="/sync" element={<ErrorBoundary pageName="Cloud Sync"><SyncPage /></ErrorBoundary>} />
                     <Route path="/workflows" element={<ErrorBoundary pageName="Workflows"><WorkflowPage /></ErrorBoundary>} />
                     <Route path="/stress-test" element={<ErrorBoundary pageName="Stress Test"><StressTestPage /></ErrorBoundary>} />
                     <Route path="/performance" element={<ErrorBoundary pageName="Performance"><PerformancePage /></ErrorBoundary>} />

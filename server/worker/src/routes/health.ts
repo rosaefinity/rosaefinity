@@ -58,4 +58,35 @@ health.get('/db', async (c) => {
   }
 });
 
+health.get('/db-query', async (c) => {
+  try {
+    const prisma = getPrisma(c.env);
+    const plans = await prisma.plan.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        name: true,
+        sortOrder: true,
+      },
+      orderBy: {
+        sortOrder: 'asc',
+      },
+    });
+    return c.json({
+      database: 'connected',
+      prisma: 'query_ok',
+      model: 'Plan',
+      count: plans.length,
+      data: plans,
+    });
+  } catch (err) {
+    return c.json({
+      status: 'error',
+      database: 'disconnected',
+      prisma: 'query_failed',
+      error: err instanceof Error ? err.message : 'Unknown error',
+    }, 503);
+  }
+});
+
 export { health };

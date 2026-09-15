@@ -73,3 +73,19 @@
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255,255,255,0.06);
 }
+
+/* ── Electron window drag region ── */
+.title-bar {
+  -webkit-app-region: drag;
+}
+
+/* Interactive elements inside the drag region must not trigger window move */
+.title-bar button,
+.title-bar a,
+.title-bar input,
+.title-bar select,
+.title-bar [role="button"],
+.title-bar svg,
+.title-bar img {
+  -webkit-app-region: no-drag;
+}

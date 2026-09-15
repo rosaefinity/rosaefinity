@@ -3,11 +3,12 @@ import { motion } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
+import { RosaeFinityLogo } from "../components/branding/RosaeFinityLogo";
 import { SCREEN_IDS } from "../types";
 import {
   LayoutDashboard, Zap, Settings, Bell, Volume2,
   Monitor, Camera, MessageSquare, Music,
-  Sparkles, TrendingUp, Users, Gift, Heart
+  TrendingUp, Users, Gift, Heart
 } from "lucide-react";
 
 const FEATURES = [
@@ -44,9 +45,8 @@ export function Dashboard() {
       {/* Hero */}
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="text-center py-8">
         <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: "spring", stiffness: 200, delay: 0.1 }}
-          className="w-20 h-20 rounded-3xl bg-gradient-to-br from-primary via-secondary to-accent flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-primary/30 relative">
-          <Sparkles className="w-10 h-10 text-white" />
-          <div className="absolute -inset-3 bg-gradient-to-br from-primary/30 via-secondary/30 to-accent/30 rounded-3xl blur-2xl -z-10 animate-pulse" />
+          className="mx-auto mb-5 w-48 h-48">
+          <RosaeFinityLogo className="w-full h-full" />
         </motion.div>
         <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
           className="text-3xl font-extrabold tracking-tight">

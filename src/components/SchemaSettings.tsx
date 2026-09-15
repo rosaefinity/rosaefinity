@@ -23,6 +23,10 @@ interface SchemaSettingsProps {
 // ─── Nested Value Helpers ───
 
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
+  if (!path || typeof path !== 'string') {
+    console.error('[SCHEMA-DEBUG] getNestedValue called with invalid path:', path, 'type:', typeof path, 'obj keys:', obj ? Object.keys(obj).slice(0, 10) : 'null');
+    return undefined;
+  }
   return path.split('.').reduce((current, key) => {
     return (current as Record<string, unknown>)?.[key];
   }, obj);
@@ -31,9 +35,10 @@ function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
 // ─── Group fields by section ───
 
 function groupBySection(schema: SettingsSchema): Array<{ section: string; fields: SettingsField[] }> {
+  console.log('[SCHEMA-DEBUG] groupBySection called, schema length:', schema?.length, 'first item:', schema?.[0] ? { keys: Object.keys(schema[0]), hasFields: 'fields' in schema[0], section: (schema[0] as any).section, title: (schema[0] as any).title, key: (schema[0] as any).key } : 'empty');
   const groups = new Map<string, SettingsField[]>();
   for (const field of schema) {
-    const section = field.section || 'General';
+    const section = (field as any).section || (field as any).title || 'General';
     const existing = groups.get(section);
     if (existing) {
       existing.push(field);
@@ -137,6 +142,7 @@ const FieldRenderer = memo(function FieldRenderer({
         </div>
       );
 
+    case 'boolean':
     case 'toggle':
     case 'switch':
       return (
@@ -188,10 +194,12 @@ const FieldRenderer = memo(function FieldRenderer({
         <div className={disabledClass}>
           {renderLabel()}
           <select value={String(value ?? '')} onChange={e => onChange(e.target.value)}
-            className={inputClass} disabled={disabled}>
-            <option value="">Select...</option>
+            className={`${inputClass} text-white/80`}
+            style={{ colorScheme: 'dark' }}
+            disabled={disabled}>
+            <option value="" className="bg-[#1a1a2e] text-white/80">Select...</option>
             {field.options?.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <option key={opt.value} value={opt.value} className="bg-[#1a1a2e] text-white/80">{opt.label}</option>
             ))}
           </select>
           {renderError()}{renderDescription()}
@@ -456,17 +464,23 @@ const SectionRenderer = memo(function SectionRenderer({
         {section}
       </h3>
       <div className="space-y-4">
-        {visibleFields.map(field => (
-          <FieldRenderer
-            key={field.key}
-            field={field}
-            value={getNestedValue(values, field.key)}
-            onChange={(v) => onFieldChange(field.key, v)}
-            allValues={values}
-            error={errorMap.get(field.key)}
-            disabled={disabled}
-          />
-        ))}
+        {visibleFields.map(field => {
+          if (!field.key || typeof field.key !== 'string') {
+            console.error('[SCHEMA-DEBUG] Skipping field with invalid key:', { key: field.key, label: field.label, type: field.type, section: (field as any).section });
+            return null;
+          }
+          return (
+            <FieldRenderer
+              key={field.key}
+              field={field}
+              value={getNestedValue(values, field.key)}
+              onChange={(v) => onFieldChange(field.key, v)}
+              allValues={values}
+              error={errorMap.get(field.key)}
+              disabled={disabled}
+            />
+          );
+        })}
       </div>
     </div>
   );

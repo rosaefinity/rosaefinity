@@ -6,8 +6,9 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { RosaeFinityLogo } from '../components/branding/RosaeFinityLogo';
 import {
-  Sparkles, Check, Copy, ArrowLeft, Shield,
+  Check, Copy, ArrowLeft, Shield,
   MessageCircle, Zap, Crown, CreditCard, CheckCircle,
   Loader2, X,
 } from 'lucide-react';
@@ -17,8 +18,8 @@ import { toast } from '../components/Toast';
 
 // ── Constants ──
 
-const QRIS_IMAGE = '/qris.jpg';
-const WHATSAPP_URL = 'https://wa.me/6281214249647';
+const QRIS_IMAGE = './qris.jpg';
+const WHATSAPP_URL = 'https://wa.me/62895322182225';
 
 // ── Plan Data ──
 
@@ -186,8 +187,8 @@ export function PaymentPage() {
 
           {/* Logo */}
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary via-secondary to-accent flex items-center justify-center shadow-lg shadow-primary/30">
-              <Sparkles className="w-6 h-6 text-white drop-shadow-sm" />
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary via-secondary to-accent flex items-center justify-center shadow-lg shadow-primary/30 overflow-hidden">
+              <RosaeFinityLogo className="w-9 h-9" />
             </div>
             <div>
               <h1 className="text-2xl font-bold text-white">Upgrade to RosaeFinity Pro</h1>

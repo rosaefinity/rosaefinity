@@ -26,9 +26,13 @@ export const coinJarProOverlay = defineOverlay<CoinJarProConfig>({
   validate: validateCoinJarProConfig,
   sanitize: sanitizeCoinJarProConfig,
   migrate: migrateCoinJarProConfig,
+  metadata: {
+    premium: true,
+  },
 });
 
 export { CoinJarProRenderer } from './CoinJarProRenderer';
+export { createCoinJarDemoEventSource } from './demoEventSource';
 export * from './types';
 export * from './settings';
 export * from './animations';

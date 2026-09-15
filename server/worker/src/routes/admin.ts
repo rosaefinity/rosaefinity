@@ -6,7 +6,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Env } from '../config.js';
-import { getPrisma } from '../db.js';
+import { getPrisma, createTransactionalClient } from '../db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { NotFoundError, BadRequestError, ConflictError } from '../middleware/error-handler.js';
 import { generateLicenseKey } from '../utils/helpers.js';
@@ -225,17 +225,85 @@ admin.post('/users/:id/downgrade', async (c) => {
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) throw new NotFoundError('User not found');
 
-  await prisma.license.updateMany({
-    where: { userId: id, planId: 'pro', status: { in: ['active', 'grace'] } },
-    data: { status: 'revoked', expiresAt: null },
-  });
+  // Use transactional client for atomic multi-step downgrade.
+  // PrismaNeonHTTP (used by getPrisma) does not support $transaction,
+  // so we create a per-request transactional client with a WebSocket pool.
+  const txPrisma = createTransactionalClient(c.env);
+  try {
+    await txPrisma.$transaction(async (tx) => {
+      // Revoke all active/grace Pro licenses
+      const activeLicenses = await tx.license.findMany({
+        where: { userId: id, planId: 'pro', status: { in: ['active', 'grace'] } },
+      });
+      for (const lic of activeLicenses) {
+        await tx.license.update({
+          where: { id: lic.id },
+          data: { status: 'revoked', expiresAt: null },
+        });
+      }
 
-  await prisma.subscription.updateMany({
-    where: { userId: id, planId: 'pro', status: 'active' },
-    data: { status: 'cancelled', cancelAtPeriodEnd: true },
-  });
+      // Cancel active Pro subscriptions
+      const activeSubs = await tx.subscription.findMany({
+        where: { userId: id, planId: 'pro', status: 'active' },
+      });
+      for (const sub of activeSubs) {
+        await tx.subscription.update({
+          where: { id: sub.id },
+          data: { status: 'cancelled', cancelAtPeriodEnd: true },
+        });
+      }
 
-  await prisma.user.update({ where: { id }, data: { accountType: 'free' } });
+      // Downgrade account type
+      await tx.user.update({ where: { id }, data: { accountType: 'free' } });
+    });
+  } finally {
+    await txPrisma.$disconnect();
+  }
+
+  const response: ApiResponse = { success: true, data: { success: true } };
+  return c.json(response);
+});
+
+// ── Delete user ──
+admin.delete('/users/:id', async (c) => {
+  const prisma = getPrisma(c.env);
+  const id = c.req.param('id');
+  const currentUser = c.get('user');
+
+  // Prevent deleting yourself
+  if (currentUser.sub === id) {
+    throw new BadRequestError('Cannot delete your own account');
+  }
+
+  const user = await prisma.user.findUnique({ where: { id } });
+  if (!user) throw new NotFoundError('User not found');
+
+  // Prevent deleting other Admin accounts
+  if (user.role === 'ADMIN') {
+    throw new BadRequestError('Cannot delete admin accounts');
+  }
+
+  // Delete user with all cascaded relations in a transaction
+  const txPrisma = createTransactionalClient(c.env);
+  try {
+    await txPrisma.$transaction(async (tx) => {
+      // Delete related records in dependency order
+      await tx.auditLog.deleteMany({ where: { userId: id } });
+      await tx.notification.deleteMany({ where: { userId: id } });
+      await tx.refreshToken.deleteMany({ where: { userId: id } });
+      await tx.apiKey.deleteMany({ where: { userId: id } });
+      await tx.syncRecord.deleteMany({ where: { userId: id } });
+      await tx.payment.deleteMany({ where: { userId: id } });
+      await tx.subscription.deleteMany({ where: { userId: id } });
+      await tx.license.deleteMany({ where: { userId: id } });
+      await tx.device.deleteMany({ where: { userId: id } });
+      await tx.session.deleteMany({ where: { userId: id } });
+      // Finally delete the user
+      await tx.user.delete({ where: { id } });
+    });
+  } finally {
+    await txPrisma.$disconnect();
+  }
 
   const response: ApiResponse = { success: true, data: { success: true } };
   return c.json(response);

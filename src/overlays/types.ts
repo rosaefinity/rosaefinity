@@ -218,13 +218,13 @@ export interface OverlayContext {
 // ─── Events ───
 
 export type OverlayEvent =
-  | { type: 'gift'; username: string; giftName: string; diamonds: number; repeatCount?: number }
+  | { type: 'gift'; username: string; giftName: string; diamonds: number; repeatCount?: number; giftImageUrl?: string; giftId?: string }
   | { type: 'follow'; username: string }
   | { type: 'like'; username: string; count: number; totalLikes?: number }
   | { type: 'share'; username: string }
   | { type: 'comment'; username: string; message: string }
   | { type: 'subscribe'; username: string }
-  | { type: 'goal-progress'; current: number; target: number; goalType?: string }
+  | { type: 'goal-progress'; current: number; target: number; goalType?: string; goalId?: string; title?: string; barColor?: string; reached?: boolean }
   | { type: 'hotkey'; keys: string }
   | { type: 'custom'; data: Record<string, unknown> };
 

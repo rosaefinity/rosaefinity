@@ -39,8 +39,11 @@ function img(name: string): string {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
   return `https://streamtoearn.io/assets/img/gifts/${slug}.png`;
 }
-function cdn(id: string): string {
-  return `https://p16-webcast.tiktokcdn.com/img/alisg/webcast-sg/resource/composed.${id}.png~tplv-obj.webp`;
+// CDN giftId-based URLs are broken (TikTok uses hash-based filenames)
+// The cdnImage field in FALLBACK_GIFTS is no longer used for image resolution
+// Images come from the StreamToEarn catalog (hash-based URLs) or SVG fallback
+function cdn(_id: string): string {
+  return ''; // giftId-based CDN URLs do not work
 }
 
 const FALLBACK_GIFTS: TikTokGift[] = [
@@ -109,7 +112,25 @@ export async function fetchGifts(): Promise<TikTokGift[]> {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const html = await res.text();
       const parsed = parse(html);
-      if (parsed.length > 0) { saveCache(parsed); return parsed; }
+      if (parsed.length > 0) {
+        // If parser returned fewer gifts than our fallback list, the parse is
+        // incomplete (likely a changed HTML structure). Merge parsed entries into
+        // FALLBACK_GIFTS so we never lose known gifts. Parsed entries win on
+        // image URLs since they carry real StreamToEarn CDN hashes.
+        if (parsed.length < FALLBACK_GIFTS.length) {
+          console.warn('[GIFT-SERVICE] Parsed catalog incomplete:', parsed.length, '< fallback:', FALLBACK_GIFTS.length, '- merging');
+          const merged = new Map<string, TikTokGift>();
+          // Start with fallback as the base (guarantees all known gifts)
+          for (const g of FALLBACK_GIFTS) merged.set(g.name.toLowerCase().trim(), g);
+          // Overlay parsed entries (they have real image URLs)
+          for (const g of parsed) merged.set(g.name.toLowerCase().trim(), g);
+          const result = Array.from(merged.values());
+          saveCache(result);
+          return result;
+        }
+        saveCache(parsed);
+        return parsed;
+      }
     } catch {}
   }
   const cached = loadCached();
@@ -138,10 +159,14 @@ function parse(html: string): TikTokGift[] {
 }
 
 // ─── GET IMAGE URL ──────────────────────
+// Priority: cdnImage > image field (any valid HTTP URL)
+// The catalog (parsed from StreamToEarn HTML) contains real gift image URLs.
+// Previously these were incorrectly filtered out.
 export function getGiftImageUrl(gift: TikTokGift): string {
-  if (gift.image?.startsWith("http")) return gift.image;         // StreamToEarn direct
-  if (gift.cdnImage) return gift.cdnImage;                        // TikTok CDN
-  if (gift.giftId) return `https://p16-webcast.tiktokcdn.com/img/alisg/webcast-sg/resource/composed.${gift.giftId}.png~tplv-obj.webp`;
+  if (gift.cdnImage) return gift.cdnImage;                        // TikTok CDN if available
+  if (gift.image?.startsWith("http")) {
+    return gift.image;                                            // Catalog image URL
+  }
   return "";
 }
 
@@ -157,7 +182,26 @@ export async function getGifts(force = false): Promise<TikTokGift[]> {
   const unique: TikTokGift[] = [];
   gifts.forEach(g => { const k = g.name.toLowerCase().trim(); if (!seen.has(k)) { seen.add(k); unique.push(g); } });
   cache = unique; loaded = true;
+
+  const withImages = unique.filter(g => Boolean(getGiftImageUrl(g)));
+  console.log('[GIFT-SERVICE] Catalog loaded:', {
+    count: unique.length,
+    withImages: withImages.length,
+    hasHandHearts: unique.some(g => g.name.toLowerCase() === 'hand hearts'),
+    sampleNames: unique.slice(0, 5).map(g => g.name),
+  });
+
+  // Populate image cache from catalog
+  for (const g of unique) {
+    const url = getGiftImageUrl(g);
+    if (url) cacheGiftImage(g.giftId || '', g.name, url);
+  }
   return unique;
+}
+
+// Synchronous access to the gift catalog (returns null if not yet loaded)
+export function getGiftsSync(): TikTokGift[] | null {
+  return loaded && cache.length > 0 ? cache : null;
 }
 
 export function searchGifts(gifts: TikTokGift[], kw: string): TikTokGift[] {
@@ -166,5 +210,116 @@ export function searchGifts(gifts: TikTokGift[], kw: string): TikTokGift[] {
   return gifts.filter(g => g.name.toLowerCase().includes(q) || String(g.coins).includes(q));
 }
 
-// Load cache at startup
-const c = loadCached(); if (c) { cache = c; loaded = true; }
+// Load cache at startup — but reject incomplete caches (fewer entries than
+// FALLBACK_GIFTS means the cache was populated by a partial parser result)
+const c = loadCached();
+if (c && c.length >= FALLBACK_GIFTS.length) {
+  cache = c;
+  loaded = true;
+} else if (c) {
+  // Stale/incomplete cache — clear it so getGifts() will re-fetch + merge
+  console.warn('[GIFT-SERVICE] Stale cache rejected:', c.length, '< fallback:', FALLBACK_GIFTS.length);
+  try { localStorage.removeItem(CACHE_KEY); localStorage.removeItem(CACHE_TIME_KEY); } catch {}
+}
+
+// ─── SHARED CATALOG PRELOAD ────────────────────────────
+// One shared promise, reused by all callers. Prevents duplicate fetches.
+let catalogPreloadPromise: Promise<boolean> | null = null;
+
+/** Start catalog preload if not already running. Returns the shared promise. */
+export function preloadGiftCatalog(): Promise<boolean> {
+  if (catalogPreloadPromise) return catalogPreloadPromise;
+  if (loaded) { catalogPreloadPromise = Promise.resolve(true); return catalogPreloadPromise; }
+  catalogPreloadPromise = (async () => {
+    try {
+      await getGifts();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  return catalogPreloadPromise;
+}
+
+/**
+ * Wait for the catalog preload to complete, with a bounded timeout.
+ * Returns true if catalog loaded, false on timeout.
+ * If catalog is already loaded, returns immediately.
+ */
+export function waitForCatalog(timeoutMs: number = 3000): Promise<boolean> {
+  if (loaded) return Promise.resolve(true);
+  const promise = preloadGiftCatalog();
+  return Promise.race([
+    promise,
+    new Promise<boolean>(resolve => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+}
+
+/** Check if catalog is synchronously available */
+export function isCatalogLoaded(): boolean {
+  return loaded;
+}
+
+// ─── GIFT IMAGE CACHE ─────────────────────────────────
+// Persists validated gift image URLs in localStorage.
+// Keyed by giftId and giftName → CDN image URL.
+// Only URLs that successfully loaded are cached.
+
+const IMAGE_CACHE_KEY = 'rf_gift_image_urls';
+const IMAGE_INVALID_KEY = 'rf_gift_image_invalid';
+
+type ImageCache = Record<string, string>; // giftId|giftName → url
+type InvalidSet = Record<string, number>; // url → timestamp of failure
+
+function loadImageCache(): ImageCache {
+  try { return JSON.parse(localStorage.getItem(IMAGE_CACHE_KEY) || '{}'); } catch { return {}; }
+}
+function saveImageCache(c: ImageCache) {
+  try { localStorage.setItem(IMAGE_CACHE_KEY, JSON.stringify(c)); } catch {}
+}
+function loadInvalidSet(): InvalidSet {
+  try { return JSON.parse(localStorage.getItem(IMAGE_INVALID_KEY) || '{}'); } catch { return {}; }
+}
+function saveInvalidSet(s: InvalidSet) {
+  try { localStorage.setItem(IMAGE_INVALID_KEY, JSON.stringify(s)); } catch {}
+}
+
+const INVALID_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/** Cache a validated image URL for a gift */
+export function cacheGiftImage(giftId: string, giftName: string, url: string): void {
+  if (!url || !giftId && !giftName) return;
+  const c = loadImageCache();
+  if (giftId) c[`id:${giftId}`] = url;
+  if (giftName) c[`name:${giftName.toLowerCase().trim()}`] = url;
+  saveImageCache(c);
+  // Remove from invalid set if it was there
+  const inv = loadInvalidSet();
+  if (inv[url]) { delete inv[url]; saveInvalidSet(inv); }
+}
+
+/** Mark an image URL as invalid (failed to load) */
+export function invalidateGiftImage(url: string): void {
+  if (!url) return;
+  const inv = loadInvalidSet();
+  inv[url] = Date.now();
+  saveInvalidSet(inv);
+}
+
+/** Check if a URL is known-invalid */
+export function isInvalidImageUrl(url: string): boolean {
+  if (!url) return false;
+  const inv = loadInvalidSet();
+  const ts = inv[url];
+  if (!ts) return false;
+  if (Date.now() - ts > INVALID_TTL_MS) { delete inv[url]; saveInvalidSet(inv); return false; }
+  return true;
+}
+
+/** Look up a cached image URL for a gift */
+export function getCachedGiftImage(giftId: string, giftName: string): string {
+  const c = loadImageCache();
+  if (giftId && c[`id:${giftId}`]) return c[`id:${giftId}`];
+  if (giftName && c[`name:${giftName.toLowerCase().trim()}`]) return c[`name:${giftName.toLowerCase().trim()}`];
+  return '';
+}
