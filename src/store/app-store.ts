@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type { Action, Event, CustomSound, Stats, LiveEvent, TikTokGift, SetupConfig, LicenseInfo, StreamProfile, ScreenId, ScreenConnectionState, TikTokConnectionState } from "../types";
 import { SCREEN_IDS } from "../types";
 import { getActionMedia, getActionMediaArray, deleteActionMedia } from "../lib/db";
+import { useLicenseStore } from "./license-store";
 
 interface AppStore {
   // Actions
@@ -54,6 +55,7 @@ interface AppStore {
   updateProfile: (id: string, updates: Partial<StreamProfile>) => void;
   deleteProfile: (id: string) => void;
   setCurrentProfile: (id: string | null) => void;
+  switchProfile: (targetId: string) => void;
 
   // Live events feed
   liveEvents: LiveEvent[];
@@ -146,6 +148,19 @@ const DEFAULT_LICENSE: LicenseInfo = {
   limits: { actions: 5, customSounds: 3, streamProfiles: 1 },
 };
 
+const DEFAULT_STREAM_PROFILES: StreamProfile[] = [
+  { id: "profile-1", name: "Stream Profile 1", icon: "🌹", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-2", name: "Stream Profile 2", icon: "🔥", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-3", name: "Stream Profile 3", icon: "🎮", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-4", name: "Stream Profile 4", icon: "❤️", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-5", name: "Stream Profile 5", icon: "💬", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-6", name: "Stream Profile 6", icon: "🎁", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-7", name: "Stream Profile 7", icon: "🙂", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-8", name: "Stream Profile 8", icon: "👍", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-9", name: "Stream Profile 9", icon: "📞", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-10", name: "Stream Profile 10", icon: "☑️", tiktokUsername: "", overlaySettings: {}, alertsSettings: {}, actions: [], events: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+];
+
 const DEFAULT_POINTS_CONFIG = {
   currencyName: "Points",
   pointsGift: 3, pointsLike: 1, pointsFollow: 5, pointsComment: 1, pointsShare: 2, pointsSubscribe: 10,
@@ -208,8 +223,8 @@ export const useAppStore = create<AppStore>()(
       tikTokGifts: [],
       licenseInfo: DEFAULT_LICENSE,
       setupConfig: DEFAULT_SETUP,
-      streamProfiles: [],
-      currentProfileId: null,
+      streamProfiles: DEFAULT_STREAM_PROFILES,
+      currentProfileId: "profile-1",
       liveEvents: [],
       pointsUsers: {},
       pointsConfig: DEFAULT_POINTS_CONFIG,
@@ -299,6 +314,12 @@ export const useAppStore = create<AppStore>()(
 
       // ══ Stream Profiles ══════════════════════════
       addProfile: (profile) => {
+        const { streamProfiles } = get();
+        const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        if (streamProfiles.length >= maxProfiles) {
+          console.warn(`[PROFILE-ENFORCEMENT] Cannot add profile: limit reached (${maxProfiles})`);
+          return;
+        }
         const now = new Date().toISOString();
         const newProfile: StreamProfile = { ...profile, id: "spf_" + Math.random().toString(36).substring(2, 10), createdAt: now, updatedAt: now };
         set((s) => ({ streamProfiles: [...s.streamProfiles, newProfile] }));
@@ -308,6 +329,44 @@ export const useAppStore = create<AppStore>()(
       })),
       deleteProfile: (id) => set((s) => ({ streamProfiles: s.streamProfiles.filter(p => p.id !== id) })),
       setCurrentProfile: (id) => set({ currentProfileId: id }),
+      switchProfile: (targetId: string) => {
+        const { streamProfiles, currentProfileId, actions, events, alertSettings, setupConfig } = get();
+        if (targetId === currentProfileId) return;
+
+        // Entitlement check
+        const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        const targetIndex = streamProfiles.findIndex(p => p.id === targetId);
+        if (targetIndex < 0 || targetIndex >= maxProfiles) {
+          console.warn(`[PROFILE-ENFORCEMENT] Profile index ${targetIndex} blocked (max ${maxProfiles})`);
+          return;
+        }
+
+        const updatedProfiles = streamProfiles.map(p => {
+          if (p.id === currentProfileId) {
+            return {
+              ...p,
+              actions,
+              events,
+              alertsSettings: alertSettings,
+              tiktokUsername: setupConfig.tikTokName,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return p;
+        });
+
+        const targetProfile = updatedProfiles.find(p => p.id === targetId);
+        if (!targetProfile) return;
+
+        set({
+          streamProfiles: updatedProfiles,
+          currentProfileId: targetId,
+          actions: targetProfile.actions || [],
+          events: targetProfile.events || [],
+          alertSettings: targetProfile.alertsSettings || DEFAULT_ALERTS,
+          setupConfig: { ...setupConfig, tikTokName: targetProfile.tiktokUsername || "" },
+        });
+      },
 
       // ══ Live Events Feed (deprecated wrappers → screen-0) ═══════════════════
       addLiveEvent: (event) => get().addScreenLiveEvent("screen-0", { ...event, screenId: "screen-0" }),
