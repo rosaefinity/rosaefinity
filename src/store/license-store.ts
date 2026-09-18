@@ -39,6 +39,8 @@ interface LicenseStore {
   isLifetimePro: () => boolean;
   /** Effective plan considering expiration: 'pro' if active, 'free' otherwise */
   effectivePlan: () => 'pro' | 'free';
+  /** Max stream profiles allowed: 10 if Pro active, 1 otherwise */
+  getMaxStreamProfiles: () => number;
 
   // — Activation —
   activate: (opts?: { paymentId?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -179,6 +181,11 @@ export const useLicenseStore = create<LicenseStore>()(
       if (plan !== 'pro') return 'free';
       if (expiresAt && Date.now() >= expiresAt) return 'free';
       return 'pro';
+    },
+
+    getMaxStreamProfiles: () => {
+      const { effectivePlan } = get();
+      return effectivePlan() === 'pro' ? 10 : 1;
     },
 
     // — Feature check (sync, reads from cached features) —

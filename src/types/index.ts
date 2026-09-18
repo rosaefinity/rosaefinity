@@ -316,6 +316,7 @@ export interface Notification {
 export interface StreamProfile {
   id: string;
   name: string;
+  icon?: string;
   tiktokUsername: string;
   overlaySettings: any;
   alertsSettings: any;
