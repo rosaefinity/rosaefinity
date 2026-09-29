@@ -10,11 +10,15 @@ import { getPrisma } from '../../../../database/client.js';
 const prisma = getPrisma();
 
 describe('Admin License Extension - Date Calculation', () => {
-  const TEST_USER_ID = 'test-user-license-extension';
-  const TEST_EMAIL = 'test-license@example.com';
+  let TEST_USER_ID: string;
+  let TEST_EMAIL: string;
 
   beforeEach(async () => {
-    // Clean up test data
+    // Generate unique IDs per test to avoid stale-state unique constraint failures
+    TEST_USER_ID = `test-user-${crypto.randomUUID()}`;
+    TEST_EMAIL = `test-${crypto.randomUUID()}@example.com`;
+
+    // Clean up test data (no-op for fresh UUID, but defensive)
     await prisma.license.deleteMany({ where: { userId: TEST_USER_ID } });
     await prisma.user.deleteMany({ where: { id: TEST_USER_ID } });
 
