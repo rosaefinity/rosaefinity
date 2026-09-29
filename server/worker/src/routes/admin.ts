@@ -357,6 +357,7 @@ admin.post('/users/:id/activate', async (c) => {
         licenseKey,
         email: user.email ?? undefined,
         expiresAt,
+        status: 'active',
       },
     });
 

@@ -33,6 +33,7 @@ const authSystem    = require("./backend/auth-system.cjs");
 const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/global-input-hook.cjs");
 const updateManager = require("./backend/update-manager.cjs");
 const { getTikTokService } = require("./backend/tiktok-service.cjs");
+const localTTS = require("./backend/local-tts.cjs");
 
 // ── Phase 2: Stability Modules ──────────────
 const { Logger } = require("./logger.cjs");
@@ -313,7 +314,7 @@ function startSSEServer() {
 
     // ── Instance-based overlay: serve HTML shell ──
     {
-      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)(?:\.html)?$/);
+      const match = url.pathname.match(/^\/overlay\/([a-z0-9-]+)(?:\.html)?$/);
       if (match && req.method === "GET") {
         const browserSourceId = match[1];
         const htmlPath = isDev
@@ -338,7 +339,7 @@ function startSSEServer() {
 
     // ── Instance-based overlay: config JSON ──
     {
-      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)\/config$/);
+      const match = url.pathname.match(/^\/overlay\/([a-z0-9-]+)\/config$/);
       if (match && req.method === "GET") {
         const browserSourceId = match[1];
         const instance = overlayInstancesByBrowserSourceId.get(browserSourceId);
@@ -358,7 +359,7 @@ function startSSEServer() {
 
     // ── Instance-based overlay: SSE events ──
     {
-      const match = url.pathname.match(/^\/overlay\/([a-f0-9-]+)\/events$/);
+      const match = url.pathname.match(/^\/overlay\/([a-z0-9-]+)\/events$/);
       if (match && req.method === "GET") {
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
@@ -1215,12 +1216,20 @@ ipcMain.on("overlay:push-instances", (_, instances) => {
     }
   }
   console.log("[OVERLAY-SYNC] pushed", instances.length, "instances,", overlayInstancesByBrowserSourceId.size, "total with browserSourceId");
+  // Notify connected Browser Sources about the full instance set update
+  for (const inst of instances) {
+    if (inst.browserSourceId) {
+      broadcastSSE({ type: 'overlay-config-changed', browserSourceId: inst.browserSourceId });
+    }
+  }
 });
 
 ipcMain.on("overlay:updated", (_, instance) => {
   if (instance && instance.browserSourceId) {
     overlayInstancesByBrowserSourceId.set(instance.browserSourceId, instance);
     console.log("[OVERLAY-SYNC] updated instance:", instance.moduleId, instance.browserSourceId.substring(0, 8));
+    // Notify connected Browser Sources to re-fetch config
+    broadcastSSE({ type: 'overlay-config-changed', browserSourceId: instance.browserSourceId });
   }
 });
 
@@ -1394,6 +1403,7 @@ ipcMain.on("points:resetAll", () => { pointsSystem.resetAllPoints(); sendToRende
 ipcMain.on("points:halve", (_, percent) => { pointsSystem.halvePoints(percent); sendToRenderer("points:halved", { success: true, percent }); });
 ipcMain.on("points:toggleChallenge", (_, active) => pointsSystem.toggleChallenge(active));
 ipcMain.handle("points:deduct", (_, { username, amount }) => pointsSystem.deductPoints(username, amount));
+ipcMain.handle("points:clearAll", () => { pointsSystem.clearAllPoints(); return { success: true }; });
 
 // ── OBS Controller ──
 ipcMain.on("obs:setConfig", (_, config) => obsController.setConfig(config));
@@ -1420,6 +1430,9 @@ ipcMain.handle("mc:status", () => ({ config: minecraft.config }));
 ipcMain.handle("mc:execute", async (_, { command }) => await minecraft.executeCommand(command));
 ipcMain.handle("mc:server", async () => await minecraft.getServerStatus());
 ipcMain.handle("mc:players", async () => await minecraft.getOnlinePlayers());
+
+// ── Local TTS (Piper) ──
+localTTS.registerIPC();
 
 // ── License ──
 ipcMain.handle("license:status", () => licenseSystem.checkLicense());
@@ -1746,6 +1759,7 @@ app.on("before-quit", async (e) => {
   isQuitting = true;
   if (logger) logger.info("Application shutting down gracefully");
   disconnectAllScreens();
+  localTTS.cleanup();
   if (memoryManager) await memoryManager.cleanupAll();
   updateManager.shutdown();
 });

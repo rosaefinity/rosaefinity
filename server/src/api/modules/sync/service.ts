@@ -20,8 +20,9 @@ export const syncService = {
         continue;
       }
 
-      // Upsert
+      // Upsert (pass operation for tombstone support)
       try {
+        const operation = (record as any).operation || 'upsert';
         const saved = await syncRepository.upsert(
           userId,
           record.entityType,
@@ -29,6 +30,7 @@ export const syncService = {
           record.data,
           record.version,
           record.checksum,
+          operation,
         );
         accepted.push({ ...record, version: saved.version });
       } catch (err: any) {

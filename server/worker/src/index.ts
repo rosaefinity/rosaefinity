@@ -22,6 +22,7 @@ import { analytics } from './routes/analytics.js';
 import { admin } from './routes/admin.js';
 import { payment } from './routes/payment.js';
 import { overlay } from './routes/overlay.js';
+import { profiles } from './routes/profiles.js';
 
 // ── App ──
 const app = new Hono<AppEnv>();
@@ -77,6 +78,7 @@ app.route('/api/v1/updates', updates);
 app.route('/api/v1/analytics', analytics);
 app.route('/api/v1/admin', admin);
 app.route('/api/v1/payment', payment);
+app.route('/api/v1/profiles', profiles);
 
 // ── Overlay routes ──
 app.route('/api/overlay', overlay);

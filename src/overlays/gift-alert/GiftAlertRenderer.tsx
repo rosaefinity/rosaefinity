@@ -22,6 +22,13 @@ export const GiftAlertRenderer: React.FC<RendererProps<any>> = ({
     const unsubscribe = events.subscribe((event: OverlayEvent) => {
       // Only handle gift events
       if (event.type === 'gift') {
+        // [OVERLAY-EVENT-FLOW] GiftAlertRenderer received gift event
+        console.log('[OVERLAY-EVENT-FLOW] GiftAlertRenderer:', JSON.stringify({
+          giftName: (event as any).giftName,
+          giftId: (event as any).giftId,
+          diamondCount: (event as any).diamondCount,
+          user: (event as any).user,
+        }));
         setCurrentEvent(event);
         setVisible(true);
         setAnimating(true);

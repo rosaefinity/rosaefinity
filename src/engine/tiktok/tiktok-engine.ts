@@ -161,6 +161,17 @@ class TikTokEngine {
     this.eventPipeline?.clearCooldowns();
   }
 
+  /** Clear event pipeline queue and dedup cache */
+  clearPipelineQueue(): void {
+    this.eventPipeline?.clearQueue();
+    this.eventPipeline?.clearCooldowns();
+  }
+
+  /** Clear comment engine duplicate/spam state */
+  clearCommentEngine(): void {
+    this.commentEngine = new CommentEngine();
+  }
+
   /** Cleanup */
   destroy(): void {
     this.connectionManager?.disconnect();

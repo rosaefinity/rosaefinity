@@ -178,6 +178,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   halvePoints: (percent) => ipcRenderer.send("points:halve", percent),
   toggleChallenge: (active) => ipcRenderer.send("points:toggleChallenge", active),
   deductPoints: (opts) => ipcRenderer.invoke("points:deduct", opts),
+  clearAllPoints: () => ipcRenderer.invoke("points:clearAll"),
   onPointsAwarded: (cb) => {
     const listener = (_, d) => cb(d);
     ipcRenderer.on("points:awarded", listener);
@@ -328,4 +329,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("update:release-notes", listener);
     return () => ipcRenderer.removeListener("update:release-notes", listener);
   },
+
+  // ── Local TTS (Piper) ──
+  ttsLocalStatus: () => ipcRenderer.invoke("tts:local-status"),
+  ttsLocalVoices: () => ipcRenderer.invoke("tts:local-voices"),
+  ttsLocalSynthesize: (request) => ipcRenderer.invoke("tts:local-synthesize", request),
+  ttsLocalStop: () => ipcRenderer.invoke("tts:local-stop"),
+  ttsGetDataPath: () => ipcRenderer.invoke("tts:get-data-path"),
+  ttsLocalSetupStatus: () => ipcRenderer.invoke("tts:local-setup-status"),
+  ttsLocalSetup: () => ipcRenderer.invoke("tts:local-setup"),
+  ttsLocalInstallModel: (request) => ipcRenderer.invoke("tts:local-install-model", request),
+  ttsLocalDeleteModel: (request) => ipcRenderer.invoke("tts:local-delete-model", request),
+  ttsLocalCheckInstalled: () => ipcRenderer.invoke("tts:local-check-installed"),
+  ttsLocalRefreshVoices: () => ipcRenderer.invoke("tts:local-refresh-voices"),
 });

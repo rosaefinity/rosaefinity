@@ -128,7 +128,7 @@ license.get('/status', authenticate, async (c) => {
         status: 'none',
         planTier: 'free',
         features: [],
-        limits: { maxActions: 5, maxSounds: 3, maxOverlays: 2, maxProfiles: 1, maxScreens: 2, maxPointsUsers: 2500, maxDevices: 1 },
+        limits: { maxActions: 5, maxSounds: 3, maxOverlays: 2, maxProfiles: 1, maxScreens: 1, maxPointsUsers: 0, maxDevices: 1 },
         expiresAt: null,
       },
     };

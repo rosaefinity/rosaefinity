@@ -9,8 +9,15 @@ import { toast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import { Settings, Save, Download, Upload, CheckCircle2, XCircle, Copy } from "lucide-react";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
+import { TTSChatSettings } from "../components/tts/TTSChatSettings";
+import { db, reopenDatabase, importGoals, importOverlays } from "../lib/db";
+import { useGoalStore } from "../store/goal-store";
+import { useThemeStore } from "../theme/ThemeStore";
+import { useCoinJarStore } from "../store/coin-jar-store";
+import { useOverlayStore as useOverlayInstanceStore } from "../lib/overlay-store";
+import { useOverlayStore as useActiveOverlayStore } from "../state/overlayStore";
 
-type Section = "tiktok" | "points" | "levels" | "obs" | "streamerbot" | "minecraft" | "spotify" | "songrequest" | "overlayscreens" | "reset" | "account" | "importexport" | "advanced" | "license";
+type Section = "tiktok" | "points" | "levels" | "obs" | "streamerbot" | "minecraft" | "spotify" | "songrequest" | "overlayscreens" | "reset" | "account" | "importexport" | "advanced" | "license" | "tts";
 
 const SECTIONS: { id: Section; label: string; icon: string }[] = [
   { id: "tiktok", label: "TikTok Connection", icon: "🎵" },
@@ -26,6 +33,7 @@ const SECTIONS: { id: Section; label: string; icon: string }[] = [
   { id: "account", label: "Account", icon: "👤" },
   { id: "importexport", label: "Import/Export", icon: "📦" },
   { id: "advanced", label: "Advanced", icon: "⚙️" },
+  { id: "tts", label: "TTS Chat", icon: "🔊" },
 ];
 
 export function SettingsPage() {
@@ -127,6 +135,13 @@ export function SettingsPage() {
   /** Helper: update a single field in setupConfig — auto-persists via Zustand persist middleware */
   const setField = <K extends keyof typeof setupConfig>(key: K, value: (typeof setupConfig)[K]) => {
     updateSetupConfig({ [key]: value });
+    // Reverse-sync TikTok username to current Stream Profile
+    if (key === "tikTokName" && typeof value === "string") {
+      const currentProfileId = useAppStore.getState().currentProfileId;
+      if (currentProfileId) {
+        useAppStore.getState().updateProfile(currentProfileId, { tiktokUsername: value });
+      }
+    }
   };
 
   // ══ Backend Sync — called by "Save Changes" button ══
@@ -403,7 +418,10 @@ export function SettingsPage() {
     }
   };
 
-  // Import
+  // ── UUID validation for browserSourceId preservation ──
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // ── Import (v1 + v2 + v3) ──
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -414,32 +432,279 @@ export function SettingsPage() {
     }
 
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const data = JSON.parse(ev.target?.result as string);
 
-        if (!data.setupConfig && !data.pointsConfig) {
-          toast("Invalid settings file — missing setupConfig or pointsConfig", "error");
+        // ── Detect version ──
+
+        // ═══ V3: Portable per-profile import ═══
+        if (data.format === 'rosaefinity-profile' && data.version === 3) {
+          const errors: string[] = [];
+
+          // 1. Apply profile configuration to currently active profile
+          try {
+            useAppStore.getState().applyProfileImport(data.profile);
+          } catch (err) {
+            errors.push(`Profile: ${err instanceof Error ? err.message : 'unknown error'}`);
+          }
+
+          // 2. Goals — with DatabaseClosedError recovery
+          let recoveredDb: Awaited<ReturnType<typeof reopenDatabase>> | null = null;
+          if (Array.isArray(data.profile?.goals)) {
+            try {
+              const currentUserId = useAuthStore.getState().currentUser?.id;
+              const currentProfileId = useAppStore.getState().currentProfileId;
+              const goalsWithOwner = data.profile.goals.map((g: Record<string, unknown>) => ({
+                ...g,
+                userId: currentUserId,
+              }));
+              try {
+                await importGoals(goalsWithOwner);
+              } catch (dexieErr) {
+                if (dexieErr instanceof Error && dexieErr.name === 'DatabaseClosedError') {
+                  recoveredDb = await reopenDatabase();
+                  await importGoals(goalsWithOwner, recoveredDb);
+                } else {
+                  throw dexieErr;
+                }
+              }
+              await useGoalStore.getState().loadGoals();
+            } catch (err) {
+              errors.push(`Goals: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 3. Overlays — remap profileId to active target profile
+          if (Array.isArray(data.profile?.overlays)) {
+            try {
+              const currentUserId = useAuthStore.getState().currentUser?.id;
+              const currentProfileId = useAppStore.getState().currentProfileId;
+              const now = Date.now();
+
+              const rows = data.profile.overlays.map((o: Record<string, unknown>) => ({
+                id: o.id as string,
+                name: o.name as string,
+                moduleId: o.moduleId as string,
+                enabled: o.enabled as number,
+                browserSourceId: UUID_RE.test(o.browserSourceId as string)
+                  ? (o.browserSourceId as string)
+                  : crypto.randomUUID(),
+                config: typeof o.config === 'string' ? o.config : JSON.stringify(o.config ?? {}),
+                configVersion: (o.configVersion as number) ?? 1,
+                createdAt: String(o.createdAt ?? now),
+                updatedAt: String(o.updatedAt ?? now),
+                userId: currentUserId,
+                profileId: currentProfileId,
+              }));
+              try {
+                await importOverlays(rows);
+              } catch (dexieErr) {
+                if (dexieErr instanceof Error && dexieErr.name === 'DatabaseClosedError') {
+                  if (!recoveredDb) recoveredDb = await reopenDatabase();
+                  await importOverlays(rows, recoveredDb);
+                } else {
+                  throw dexieErr;
+                }
+              }
+              await useOverlayInstanceStore.getState().loadInstances();
+            } catch (err) {
+              errors.push(`Overlays: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          if (errors.length > 0) {
+            toast(`Imported with errors: ${errors.join('; ')}`, "error");
+          } else {
+            toast("Profile imported successfully!", "success");
+          }
           return;
         }
 
-        if (data.setupConfig) {
-          if (typeof data.setupConfig.tikTokName !== "string") {
-            toast("Invalid settings file — tikTokName must be a string", "error");
-            return;
-          }
-          updateSetupConfig(data.setupConfig);
+        // [REAL-IMPORT-PARSED] Parsed JSON snapshot (legacy)
+        if (data.version === 2 && Array.isArray(data.profiles)) {
+          console.log('[REAL-IMPORT-PARSED]', JSON.stringify({
+            profiles: data.profiles.map((p: Record<string, unknown>) => ({
+              profileId: p.id,
+              profileName: p.name,
+              actionCount: (p.actions as unknown[])?.length ?? 0,
+              actionIds: (p.actions as unknown[])?.map((a: Record<string, unknown>) => a.id) ?? [],
+            })),
+          }));
         }
 
-        if (data.pointsConfig) {
-          if (typeof data.pointsConfig.pointsGift !== "number" || data.pointsConfig.pointsGift < 1) {
-            toast("Invalid settings file — pointsGift must be a positive number", "error");
+        // ── Detect version ──
+        if (data.version === 2) {
+          // ═══ V2: Full portable backup ═══
+          const errors: string[] = [];
+
+          // 1. App config
+          if (data.app?.setupConfig) {
+            updateSetupConfig(data.app.setupConfig);
+          }
+          if (data.app?.pointsConfig) {
+            updatePointsConfig(data.app.pointsConfig);
+          }
+
+          // 2. Profiles
+          if (Array.isArray(data.profiles)) {
+            try {
+              useAppStore.getState().importProfilesByName(data.profiles);
+            } catch (err) {
+              errors.push(`Profiles: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 3. Goals — with DatabaseClosedError recovery
+          let recoveredDb: Awaited<ReturnType<typeof reopenDatabase>> | null = null;
+          if (Array.isArray(data.goals)) {
+            try {
+              const currentUserId = useAuthStore.getState().currentUser?.id;
+              const goalsWithUser = data.goals.map((g: Record<string, unknown>) => ({
+                ...g,
+                userId: currentUserId,
+              }));
+              try {
+                await importGoals(goalsWithUser);
+              } catch (dexieErr) {
+                if (dexieErr instanceof Error && dexieErr.name === 'DatabaseClosedError') {
+                  recoveredDb = await reopenDatabase();
+                  await importGoals(goalsWithUser, recoveredDb);
+                } else {
+                  throw dexieErr;
+                }
+              }
+              await useGoalStore.getState().loadGoals();
+            } catch (err) {
+              errors.push(`Goals: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 4. Overlays — with DatabaseClosedError recovery (reuses recoveredDb if available)
+          if (Array.isArray(data.overlays)) {
+            try {
+              const currentUserId = useAuthStore.getState().currentUser?.id;
+              const now = Date.now();
+              // Build a mapping from exported profile name → imported profile ID
+              const importedProfiles = useAppStore.getState().streamProfiles;
+              const profileNameToId = new Map<string, string>();
+              for (const p of importedProfiles) {
+                profileNameToId.set(p.name, p.id);
+              }
+
+              const rows = data.overlays.map((o: Record<string, unknown>) => ({
+                id: o.id as string,
+                name: o.name as string,
+                moduleId: o.moduleId as string,
+                enabled: o.enabled as number,
+                // Preserve exported UUID browserSourceId exactly; only generate new UUID for legacy/missing values
+                browserSourceId: UUID_RE.test(o.browserSourceId as string)
+                  ? (o.browserSourceId as string)
+                  : crypto.randomUUID(),
+                config: typeof o.config === 'string' ? o.config : JSON.stringify(o.config ?? {}),
+                configVersion: (o.configVersion as number) ?? 1,
+                createdAt: String(o.createdAt ?? now),
+                updatedAt: String(o.updatedAt ?? now),
+                userId: currentUserId,
+                profileId: (o._sourceProfileName as string)
+                  ? (profileNameToId.get(o._sourceProfileName as string) ?? undefined)
+                  : undefined,
+              }));
+              try {
+                await importOverlays(rows);
+              } catch (dexieErr) {
+                if (dexieErr instanceof Error && dexieErr.name === 'DatabaseClosedError') {
+                  if (!recoveredDb) recoveredDb = await reopenDatabase();
+                  await importOverlays(rows, recoveredDb);
+                } else {
+                  throw dexieErr;
+                }
+              }
+              await useOverlayInstanceStore.getState().loadInstances();
+            } catch (err) {
+              errors.push(`Overlays: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 5. Theme
+          if (data.theme) {
+            try {
+              if (data.theme.mode) useThemeStore.setState({ mode: data.theme.mode });
+              if (data.theme.customTheme) useThemeStore.setState({ customTheme: data.theme.customTheme });
+              // Restore registered themes (user-created custom themes)
+              if (Array.isArray(data.theme.registeredThemes)) {
+                for (const theme of data.theme.registeredThemes) {
+                  useThemeStore.getState().registerTheme(theme);
+                }
+              }
+              // Resolve currentThemeId → full theme object
+              if (data.theme.currentThemeId) {
+                const resolved = useThemeStore.getState().getTheme(data.theme.currentThemeId);
+                if (resolved) {
+                  useThemeStore.setState({ currentTheme: resolved });
+                }
+              }
+            } catch (err) {
+              errors.push(`Theme: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 6. Coin Jar
+          if (data.coinJar) {
+            try {
+              useCoinJarStore.setState({ config: data.coinJar });
+            } catch (err) {
+              errors.push(`Coin Jar: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          // 7. UI preferences
+          if (data.ui) {
+            try {
+              if (Array.isArray(data.ui.overlayFavorites)) {
+                useOverlayInstanceStore.setState({ favoriteIds: new Set(data.ui.overlayFavorites) });
+              }
+              if (Array.isArray(data.ui.activeOverlays)) {
+                useActiveOverlayStore.setState({ activeOverlays: data.ui.activeOverlays });
+              }
+              if (typeof data.ui.overlayAspectRatio === 'string') {
+                localStorage.setItem('rf-overlay_aspectRatio', data.ui.overlayAspectRatio);
+              }
+            } catch (err) {
+              errors.push(`UI: ${err instanceof Error ? err.message : 'unknown error'}`);
+            }
+          }
+
+          if (errors.length > 0) {
+            toast(`Imported with errors: ${errors.join('; ')}`, "error");
+          } else {
+            toast("Settings imported successfully!", "success");
+          }
+        } else {
+          // ═══ V1: Legacy (setupConfig + pointsConfig only) ═══
+          if (!data.setupConfig && !data.pointsConfig) {
+            toast("Invalid settings file — missing setupConfig or pointsConfig", "error");
             return;
           }
-          updatePointsConfig(data.pointsConfig);
-        }
 
-        toast("Settings imported successfully!", "success");
+          if (data.setupConfig) {
+            if (typeof data.setupConfig.tikTokName !== "string") {
+              toast("Invalid settings file — tikTokName must be a string", "error");
+              return;
+            }
+            updateSetupConfig(data.setupConfig);
+          }
+
+          if (data.pointsConfig) {
+            if (typeof data.pointsConfig.pointsGift !== "number" || data.pointsConfig.pointsGift < 1) {
+              toast("Invalid settings file — pointsGift must be a positive number", "error");
+              return;
+            }
+            updatePointsConfig(data.pointsConfig);
+          }
+
+          toast("Settings imported successfully!", "success");
+        }
       } catch {
         toast("Invalid JSON file format", "error");
       }
@@ -451,20 +716,91 @@ export function SettingsPage() {
     e.target.value = "";
   };
 
-  // Export
-  const handleExport = () => {
-    const data = {
-      setupConfig,
-      pointsConfig,
-      exportedAt: new Date().toISOString(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `rosaeFinity-settings-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // ── Export (V3 — portable per-active-profile) ──
+  const handleExport = async () => {
+    try {
+      const state = useAppStore.getState();
+      const activeProfile = state.streamProfiles.find(p => p.id === state.currentProfileId);
+      if (!activeProfile) {
+        toast("No active profile to export", "error");
+        return;
+      }
+
+      // Read Dexie data for profile-associated goals and overlays
+      let activeDb = db;
+      let goals: Awaited<ReturnType<typeof db.goals.toArray>> = [];
+      let overlayRows: Awaited<ReturnType<typeof db.overlays.toArray>> = [];
+      try {
+        goals = await activeDb.goals.toArray();
+        overlayRows = await activeDb.overlays.toArray();
+      } catch (dexieErr) {
+        const isClosed = dexieErr instanceof Error && dexieErr.name === 'DatabaseClosedError';
+        if (isClosed) {
+          console.warn('[EXPORT] Dexie closed, attempting recovery via fresh instance...');
+          activeDb = await reopenDatabase();
+          goals = await activeDb.goals.toArray();
+          overlayRows = await activeDb.overlays.toArray();
+        } else {
+          throw dexieErr;
+        }
+      }
+
+      // Sync active profile's top-level state back into profile object
+      const syncedProfile = {
+        ...activeProfile,
+        actions: state.actions,
+        events: state.events,
+        alertsSettings: state.alertSettings,
+        tiktokUsername: state.setupConfig.tikTokName,
+      };
+
+      // Filter goals to those referenced by active profile's actions
+      const actionIds = new Set(syncedProfile.actions?.map(a => a.id) ?? []);
+      const profileGoals = goals
+        .filter(g => !g.actionId || actionIds.has(g.actionId))
+        .map(({ userId, ...g }) => g);
+
+      // Filter overlays to those belonging to this profile
+      const profileOverlays = overlayRows
+        .filter(o => o.profileId === state.currentProfileId)
+        .map(({ userId, profileId, ...o }) => o);
+
+      const exportData = {
+        format: 'rosaefinity-profile' as const,
+        version: 3 as const,
+        exportedAt: new Date().toISOString(),
+        sourceProfile: {
+          name: syncedProfile.name,
+        },
+        profile: {
+          name: syncedProfile.name,
+          icon: syncedProfile.icon,
+          tiktokUsername: syncedProfile.tiktokUsername,
+          overlaySettings: syncedProfile.overlaySettings,
+          alertsSettings: syncedProfile.alertsSettings,
+          alertsMasterEnabled: syncedProfile.alertsMasterEnabled,
+          ttsSettings: syncedProfile.ttsSettings,
+          actions: syncedProfile.actions?.map(({ soundFile, videoFile, imageFile, soundFileName, videoFileName, imageFileName, ...action }) => action) ?? [],
+          events: syncedProfile.events ?? [],
+          customSounds: syncedProfile.customSounds?.map(({ file, ...sound }) => sound) ?? [],
+          goals: profileGoals,
+          overlays: profileOverlays,
+        },
+      };
+
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rosaefinity-profile-${syncedProfile.name.replace(/\s+/g, '-')}-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Profile exported!", "success");
+    } catch (err) {
+      console.error('[EXPORT] Failed:', err);
+      toast("Export failed", "error");
+    }
   };
 
   const sectionContent = () => {
@@ -1061,6 +1397,10 @@ export function SettingsPage() {
             <ToggleRow label="Debug Mode" desc="Aktifkan logging debug untuk support" value={setupConfig.debugMode} onChange={v => setField("debugMode", v)} />
           </div>
         );
+
+      // ═══ LICENSE ═══════════════════════════════════════
+      case "tts":
+        return <TTSChatSettings />;
 
       // ═══ LICENSE ═══════════════════════════════════════
       case "license":

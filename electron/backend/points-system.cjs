@@ -281,6 +281,15 @@ function toggleChallenge(active) {
   }
 }
 
+// ══ Clear All Points Data (for account isolation on logout) ══
+function clearAllPoints() {
+  users = {};
+  challengeActive = false;
+  localStorageRemove("rosaefinity_points_challenge");
+  saveUsers();
+  console.log("[POINTS] All points data cleared for account isolation");
+}
+
 // ══ Helper: IPC-safe localStorage access ═════
 // (fallback for when fs is used directly)
 function localStorageGet(key) {
@@ -333,6 +342,7 @@ module.exports = {
   resetAllPoints,
   halvePoints,
   toggleChallenge,
+  clearAllPoints,
   saveUsers,
   loadConfig,
   saveConfig,

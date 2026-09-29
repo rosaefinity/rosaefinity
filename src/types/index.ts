@@ -88,6 +88,15 @@ export interface Action {
   minecraftCooldown?: number;
   minecraftDelay?: number;
   minecraftRandom?: boolean;
+  obs?: boolean;
+  obsAction?: string;
+  obsSceneName?: string;
+  streamerbot?: boolean;
+  sbActionName?: string;
+  spotify?: boolean;
+  spotifyAction?: string;
+  spotifyTrackUri?: string;
+  spotifyTrackName?: string;
   enabled: boolean;
   displayDuration?: number;
   mediaVolume?: number;
@@ -119,7 +128,8 @@ export interface Event {
   minCoins?: number;
   minLikes?: number;
   keyword?: string;
-  actionName: string;
+  actionName: string; // Legacy: single action name (backward compatible)
+  actionNames?: string[]; // New: array of action names for random selection (1-8 actions)
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -133,6 +143,7 @@ export interface CustomSound {
   file: string; // dataURL
   enabled: boolean;
   createdAt: string;
+  profileId: string; // Stream Profile this sound belongs to
 }
 
 export interface SoundVolumeSettings {
@@ -315,15 +326,51 @@ export interface Notification {
 // ===== Stream Profiles =====
 export interface StreamProfile {
   id: string;
+  serverId?: string; // Backend canonical UUID, set after cloud sync
   name: string;
   icon?: string;
   tiktokUsername: string;
   overlaySettings: any;
   alertsSettings: any;
+  alertsMasterEnabled: boolean; // Master alert toggle for this profile
   actions: Action[];
   events: Event[];
+  customSounds: CustomSound[]; // Profile-specific custom sounds
+  locked?: boolean; // ACCESS state only — true when profile exceeds current plan's maxProfiles. Never causes deletion.
   createdAt: string;
   updatedAt: string;
+  /** TTS Chat settings (optional for backward compatibility) */
+  ttsSettings?: import('./tts').TTSSettings;
+}
+
+// ===== Portable Profile Export (V3) =====
+export interface PortableProfile {
+  name: string;
+  icon?: string;
+  tiktokUsername: string;
+  overlaySettings: Record<string, any>;
+  alertsSettings: Record<string, any>;
+  alertsMasterEnabled: boolean;
+  ttsSettings?: import('./tts').TTSSettings;
+  actions: Omit<Action, 'soundFile' | 'videoFile' | 'imageFile' | 'soundFileName' | 'videoFileName' | 'imageFileName'>[];
+  events: Event[];
+  customSounds: Omit<CustomSound, 'file'>[];
+  goals: Omit<Goal, 'userId' | 'profileId'>[];
+  overlays: Omit<OverlayInstance, 'userId' | 'profileId'>[];
+}
+
+export interface PortableProfileExport {
+  format: 'rosaefinity-profile';
+  version: 3;
+  exportedAt: string;
+  sourceProfile: {
+    name: string;
+  };
+  profile: PortableProfile;
+}
+
+export interface PortableProfileImport extends PortableProfileExport {
+  // Import payload uses same structure
 }
 
 // ===== Alert Settings =====

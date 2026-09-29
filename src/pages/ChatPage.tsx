@@ -6,9 +6,10 @@ import { SCREEN_IDS } from "../types";
 import type { ScreenId } from "../types";
 import {
   MessageSquare, Trash2, Gift, Heart,
-  Share2, UserPlus, Filter
+  Share2, UserPlus, Filter, Mic, Volume2
 } from "lucide-react";
 import { BrowserSourceBar } from "../components/BrowserSourceBar";
+import { TTSChatSettings } from "../components/tts/TTSChatSettings";
 
 const EVENT_ICONS = {
   gift: "🎁", follow: "👤", comment: "💬",
@@ -194,6 +195,20 @@ export function ChatPage() {
       <div className="mt-4">
         <BrowserSourceBar overlayPath="chat" label="Chat Feed Overlay" />
       </div>
+
+      {/* TTS Chat Section */}
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mt-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <Volume2 className="w-6 h-6 text-accent" />
+            <h2 className="text-xl font-bold text-white">TTS Chat</h2>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <TTSChatSettings />
+        </div>
+      </motion.div>
     </div>
   );
 }export default ChatPage;

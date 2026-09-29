@@ -122,12 +122,15 @@ function useOverlayModule(overlayId: string | null): UseOverlayModuleResult {
     loadModule(overlayId).then(mod => {
       if (cancelled) return;
       if (mod) {
+        console.log('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp loaded module:', overlayId, '→', mod.name);
         setState({ module: mod, loading: false, error: null });
       } else {
+        console.error('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp FAILED to load module:', overlayId, '→ NOT FOUND');
         setState({ module: null, loading: false, error: `Overlay "${overlayId}" not found` });
       }
     }).catch(err => {
       if (cancelled) return;
+      console.error('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp module load ERROR:', overlayId, err);
       setState({ module: null, loading: false, error: err instanceof Error ? err.message : 'Failed to load overlay' });
     });
 
@@ -234,7 +237,25 @@ export function BrowserSourceApp(): React.ReactElement {
     const now = Date.now();
     const latency = 'timestamp' in event && typeof event.timestamp === 'number' ? now - event.timestamp : 0;
     setEventState({ lastEventTime: now, lastEventType: event.type, eventLatency: latency });
-  }, []);
+
+    // Handle overlay config change notification — re-fetch /config
+    const data = event as unknown as Record<string, unknown>;
+    if (data?.type === 'overlay-config-changed' && urlParams.browserSourceId) {
+      const changedBrowserSourceId = data.browserSourceId as string;
+      if (changedBrowserSourceId === urlParams.browserSourceId) {
+        const configUrl = window.__ROSAEFINITY_CONFIG_URL__
+          || `${getSSEBaseUrl()}/overlay/${urlParams.browserSourceId}/config`;
+        fetch(configUrl)
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data?.moduleId) {
+              setServerConfig({ moduleId: data.moduleId, config: data.config || {} });
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  }, [urlParams.browserSourceId]);
 
   // ── SSE connection (use browserSourceId or instanceId) ──
   const sseInstanceId = urlParams.instanceId || urlParams.browserSourceId;
@@ -251,7 +272,7 @@ export function BrowserSourceApp(): React.ReactElement {
       eventSourceRef.current = new BrowserEventSource(eventSourceId, getSSEBaseUrl());
       return eventSourceRef.current;
     }
-    // Fallback: no-op event source
+    // Fallback: no-op event source — NO events will be received
     return { subscribe: () => () => {} };
   }, [urlParams.instanceId]);
 
@@ -366,6 +387,7 @@ export function BrowserSourceApp(): React.ReactElement {
               config={instanceConfig}
               mode="browser-source"
               events={rendererEventSource}
+              instanceId={urlParams.instanceId}
             />
           </Suspense>
         </OverlayErrorBoundary>

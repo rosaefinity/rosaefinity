@@ -54,13 +54,16 @@ function getGiftEmoji(name: string) {
 }
 
 export function AlertsPage() {
-  const { events, actions, tikTokGifts, addEvent, updateEvent, deleteEvent, setTikTokGifts, alertsMasterEnabled, setAlertsMasterEnabled } = useAppStore();
+  const { events, actions, tikTokGifts, addEvent, updateEvent, deleteEvent, setTikTokGifts, getAlertsMasterEnabled, setAlertsMasterEnabled } = useAppStore();
+  const alertsMasterEnabled = getAlertsMasterEnabled();
   const [showModal, setShowModal] = useState(false);
   const [editingEvent, setEditingEvent] = useState<any>(null);
   const [formData, setFormData] = useState<Record<string, any>>({
     triggerType: "gift",
     whoTrigger: "any",
     actionName: "",
+    actionNames: [],
+    actionMode: "single", // "single" or "random"
     enabled: true,
     specificUser: "",
     giftName: "",
@@ -81,6 +84,8 @@ export function AlertsPage() {
       triggerType: "gift",
       whoTrigger: "any",
       actionName: "",
+      actionNames: [],
+      actionMode: "single",
       enabled: true,
       specificUser: "",
       giftName: "",
@@ -98,7 +103,14 @@ export function AlertsPage() {
   };
 
   const openEditModal = (event: any) => {
-    setFormData({ ...event });
+    // Detect mode: random if actionNames has 2+ items, otherwise single
+    const hasRandomActions = event.actionNames && event.actionNames.length > 1;
+    const formDataWithDefaults = {
+      ...event,
+      actionNames: event.actionNames || (event.actionName ? [event.actionName] : []),
+      actionMode: hasRandomActions ? "random" : "single",
+    };
+    setFormData(formDataWithDefaults);
     if (event.giftName) setSelectedGift(event.giftName);
     setEditingEvent(event);
     setShowModal(true);
@@ -106,11 +118,40 @@ export function AlertsPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.actionName) { alert("Pilih action"); return; }
-    if (formData.triggerType === "specificgift" && !selectedGift) { alert("Pilih gift"); return; }
 
+    const isRandomMode = formData.actionMode === "random";
+
+    if (isRandomMode) {
+      // Validate random mode: at least 1, max 8 actions
+      const selectedActions = formData.actionNames || [];
+      if (selectedActions.length === 0) {
+        alert("Please select at least one action");
+        return;
+      }
+      if (selectedActions.length > 8) {
+        alert("Maximum 8 random actions allowed");
+        return;
+      }
+    } else {
+      // Validate single mode: exactly 1 action
+      if (!formData.actionName) {
+        alert("Please select an action");
+        return;
+      }
+    }
+
+    if (formData.triggerType === "specificgift" && !selectedGift) {
+      alert("Pilih gift");
+      return;
+    }
+
+    const selectedActions = formData.actionNames || [];
     const data = {
       ...formData,
+      // For random mode, set actionNames array; for single mode, clear it
+      actionNames: isRandomMode ? selectedActions : [],
+      // For backward compatibility, always set actionName
+      actionName: isRandomMode ? (selectedActions[0] || "") : formData.actionName,
       giftName: formData.triggerType === "specificgift" ? selectedGift : formData.giftName,
       specificUser: formData.whoTrigger === "specificuser" ? formData.specificUser : "",
     };
@@ -147,7 +188,7 @@ export function AlertsPage() {
             </div>
             <div>
               <h3 className="text-sm font-semibold text-white">Master Alert Toggle</h3>
-              <p className="text-xs text-white/40">Enable or disable all alerts globally</p>
+              <p className="text-xs text-white/40">Enable or disable all alerts for this profile</p>
             </div>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
@@ -211,7 +252,14 @@ export function AlertsPage() {
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-white/40">{whoText}</span>
                           <span className="text-white/30">→</span>
-                          <span className="font-medium text-white/70">{ev.actionName || "-"}</span>
+                          {ev.actionNames && ev.actionNames.length > 1 ? (
+                            <span className="font-medium text-white/70 flex items-center gap-1">
+                              <span className="text-primary">🎲</span>
+                              {ev.actionNames.length} actions
+                            </span>
+                          ) : (
+                            <span className="font-medium text-white/70">{ev.actionName || "-"}</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -430,23 +478,114 @@ export function AlertsPage() {
                   </div>
                 </div>
 
-                {/* Action Select */}
+                {/* Action Mode Toggle */}
                 <div>
-                  <label className="block text-xs font-medium text-white/50 mb-2">Action to Trigger *</label>
-                  <select
-                    value={formData.actionName}
-                    onChange={(e) => setFormData({ ...formData, actionName: e.target.value })}
-                    className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
-                    required
-                  >
-                    <option value="">-- Select Action --</option>
-                    {actions.map((a) => (
-                      <option key={a.id} value={a.name} disabled={!a.enabled}>
-                        {a.enabled ? "" : "[DISABLED] "}{a.name}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="block text-xs font-medium text-white/50 mb-2">Action Mode</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, actionMode: "single", actionNames: [] })}
+                      className={cn(
+                        "px-3 py-2 rounded-xl text-sm font-medium transition-all",
+                        formData.actionMode === "single"
+                          ? "bg-primary/20 border border-primary/30 text-primary-light"
+                          : "bg-white/[0.04] border border-white/[0.08] text-white/70 hover:bg-white/[0.08]"
+                      )}
+                    >
+                      ⚡ Trigger this action
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, actionMode: "random", actionName: "" })}
+                      className={cn(
+                        "px-3 py-2 rounded-xl text-sm font-medium transition-all",
+                        formData.actionMode === "random"
+                          ? "bg-primary/20 border border-primary/30 text-primary-light"
+                          : "bg-white/[0.04] border border-white/[0.08] text-white/70 hover:bg-white/[0.08]"
+                      )}
+                    >
+                      🎲 Random action
+                    </button>
+                  </div>
                 </div>
+
+                {/* Single Action Select */}
+                {formData.actionMode === "single" && (
+                  <div>
+                    <label className="block text-xs font-medium text-white/50 mb-2">Action to Trigger *</label>
+                    <select
+                      value={formData.actionName}
+                      onChange={(e) => setFormData({ ...formData, actionName: e.target.value })}
+                      className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
+                      required
+                    >
+                      <option value="">-- Select Action --</option>
+                      {actions.map((a) => (
+                        <option key={a.id} value={a.name} disabled={!a.enabled}>
+                          {a.enabled ? "" : "[DISABLED] "}{a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Random Action Multi-Select */}
+                {formData.actionMode === "random" && (
+                  <div>
+                    <label className="block text-xs font-medium text-white/50 mb-2">
+                      🎲 Trigger one of these actions (random) *
+                      <span className="text-white/30 ml-2">(1-8 actions)</span>
+                    </label>
+                    <div className="max-h-48 overflow-y-auto border border-white/[0.08] rounded-xl bg-white/[0.02] p-2 space-y-1">
+                      {actions.length === 0 ? (
+                        <p className="text-xs text-white/30 text-center py-2">No actions available</p>
+                      ) : (
+                        actions.map((a) => {
+                          const isSelected = (formData.actionNames || []).includes(a.name);
+                          return (
+                            <label
+                              key={a.id}
+                              className={cn(
+                                "flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all",
+                                isSelected ? "bg-primary/20 border border-primary/30" : "hover:bg-white/[0.04]",
+                                !a.enabled && "opacity-50"
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                disabled={!a.enabled}
+                                onChange={(e) => {
+                                  const currentNames = formData.actionNames || [];
+                                  let newNames;
+                                  if (e.target.checked) {
+                                    if (currentNames.length >= 8) {
+                                      alert("Maximum 8 random actions allowed");
+                                      return;
+                                    }
+                                    newNames = [...currentNames, a.name];
+                                  } else {
+                                    newNames = currentNames.filter((n: string) => n !== a.name);
+                                  }
+                                  setFormData({ ...formData, actionNames: newNames });
+                                }}
+                                className="w-4 h-4 rounded border-white/20 bg-white/[0.04] accent-primary"
+                              />
+                              <span className="text-sm text-white/70">
+                                {!a.enabled && "[DISABLED] "}{a.name}
+                              </span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                    {(formData.actionNames || []).length > 0 && (
+                      <p className="text-xs text-white/40 mt-2">
+                        Selected: {(formData.actionNames || []).length}/8
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Enabled Toggle */}
                 <div className="flex items-center justify-between">

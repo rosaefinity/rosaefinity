@@ -71,13 +71,22 @@ function App() {
   }, [initialize]);
 
   // Step 2: After auth is initialized and user is available, load license/sync/update
-  // This runs AFTER initialize() sets user, avoiding the race condition
-  // where initLicense was called before session.accessToken was available.
+  // DEFERRED: Use requestIdleCallback to avoid blocking first interactive paint.
+  // License/sync/update are not required for Dashboard to render.
   useEffect(() => {
     if (initialized && user?.id) {
-      initLicense(user.id);
-      initSync(user.id);
-      initUpdate();
+      const runDeferredInit = () => {
+        initLicense(user.id);
+        initSync(user.id);
+        initUpdate();
+      };
+      if (typeof requestIdleCallback !== 'undefined') {
+        const id = requestIdleCallback(runDeferredInit, { timeout: 3000 });
+        return () => cancelIdleCallback(id);
+      } else {
+        const timer = setTimeout(runDeferredInit, 1500);
+        return () => clearTimeout(timer);
+      }
     }
   }, [initialized, user?.id, initLicense, initSync, initUpdate]);
 

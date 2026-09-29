@@ -6,7 +6,7 @@
 // SettingsSchema. Supports all 29+ field types.
 // ─────────────────────────────────────────────────────
 
-import React, { memo, useMemo, useCallback, Fragment } from 'react';
+import React, { memo, useMemo, useCallback, Fragment, useState, useEffect } from 'react';
 import type { SettingsSchema, SettingsField } from '../overlays/types';
 import { evaluateVisibility } from '../overlays/base/useSettings';
 
@@ -47,6 +47,79 @@ function groupBySection(schema: SettingsSchema): Array<{ section: string; fields
     }
   }
   return Array.from(groups.entries()).map(([section, fields]) => ({ section, fields }));
+}
+
+// ─── SchemaColorField ───
+// Dedicated color field component with local state to fix native <input type="color"> value commitment issue.
+// The native color picker's onChange fires correctly, but external store updates triggered by onChange
+// cause React re-renders that interrupt the native picker's value commitment when the input is
+// controlled directly by external state. Using local state as an intermediary preserves the
+// picker interaction while still propagating changes to the parent onChange.
+
+interface SchemaColorFieldProps {
+  value: unknown;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  error?: string;
+  label: string;
+  description?: string;
+  renderLabel: () => React.ReactElement;
+  renderError: () => React.ReactElement | null;
+  renderDescription: () => React.ReactElement | null;
+  inputClass: string;
+  disabledClass: string;
+}
+
+function SchemaColorField({
+  value,
+  onChange,
+  disabled,
+  error,
+  label,
+  description,
+  renderLabel,
+  renderError,
+  renderDescription,
+  inputClass,
+  disabledClass,
+}: SchemaColorFieldProps): React.ReactElement {
+  const fallbackColor = '#7C3AED';
+  const initialValue = String(value ?? fallbackColor);
+
+  const [localHex, setLocalHex] = useState<string>(initialValue);
+
+  // Sync local state when external value changes (profile switch, config load, etc.)
+  useEffect(() => {
+    setLocalHex(String(value ?? fallbackColor));
+  }, [value]);
+
+  const handleChange = useCallback((newHex: string) => {
+    setLocalHex(newHex);
+    onChange(newHex);
+  }, [onChange]);
+
+  return (
+    <div className={disabledClass}>
+      {renderLabel()}
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={localHex}
+          onChange={e => handleChange(e.target.value)}
+          className="w-9 h-9 rounded-lg border border-white/[0.08] cursor-pointer bg-transparent"
+          disabled={disabled}
+        />
+        <input
+          type="text"
+          value={localHex}
+          onChange={e => handleChange(e.target.value)}
+          className={`${inputClass} flex-1 font-mono text-xs`}
+          disabled={disabled}
+        />
+      </div>
+      {renderError()}{renderDescription()}
+    </div>
+  );
 }
 
 // ─── Field Renderer ───
@@ -238,17 +311,19 @@ const FieldRenderer = memo(function FieldRenderer({
 
     case 'color':
       return (
-        <div className={disabledClass}>
-          {renderLabel()}
-          <div className="flex items-center gap-2">
-            <input type="color" value={String(value ?? '#7C3AED')}
-              onChange={e => onChange(e.target.value)}
-              className="w-9 h-9 rounded-lg border border-white/[0.08] cursor-pointer bg-transparent" disabled={disabled} />
-            <input type="text" value={String(value ?? '')} onChange={e => onChange(e.target.value)}
-              className={`${inputClass} flex-1 font-mono text-xs`} disabled={disabled} />
-          </div>
-          {renderError()}{renderDescription()}
-        </div>
+        <SchemaColorField
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          error={error}
+          label={field.label}
+          description={field.description}
+          renderLabel={renderLabel}
+          renderError={renderError}
+          renderDescription={renderDescription}
+          inputClass={inputClass}
+          disabledClass={disabledClass}
+        />
       );
 
     case 'font':

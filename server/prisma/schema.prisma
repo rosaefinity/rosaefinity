@@ -169,8 +169,10 @@ model SyncRecord {
   entityType    String
   entityId      String
   data          Json
+  operation     String   @default("upsert")
   version       Int      @default(1)
   checksum      String
+  isDeleted     Boolean  @default(false)
   serverVersion Int      @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -178,6 +180,7 @@ model SyncRecord {
 
   @@unique([userId, entityType, entityId])
   @@index([userId, entityType])
+  @@index([userId, entityType, isDeleted])
   @@index([updatedAt])
 }
 

@@ -4,8 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { getOverlayModules } from "../overlays/registry";
 import { createCoinJarDemoEventSource } from "../overlays/coin-jar-pro/demoEventSource";
-import { getOverlayWidgetUrl, getSSEBaseUrl } from "../lib/browser-source-url";
+import { getOverlayWidgetUrl, getSSEBaseUrl, getBrowserSourceUrl } from "../lib/browser-source-url";
+import { useOverlayStore } from "../lib/overlay-store";
 // Removed: useOverlayStore no longer needed — URL is generated directly
+import { createOverlayConfig } from "../overlays/createConfig";
 import { useLicenseStore } from "../store/license-store";
 import { sendToOverlay } from "../lib/overlay-bus";
 import { useGoalStore } from "../store/goal-store";
@@ -66,35 +68,74 @@ export function OverlayGallery() {
   // Look up overlay instances from the store (same source as CustomizePage)
   const allModules = useMemo(() => {
     const mods = getOverlayModules();
-    console.log('[OVERLAY-TRACE] gallery input count =', mods.length);
-    console.log('[OVERLAY-TRACE] gallery input ids =', mods.map(m => m.id));
-    console.log('[OVERLAY-TRACE] gallery has goal-progress =', mods.some(m => m.id === 'goal-progress'));
     return mods;
   }, []);
   const cards = useMemo(() => allModules.map(moduleToCard), [allModules]);
-
-  console.log('[OVERLAY-TRACE] rendered cards count =', cards.length);
-  console.log('[OVERLAY-TRACE] rendered card ids =', cards.map(c => c.id));
 
   const selected = useMemo(
     () => cards.find((c) => c.id === selectedId) ?? cards[0] ?? null,
     [cards, selectedId],
   );
 
-  // Generate the exact same Browser Source URL that CoinJarEditor uses
-  // Coin Jar Pro: /coin-jar.html  |  Goal Progress: /goals-widget.html
-  // Both served by the local SSE server on port 18890.
-  const browserSourceUrl = useMemo(() => {
-    const isGoalModule = selected?.id === 'goal-progress' || selected?.id === 'goal-likes' || selected?.id === 'goal-followers' || selected?.id === 'goal-gifts';
-    if (isGoalModule) {
-      const url = `${getSSEBaseUrl()}/goals-widget.html`;
-      console.log('[OVERLAY-LOCAL] Gallery using LOCAL URL for goal module:', selected?.id, url);
-      return url;
+  // Resolve the persisted overlay instance for the selected module
+  const instances = useOverlayStore((s) => s.instances);
+  const addInstance = useOverlayStore((s) => s.addInstance);
+  const loaded = useOverlayStore((s) => s.loaded);
+  const currentProfileId = useAppStore((s) => s.currentProfileId);
+  const selectedInstance = useMemo(() => {
+    if (!selected) return null;
+    const profileInstances = instances.filter((i) => i.profileId === currentProfileId);
+    return profileInstances.find((i) => i.moduleId === selected.id) ?? null;
+  }, [selected, instances, currentProfileId]);
+
+  // ── Auto-create instance for browser-source-capable modules without a persisted instance ──
+  // Prevents the fallback URL path (moduleId as browserSourceId → 404 on /config).
+  // Uses the same creation path as CustomizePage and OverlayCard.
+  const autoCreatedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!loaded) {
+      autoCreatedRef.current.clear();
+      return;
     }
-    const localUrl = getOverlayWidgetUrl().replace('overlay-widget.html', 'coin-jar.html');
-    console.log('[OVERLAY-LOCAL] Gallery using LOCAL URL for', selected?.id, ':', localUrl);
-    return localUrl;
-  }, [selected]);
+    if (!selected || selectedInstance) return;
+    if (!selected.module?.supportsBrowserSource) return;
+    // Already auto-created for this moduleId in this session — skip
+    if (autoCreatedRef.current.has(selected.id)) return;
+    autoCreatedRef.current.add(selected.id);
+    addInstance({
+      moduleId: selected.id,
+      name: selected.name,
+      enabled: true,
+      config: createOverlayConfig(selected.module),
+      configVersion: selected.module.configVersion ?? 1,
+    });
+  }, [loaded, selected, selectedInstance, addInstance]);
+
+  // ── Reset auto-create guard when currentProfileId changes (e.g. pullCloudProfiles) ──
+  // pullCloudProfiles() changes currentProfileId directly without calling switchProfile(),
+  // so loaded stays true and the loaded=false clear never fires. This effect detects
+  // profile changes and resets the guard so auto-create can fire for the new profile.
+  const prevProfileRef = useRef(currentProfileId);
+  useEffect(() => {
+    if (prevProfileRef.current !== currentProfileId) {
+      autoCreatedRef.current.clear();
+      prevProfileRef.current = currentProfileId;
+    }
+  }, [currentProfileId]);
+
+  // Browser Source URL: instance-level if a persisted instance exists, else module-level fallback
+  const browserSourceUrl = useMemo(() => {
+    if (selectedInstance) {
+      return getBrowserSourceUrl(selectedInstance.browserSourceId);
+    }
+    // Fallback for modules without a persisted instance (pre-install)
+    // Uses /overlay/<moduleId>.html → overlay-entry.html → BrowserSourceApp
+    // ?overlay=<moduleId> ensures BrowserSourceApp loads the correct module
+    if (selected?.id) {
+      return `${getSSEBaseUrl()}/overlay/${selected.id}.html?overlay=${selected.id}`;
+    }
+    return getOverlayWidgetUrl().replace('overlay-widget.html', 'coin-jar.html');
+  }, [selected, selectedInstance]);
 
   // Stable demo event source — create once per session
   useEffect(() => {

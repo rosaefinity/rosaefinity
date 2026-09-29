@@ -1,13 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "../../lib/utils";
 import { useAuthStore } from "../../store/auth-store";
+import { useLicenseStore } from "../../store/license-store";
 import { useNavigate } from "react-router-dom";
 import {
   Search, Bell, MessageCircle, BookOpen, ChevronDown,
-  Crown, LogOut, User, Settings, Wifi, WifiOff
+  Crown, LogOut, User, Settings
 } from "lucide-react";
-import { getSSEConnectionState } from "../../lib/overlay-bus";
+import { StreamProfileSelector } from "./StreamProfileSelector";
 
 const notifications = [
   { id: "1", title: "New overlay available", message: "World Cup Bracket is now available", type: "info" as const, time: "1h ago", read: false },
@@ -19,18 +20,9 @@ export function Header() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [sseStatus, setSseStatus] = useState(getSSEConnectionState);
   const { user, logout } = useAuthStore();
+  const effectivePlan = useLicenseStore((s) => s.effectivePlan);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      setSseStatus({ connected: detail.connected, retryCount: detail.retryCount });
-    };
-    window.addEventListener("rosae:sse-state", handler);
-    return () => window.removeEventListener("rosae:sse-state", handler);
-  }, []);
 
   return (
     <header className="h-16 bg-background/80 backdrop-blur-xl border-b border-white/[0.04] flex items-center justify-between px-6 shrink-0 relative z-20">
@@ -49,26 +41,6 @@ export function Header() {
 
       {/* Right */}
       <div className="flex items-center gap-2">
-        {/* SSE Relay Status */}
-        <div
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-xs font-medium transition-all",
-            sseStatus.connected
-              ? "bg-success/10 text-success"
-              : "bg-danger/10 text-danger"
-          )}
-          title={sseStatus.connected ? "OBS overlay relay connected" : "OBS overlay relay disconnected — check SSE server on port 18890"}
-        >
-          {sseStatus.connected ? (
-            <Wifi className="w-3.5 h-3.5" />
-          ) : (
-            <WifiOff className="w-3.5 h-3.5" />
-          )}
-          <span className="hidden sm:inline">
-            {sseStatus.connected ? "Overlay" : "Overlay Offline"}
-          </span>
-        </div>
-
         {/* Notifications */}
         <div className="relative">
           <button onClick={() => setShowNotif(!showNotif)} className="relative w-9 h-9 rounded-xl flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.04] transition-all">
@@ -112,21 +84,26 @@ export function Header() {
           <BookOpen className="w-[18px] h-[18px]" />
         </a>
 
-        {/* Upgrade Pro */}
-        <button onClick={() => navigate("/settings#license")} className="hidden sm:flex items-center gap-2 h-9 px-4 rounded-xl bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium hover:shadow-lg hover:shadow-primary/30 transition-all active:scale-[0.97] cursor-pointer">
-          <Crown className="w-4 h-4" /> Upgrade Pro
-        </button>
+        {/* Upgrade Pro — visible only when not Pro */}
+        {effectivePlan() !== 'pro' && (
+          <button onClick={() => navigate("/settings#license")} className="hidden sm:flex items-center gap-2 h-9 px-4 rounded-xl bg-gradient-to-r from-primary to-secondary text-white text-sm font-medium hover:shadow-lg hover:shadow-primary/30 transition-all active:scale-[0.97] cursor-pointer">
+            <Crown className="w-4 h-4" /> Upgrade Pro
+          </button>
+        )}
+
+        {/* Stream Profile Selector */}
+        <StreamProfileSelector />
 
         {/* User */}
         <div className="relative">
           <button onClick={() => setShowUserMenu(!showUserMenu)} className="flex items-center gap-2 pl-2 pr-3 h-9 rounded-xl hover:bg-white/[0.04] transition-all group">
             <div className="relative">
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-white text-xs font-bold">
-                {user?.name?.charAt(0) || "R"}
+                {user?.displayName?.charAt(0) || user?.username?.charAt(0) || "U"}
               </div>
               <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-success border-2 border-background" />
             </div>
-            <span className="text-sm font-medium text-white/70 group-hover:text-white/90 transition-colors hidden sm:block">{user?.name || "User"}</span>
+            <span className="text-sm font-medium text-white/70 group-hover:text-white/90 transition-colors hidden sm:block">{user?.displayName || user?.username || "User"}</span>
             <ChevronDown className="w-3 h-3 text-white/30 hidden sm:block" />
           </button>
           <AnimatePresence>

@@ -178,6 +178,9 @@ export interface OverlayModule<TConfig extends object = Record<string, unknown>>
   supportsPreview: boolean;
   version: number;
 
+  // Metadata for Studio/Preview consumers
+  metadata?: OverlayMetadata;
+
   // Components
   renderer: React.ComponentType<RendererProps<TConfig>>;
 
@@ -196,6 +199,134 @@ export interface OverlayModule<TConfig extends object = Record<string, unknown>>
   onDestroy?: (context: OverlayContext) => void;
   onEvent?: (context: OverlayContext, event: OverlayEvent) => void;
 }
+
+// ─── Overlay Metadata (for Studio/Preview consumers) ───
+
+export interface OverlayMetadata {
+  id?: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  icon?: React.ComponentType<{ className?: string }>;
+  version?: string | number;
+  configVersion?: number;
+  supportsBrowserSource?: boolean;
+  supportsPreview?: boolean;
+
+  // Preserve legacy metadata fields
+  author?: string;
+  thumbnail?: string;
+  previewImage?: string;
+  beta?: boolean;
+  featured?: boolean;
+  hidden?: boolean;
+  premium?: boolean;
+  deprecated?: boolean;
+  requiresLicense?: boolean;
+  licenseTier?: string;
+  supportsOBS?: boolean;
+  supportsMultiScreen?: boolean;
+  supportsThemes?: boolean;
+  supportsTikTokLiveStudio?: boolean;
+  minimumVersion?: string;
+  maximumVersion?: string | null;
+  platform?: string;
+
+  [key: string]: unknown;
+}
+
+// ─── Overlay Input Types (for defineOverlay) ───
+
+export interface FlatOverlayInput<TConfig extends object = Record<string, unknown>> {
+  // Metadata (flat)
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tags: string[];
+  supportsBrowserSource: boolean;
+  supportsPreview: boolean;
+  version: number;
+
+  // Components
+  renderer: React.ComponentType<RendererProps<TConfig>>;
+
+  // Schema-driven settings
+  settingsSchema: SettingsSchema | SettingsField[];
+
+  // Configuration
+  defaultConfig: TConfig;
+  configVersion: number;
+  validate: (config: unknown) => config is TConfig;
+  sanitize: (config: Record<string, unknown>) => TConfig;
+  migrate: (raw: unknown, version?: number) => TConfig;
+
+  // Optional metadata (for Studio consumers)
+  metadata?: OverlayMetadata;
+
+  // Lifecycle (optional)
+  onCreate?: (context: OverlayContext) => void;
+  onDestroy?: (context: OverlayContext) => void;
+  onEvent?: (context: OverlayContext, event: OverlayEvent) => void;
+}
+
+export interface LegacyOverlayInput<TConfig extends object = Record<string, unknown>> {
+  // Nested metadata structure
+  metadata: {
+    id: string;
+    name: string;
+    description: string;
+    category: string;
+    tags: string[];
+    icon: React.ComponentType<any>;
+    version: string;
+    configVersion: number;
+    supportsBrowserSource: boolean;
+    supportsPreview: boolean;
+    author?: string;
+    thumbnail?: string;
+    previewImage?: string;
+    beta?: boolean;
+    featured?: boolean;
+    hidden?: boolean;
+    premium?: boolean;
+    deprecated?: boolean;
+    requiresLicense?: boolean;
+    licenseTier?: string;
+    supportsOBS?: boolean;
+    supportsMultiScreen?: boolean;
+    supportsThemes?: boolean;
+    supportsTikTokLiveStudio?: boolean;
+    minimumVersion?: string;
+    maximumVersion?: string | null;
+    platform?: string;
+    [key: string]: unknown;
+  };
+
+  // Components
+  renderer: React.ComponentType<RendererProps<TConfig>>;
+
+  // Schema-driven settings
+  settingsSchema: SettingsSchema | SettingsField[];
+
+  // Configuration
+  defaultConfig: TConfig;
+
+  // Legacy function names
+  validateConfig: (config: unknown) => config is TConfig;
+  sanitizeConfig: (config: Record<string, unknown>) => TConfig;
+  migrateConfig: (raw: unknown, version?: number) => TConfig;
+
+  // Legacy extra field (not consumed at runtime)
+  eventTypes?: string[];
+}
+
+// Union type for defineOverlay input
+export type OverlayInput<TConfig extends object = Record<string, unknown>> =
+  | FlatOverlayInput<TConfig>
+  | LegacyOverlayInput<TConfig>;
 
 // ─── Renderer Props ───
 
@@ -248,6 +379,8 @@ export interface OverlayInstance {
   configVersion: number;
   createdAt: number;
   updatedAt: number;
+  userId?: string; // Account owner — assigned on create/remote-apply
+  profileId?: string; // Stream Profile owner — assigned on create/migration
 }
 
 // ─── Transport Types ───

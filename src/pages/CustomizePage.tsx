@@ -24,16 +24,21 @@ export function CustomizePage() {
   const instances = useOverlayStore((s) => s.instances);
   const updateConfig = useOverlayStore((s) => s.updateConfig);
   const addInstance = useOverlayStore((s) => s.addInstance);
+  const currentProfileId = useAppStore((s) => s.currentProfileId);
 
   // ── 3. Instance lookup ──
   const resolved = useMemo(() => {
-    let inst = instances.find((i) => i.id === instanceId);
+    // Filter instances to only those belonging to the current profile
+    const profileInstances = instances.filter((i) => i.profileId === currentProfileId);
+
+    let inst = profileInstances.find((i) => i.id === instanceId);
     if (inst) return { instance: inst, mod: getOverlayModule(inst.moduleId) };
-    inst = instances.find((i) => i.moduleId === instanceId);
+    inst = profileInstances.find((i) => i.moduleId === instanceId);
     if (inst) return { instance: inst, mod: getOverlayModule(inst.moduleId) };
+    // Direct module lookup (for routes like /customize/goal-followers)
     const mod = getOverlayModule(instanceId ?? '');
     return { instance: null, mod: mod ?? undefined };
-  }, [instances, instanceId]);
+  }, [instances, instanceId, currentProfileId]);
 
   const instance = resolved.instance;
   const mod = resolved.mod;
@@ -65,10 +70,11 @@ export function CustomizePage() {
   }, [mod, instance, isGoalModule, addInstance]);
 
   // ── 6. Effective config ──
-  const effectiveConfig = useMemo(() =>
-    instance?.config ?? (mod?.defaultConfig as Record<string, unknown>) ?? {},
-    [instance, mod]
-  );
+  const effectiveConfig = useMemo(() => {
+    const base = mod?.defaultConfig ?? {};
+    const instanceCfg = instance?.config ?? {};
+    return { ...base, ...instanceCfg };
+  }, [instance, mod]);
 
   // ── 7. Flat schema ──
   const flatSchema = useMemo(() => {
@@ -103,10 +109,8 @@ export function CustomizePage() {
   // ── 9. Config change handler ──
   const handleConfigChange = useCallback(
     (key: string, value: unknown) => {
-      console.log('[GOAL-SYNC-1] config changed:', { key, value });
       const inst = instanceRef.current;
       if (inst) {
-        console.log('[GOAL-SYNC-2] updateConfig called:', { instanceId: inst.id, key });
         updateConfig(inst.id, { ...inst.config, [key]: value });
       } else if (mod) {
         // No instance yet — create one on first change
@@ -128,9 +132,69 @@ export function CustomizePage() {
   useEffect(() => {
     if (!isGoalProgress || !instance) return;
     const cfg = instance.config as Record<string, unknown>;
-    const goals = useGoalStore.getState().goals;
+    const goalStore = useGoalStore.getState();
+    const goals = goalStore.goals;
     if (goals.length === 0) return;
-    const goal = goals[0];
+
+    // ── Association: find the Goal bound to this overlay instance ──
+    // Every step requires EXACTLY ONE match. Ambiguity = no Goal found.
+    let goal: typeof goals[0] | undefined;
+    let ambiguous = false;
+
+    // Step 1: Use formal goalId link if present in config
+    if (cfg.goalId) {
+      goal = goals.find((g) => g.id === cfg.goalId);
+      // goalId points to a deleted Goal — treat as no association
+    }
+
+    // Step 2: If no goalId, find by title+target — ONLY if exactly one matches
+    if (!goal) {
+      const matches = goals.filter((g) => g.title === cfg.title && g.target === cfg.target);
+      if (matches.length === 1) {
+        goal = matches[0];
+      } else if (matches.length > 1) {
+        ambiguous = true;
+      }
+    }
+
+    // Step 3: If no title+target match, find by goalType — ONLY if exactly one matches
+    if (!goal && !ambiguous) {
+      const matches = goals.filter((g) => g.type === cfg.goalType);
+      if (matches.length === 1) {
+        goal = matches[0];
+      } else if (matches.length > 1) {
+        ambiguous = true;
+      }
+    }
+
+    // No deterministic association found — do NOT modify any Goal
+    if (!goal) {
+      if (ambiguous) {
+        console.warn('[GOAL-ASSOC] Ambiguous: multiple Goals match overlay', {
+          instanceId: instance.id,
+          moduleId: instance.moduleId,
+          goalType: cfg.goalType,
+          title: cfg.title,
+          target: cfg.target,
+        });
+      }
+      return;
+    }
+
+    // ── Persist the association into the overlay config ──
+    if (cfg.goalId !== goal.id) {
+      updateConfig(instance.id, { ...instance.config, goalId: goal.id } as Record<string, unknown>);
+    }
+
+    // ── Normalize Goal type to 'likes' (goal-progress is always a Likes goal) ──
+    // Migrates legacy 'followers' or 'gifts' goals on first load
+    if (goal.type !== 'likes') {
+      goalStore.updateGoal(goal.id, { type: 'likes' });
+      goalStore.resetGoalCurrent(goal.id);
+      return; // resetGoalCurrent broadcasts current=0
+    }
+
+    // ── Sync behavioral settings from overlay config to Goal ──
     const updates: Record<string, unknown> = {};
     if (cfg.reachedBehavior && cfg.reachedBehavior !== goal.reachedBehavior) {
       updates.reachedBehavior = cfg.reachedBehavior;
@@ -141,18 +205,30 @@ export function CustomizePage() {
     if (cfg.target && typeof cfg.target === 'number' && cfg.target !== goal.target) {
       updates.target = cfg.target;
     }
+    // Sync color settings from overlay config to legacy Goal object
+    if (typeof cfg.barColor === 'string' && cfg.barColor !== goal.barColor) {
+      updates.barColor = cfg.barColor;
+    }
+    if (typeof cfg.gradientColor === 'string' && cfg.gradientColor !== goal.gradientColor) {
+      updates.gradientColor = cfg.gradientColor;
+    }
+    if (typeof cfg.textColor === 'string' && cfg.textColor !== goal.textColor) {
+      updates.textColor = cfg.textColor;
+    }
+    if (typeof cfg.backgroundColor === 'string' && cfg.backgroundColor !== goal.backgroundColor) {
+      updates.backgroundColor = cfg.backgroundColor;
+    }
     if (Object.keys(updates).length > 0) {
-      useGoalStore.getState().updateGoal(goal.id, updates);
+      goalStore.updateGoal(goal.id, updates);
     }
   }, [isGoalProgress, instance?.config]);
 
   // ── 11. Browser source URL ──
   const browserSourceUrl = useMemo(() => {
-    if (isGoalProgress) return `${getSSEBaseUrl()}/goals-widget.html`;
-    // New goal modules use instance-based URLs
+    // All goal modules (including Goal Likes) use instance-based URLs
     if (isGoalModule && instance) return getBrowserSourceUrl(instance.browserSourceId);
     return instance ? getBrowserSourceUrl(instance.browserSourceId) : '';
-  }, [isGoalProgress, isGoalModule, instance, mod?.id]);
+  }, [isGoalModule, instance, mod?.id]);
 
   const handleCopyUrl = () => {
     navigator.clipboard.writeText(browserSourceUrl);
@@ -290,7 +366,21 @@ export function CustomizePage() {
                 </div>
               </div>
               <div className={`relative rounded-xl border border-white/[0.08] bg-[#050505] overflow-hidden ${isGoalModule ? 'aspect-[9/16]' : 'aspect-video'}`} style={isGoalModule ? { containerType: 'inline-size' } : undefined}>
-                <Renderer key={instanceId} config={effectiveConfig} mode="preview" />
+                {console.log('[PREVIEW-RUNTIME-1]', JSON.stringify({
+    instanceId,
+    instanceModuleId: instance?.moduleId,
+    resolvedModuleId: mod?.id,
+    currentProfileId: currentProfileId,
+    effectiveConfig: {
+      textColor: effectiveConfig?.textColor,
+      barColor: effectiveConfig?.barColor,
+      gradientColor: effectiveConfig?.gradientColor,
+      backgroundColor: effectiveConfig?.backgroundColor,
+      title: effectiveConfig?.title,
+      goalType: effectiveConfig?.goalType
+    }
+  }, null, 2))}
+  <Renderer key={instanceId} config={effectiveConfig} mode="preview" />
               </div>
               {isGoalModule && (
                 <button

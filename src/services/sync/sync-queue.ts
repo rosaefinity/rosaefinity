@@ -65,13 +65,18 @@ class SyncQueue {
   }
 
   /** Get items ready for processing (not past max attempts, not waiting for retry) */
-  async getReadyItems(limit = 50): Promise<SyncQueueItem[]> {
+  async getReadyItems(limit = 50, userId?: string): Promise<SyncQueueItem[]> {
     const now = Date.now();
-    const items = await (db as any)[QUEUE_TABLE]
+    let items = await (db as any)[QUEUE_TABLE]
       .where('nextRetryAt')
       .belowOrEqual(now)
       .and((item: SyncQueueItem) => item.attempts < item.maxAttempts)
-      .toArray();
+      .toArray() as SyncQueueItem[];
+
+    // Filter by userId if provided — prevents cross-account processing
+    if (userId) {
+      items = items.filter((item: SyncQueueItem) => item.entity.userId === userId);
+    }
 
     // Sort by priority (high first), then by createdAt (oldest first)
     return items
@@ -144,12 +149,17 @@ class SyncQueue {
     return stats.total;
   }
 
-  /** Retry all failed items */
-  async retryAll(): Promise<number> {
-    const items = await (db as any)[QUEUE_TABLE]
+  /** Retry all failed items (optionally scoped to a userId) */
+  async retryAll(userId?: string): Promise<number> {
+    let items = await (db as any)[QUEUE_TABLE]
       .where('attempts')
       .above(0)
       .toArray() as SyncQueueItem[];
+
+    // Filter by userId if provided — only retry current user's items
+    if (userId) {
+      items = items.filter((item: SyncQueueItem) => item.entity.userId === userId);
+    }
 
     let count = 0;
     for (const item of items) {

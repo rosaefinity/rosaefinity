@@ -31,12 +31,14 @@ const CATEGORY_TABS: { value: MediaType; label: string; icon: typeof Image }[] =
 ];
 
 export function MediaLibraryPage() {
-  const { actions, customSounds } = useAppStore();
+  const { actions, customSounds, currentProfileId, getCurrentProfileCustomSounds } = useAppStore();
   const [activeCategory, setActiveCategory] = useState<MediaType>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+
+  const profileCustomSounds = getCurrentProfileCustomSounds();
 
   // Build media list from actions and sounds
   const mediaItems = useMemo<MediaItem[]>(() => {
@@ -83,8 +85,8 @@ export function MediaLibraryPage() {
       }
     }
 
-    // Collect media from custom sounds
-    for (const sound of customSounds) {
+    // Collect media from custom sounds (profile-specific)
+    for (const sound of profileCustomSounds) {
       if (sound.file) {
         items.push({
           id: sound.id,
@@ -98,7 +100,7 @@ export function MediaLibraryPage() {
     }
 
     return items;
-  }, [actions, customSounds]);
+  }, [actions, profileCustomSounds]);
 
   // Filter by category and search
   const filteredItems = useMemo(() => {

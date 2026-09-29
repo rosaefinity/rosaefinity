@@ -4,17 +4,86 @@
 // ─────────────────────────────────────────────────────
 
 import { OVERLAY_CATEGORIES } from './base/constants';
-import type { AnyOverlayModule, OverlayModule } from './types';
+import type { AnyOverlayModule, OverlayModule, FlatOverlayInput, LegacyOverlayInput, OverlayMetadata } from './types';
 
 /**
  * Validates an overlay module definition at registration time.
- * Returns the typed module if valid, throws if invalid.
+ * Supports both flat (Gen 2) and legacy nested (Gen 1) APIs.
+ * Returns the normalized OverlayModule if valid, throws if invalid.
  */
 export function defineOverlay<TConfig extends object>(
-  module: OverlayModule<TConfig>,
+  input: OverlayModule<TConfig> | FlatOverlayInput<TConfig> | LegacyOverlayInput<TConfig>,
 ): OverlayModule<TConfig> {
-  // ── Validate required fields ──
+  // ── Detect API generation ──
+  const isLegacy = !!(input as Record<string, unknown>).metadata?.id &&
+    typeof (input as Record<string, unknown>).validateConfig === 'function';
 
+  let module: OverlayModule<TConfig>;
+
+  if (isLegacy) {
+    // ── Legacy (Gen 1) nested API normalization ──
+    const legacy = input as LegacyOverlayInput<any>;
+    const meta = legacy.metadata;
+
+    // Normalize legacy fields to flat structure
+    module = {
+      id: meta.id,
+      name: meta.name,
+      description: meta.description,
+      category: meta.category,
+      icon: meta.icon,
+      tags: meta.tags,
+      supportsBrowserSource: meta.supportsBrowserSource,
+      supportsPreview: meta.supportsPreview,
+      version: typeof meta.version === 'string' ? (parseInt(meta.version, 10) || 1) : (meta.version ?? 1),
+      renderer: legacy.renderer,
+      settingsSchema: legacy.settingsSchema,
+      defaultConfig: legacy.defaultConfig,
+      configVersion: meta.configVersion,
+      // Function name aliases (same signatures)
+      validate: legacy.validateConfig,
+      sanitize: legacy.sanitizeConfig,
+      migrate: legacy.migrateConfig,
+      // Preserve ALL original metadata for Studio/Preview consumers
+      metadata: { ...meta } as OverlayMetadata,
+      // Lifecycle (not in legacy API, but keep optional)
+      onCreate: undefined,
+      onDestroy: undefined,
+      onEvent: undefined,
+    };
+  } else {
+    // ── Flat (Gen 2) API — normalize and ensure metadata ──
+    const flat = input as FlatOverlayInput<any> | OverlayModule<any>;
+    module = { ...flat } as OverlayModule<any>;
+
+    // Ensure metadata exists for Studio/Preview consumers
+    if (!module.metadata) {
+      module.metadata = {};
+    }
+
+    // Auto-populate metadata from flat properties for Studio consumers
+    const md = module.metadata!;
+    md.id = md.id ?? module.id;
+    md.name = md.name ?? module.name;
+    md.description = md.description ?? module.description;
+    md.category = md.category ?? module.category;
+    md.tags = md.tags ?? module.tags;
+    md.icon = md.icon ?? module.icon;
+    md.version = md.version ?? module.version;
+    md.configVersion = md.configVersion ?? module.configVersion;
+    md.supportsBrowserSource = md.supportsBrowserSource ?? module.supportsBrowserSource;
+    md.supportsPreview = md.supportsPreview ?? module.supportsPreview;
+    md.premium = md.premium ?? false;
+    md.beta = md.beta ?? false;
+    md.featured = md.featured ?? false;
+
+    // Ensure function properties exist
+    if (!module.validate) throw new Error('validate function missing');
+    if (!module.sanitize) throw new Error('sanitize function missing');
+    if (!module.migrate) throw new Error('migrate function missing');
+  }
+
+  // ── Run existing validation AFTER normalization ──
   if (!module.id || typeof module.id !== 'string') {
     throw new Error(`[defineOverlay] Overlay must have a string "id". Got: ${String(module.id)}`);
   }
@@ -45,9 +114,6 @@ export function defineOverlay<TConfig extends object>(
   }
 
   // ── Validate components ──
-  // React.memo() returns an object with $$typeof === Symbol(react.memo), not a function
-  // React.lazy() returns an object with $$typeof === Symbol(react.lazy)
-  // Accept function components, class components, React.memo, React.lazy, and forwardRef
   const isValidRenderer = module.renderer &&
     (typeof module.renderer === 'function' ||
       (typeof module.renderer === 'object' &&
@@ -84,7 +150,7 @@ export function defineOverlay<TConfig extends object>(
     console.debug(`[defineOverlay] Registered: ${module.id} v${module.version} (${module.category})`);
   }
 
-  return module as OverlayModule<TConfig>;
+  return module as OverlayModule<any>;
 }
 
 /**

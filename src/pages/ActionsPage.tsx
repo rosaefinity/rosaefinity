@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { useLicenseStore } from "../store/license-store";
+import { cn } from "../lib/utils";
 import { UpgradeDialog } from "../components/UpgradeDialog";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -10,7 +11,7 @@ import { showTestNotification } from "../components/TestNotification";
 import { toast } from "../components/Toast";
 import { getGifts, getGiftsSync, getGiftEmoji, getGiftImageUrl, type TikTokGift } from "../services/gift-service";
 import { sendToOverlay } from "../lib/overlay-bus";
-import { saveActionMedia, deleteActionMedia } from "../lib/db";
+import { saveActionMedia, deleteActionMedia, getAllSounds } from "../lib/db";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
 import { normalizeScreenWithTrace as normalizeScreen } from "../lib/screen-normalizer";
 import { executeAction } from "../store/event-dispatch";
@@ -18,8 +19,9 @@ import {
   Plus, Search, Play, Edit, Trash2, X, Copy, CheckCircle2,
   Music, Video, Image, Keyboard, Monitor, Gift, Heart, Bell,
   MessageSquare, Share2, UserPlus, Star, Zap, Globe,
-  AlertTriangle, Volume2, Lock, ArrowRight, Sparkles
+  AlertTriangle, Volume2, VolumeX, Lock, ArrowRight, Sparkles, Library
 } from "lucide-react";
+import { getBuiltInSoundCatalog, getBuiltInSoundDataUrl, type BuiltInSound } from "../lib/builtin-sounds";
 
 // ── SPECIAL KEYS & MODIFIERS (sama persis kaya Electron) ──────
 const SPECIAL_KEYS = [
@@ -63,10 +65,246 @@ const WHO_TRIGGERS = [
   { value: "specificuser", label: "👤 A specific user" },
 ];
 
+// ── SOUND LIBRARY CATEGORIES ────────────────────
+const SOUND_LIBRARY_CATEGORIES = [
+  { id: 'all', label: 'All' },
+  { id: 'memes', label: 'Memes' },
+  { id: 'gaming', label: 'Gaming' },
+  { id: 'reactions', label: 'Reactions' },
+  { id: 'effects', label: 'Effects' },
+  { id: 'notifications', label: 'Notifications' },
+] as const;
+
+// ── SOUND LIBRARY MODAL ──────────────────────────
+function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose: () => void; onSelect: (file: string, name: string) => void }) {
+  const { customSounds, currentProfileId, getCurrentProfileCustomSounds } = useAppStore();
+  const [dbSounds, setDbSounds] = useState<Array<{ id: string; name: string; file: string | null; fileName?: string; profileId?: string }>>([]);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState('all');
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const audioRef = useState<{ current: HTMLAudioElement | null }>({ current: null })[0];
+  const builtInUrlsRef = useRef<Map<string, string>>(new Map());
+
+  const profileCustomSounds = getCurrentProfileCustomSounds();
+
+  useEffect(() => {
+    if (!open) return;
+    const load = async () => {
+      if (!currentProfileId) return;
+      try {
+        const { getSoundsByProfile } = await import('../lib/db');
+        const fromDb = await getSoundsByProfile(currentProfileId);
+        setDbSounds(fromDb);
+      } catch { setDbSounds([]); }
+    };
+    load();
+    setSearch('');
+    setActiveCategory('all');
+    setPlayingId(null);
+    // Pre-cache all built-in sounds for synchronous lookup (ref, not state — avoids stale closure)
+    builtInUrlsRef.current = new Map();
+    const catalog = getBuiltInSoundCatalog();
+    for (const s of catalog) {
+      getBuiltInSoundDataUrl(s.id).then((url) => {
+        if (url) builtInUrlsRef.current.set(s.id, url);
+      });
+    }
+    // Native DOM mousedown listener as fallback for programmatic clicks
+    // CDP Input.dispatchMouseEvent fires mousedown/mouseup but NOT click inside Framer Motion
+    const nativeHandler = (e: Event) => {
+      const target = e.target as HTMLElement;
+      if (!target) return;
+      // Check if click target is the Use Sound button or inside it
+      const btn = target.closest('button');
+      if (!btn || btn.textContent.trim() !== 'Use Sound') return;
+      // Find the matching sound
+      const item = btn.closest('[class*="rounded-xl"]');
+      if (!item) return;
+      const nameEl = item.querySelector('p');
+      const name = nameEl ? nameEl.textContent.trim() : '';
+      if (!name) return;
+      const match = mergedSounds.find((s) => s.name === name);
+      if (match) {
+        const file = match.file || builtInUrlsRef.current.get(match.id) || null;
+        if (!file) return;
+        e.preventDefault();
+        e.stopPropagation();
+        audioRef.current?.pause();
+        audioRef.current = null;
+        setPlayingId(null);
+        onSelect(file, match.name);
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', nativeHandler, true);
+    return () => {
+      document.removeEventListener('mousedown', nativeHandler, true);
+      audioRef.current?.pause();
+      audioRef.current = null;
+    };
+  }, [open, currentProfileId]);
+
+  // Merge: built-in sounds first, then custom + Dexie sounds (profile-specific)
+  const mergedSounds = useMemo(() => {
+    const catalog = getBuiltInSoundCatalog();
+    const builtIn = catalog.map((s) => ({
+      ...s,
+      file: null as string | null,
+      fileName: 'Built-in sound',
+      isBuiltIn: true,
+    }));
+    const user: Array<{ id: string; name: string; file: string | null; fileName?: string; category?: string; tags?: string[]; isBuiltIn?: boolean }> = [...profileCustomSounds];
+    for (const ds of dbSounds) {
+      if (!user.find(s => s.id === ds.id)) user.push(ds as any);
+    }
+    return [...builtIn, ...user];
+  }, [profileCustomSounds, dbSounds]);
+
+  // Show built-in sounds always (even without file), plus user sounds with files
+  const soundsWithFiles = useMemo(
+    () => mergedSounds.filter((s) => s.isBuiltIn || s.file),
+    [mergedSounds],
+  );
+
+  // Search and category filter
+  const filtered = useMemo(() => {
+    return soundsWithFiles.filter((s) => {
+      const q = search.toLowerCase();
+      const matchesSearch =
+        !search ||
+        s.name.toLowerCase().includes(q) ||
+        (s.category && s.category.toLowerCase().includes(q)) ||
+        (s.tags && s.tags.some((t: string) => t.toLowerCase().includes(q)));
+      const matchesCategory = activeCategory === 'all' || s.category === activeCategory;
+      return matchesSearch && matchesCategory;
+    });
+  }, [soundsWithFiles, search, activeCategory]);
+
+  // Resolve a sound's dataURL (built-in sounds generate on demand)
+  const resolveFile = async (sound: { id: string; file: string | null; isBuiltIn?: boolean }): Promise<string | null> => {
+    if (sound.file) return sound.file;
+    if (sound.isBuiltIn) return getBuiltInSoundDataUrl(sound.id);
+    return null;
+  };
+
+  const previewSound = async (sound: { id: string; file: string | null; isBuiltIn?: boolean }) => {
+    if (playingId === sound.id) {
+      audioRef.current?.pause();
+      audioRef.current = null;
+      setPlayingId(null);
+      return;
+    }
+    const file = await resolveFile(sound);
+    if (!file) return;
+    audioRef.current?.pause();
+    const audio = new Audio(file);
+    audio.volume = 0.6;
+    audio.onended = () => setPlayingId(null);
+    audioRef.current = audio;
+    setPlayingId(sound.id);
+    audio.play().catch(() => setPlayingId(null));
+  };
+
+  const handleSelect = (sound: { id: string; name: string; file: string | null; isBuiltIn?: boolean }) => {
+    // Resolve synchronously: check user file first, then pre-cached built-in (ref, always fresh)
+    const file = sound.file || builtInUrlsRef.current.get(sound.id) || null;
+    if (!file) return;
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlayingId(null);
+    onSelect(file, sound.name);
+    onClose();
+  };
+
+  if (!open) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }} transition={{ duration: 0.2 }}
+          className="bg-card border border-white/[0.08] rounded-2xl w-full max-w-lg max-h-[80vh] flex flex-col shadow-2xl">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
+            <div className="flex items-center gap-2">
+              <Library className="w-5 h-5 text-primary" />
+              <h3 className="text-base font-semibold text-white">Sound Library</h3>
+            </div>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/[0.06] text-white/50 hover:text-white transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          {/* Search */}
+          <div className="px-5 py-3 border-b border-white/[0.06]">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+              <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search sounds..."
+                className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-primary/50" />
+            </div>
+          </div>
+          {/* Categories */}
+          <div className="px-5 py-2.5 border-b border-white/[0.06] flex gap-1.5 overflow-x-auto">
+            {SOUND_LIBRARY_CATEGORIES.map((cat) => (
+              <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
+                className={`px-3 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                  activeCategory === cat.id
+                    ? 'bg-primary/20 text-primary'
+                    : 'bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/70'
+                }`}>
+                {cat.label}
+              </button>
+            ))}
+          </div>
+          {/* Sound list */}
+          <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
+            {filtered.length === 0 && (
+              <div className="text-center py-10">
+                <Music className="w-10 h-10 text-white/15 mx-auto mb-3" />
+                <p className="text-sm text-white/40 mb-1">
+                  {soundsWithFiles.length === 0
+                    ? 'No sounds in your library yet'
+                    : 'No sounds match your search'}
+                </p>
+                <p className="text-xs text-white/25">
+                  {soundsWithFiles.length === 0
+                    ? 'Built-in sounds are loading — try again in a moment'
+                    : 'Try a different search term'}
+                </p>
+              </div>
+            )}
+            {filtered.map((sound) => (
+              <div key={sound.id}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.05] transition-all group">
+                <button onClick={() => previewSound(sound)}
+                  className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-primary/20 text-white/50 hover:text-primary transition-colors flex-shrink-0">
+                  {playingId === sound.id ? <VolumeX className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white truncate">{sound.name}</p>
+                  <p className="text-[10px] text-white/30">
+                    {sound.isBuiltIn ? sound.category : (sound.fileName || 'Custom sound')}
+                  </p>
+                </div>
+                <button onPointerDown={() => handleSelect(sound)}
+                  className="px-3 py-1.5 rounded-lg bg-primary/20 text-primary text-xs font-medium hover:bg-primary/30 transition-colors flex-shrink-0 cursor-pointer">
+                  Use Sound
+                </button>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 // ── MEDIA TOGGLE SUB-COMPONENT ─────────────────
 function MediaToggle({ icon: Icon, label, color, formKey, form, setForm, children }: any) {
   return (
-    <div className="border border-white/[0.06] rounded-xl p-3 space-y-2">
+    <div className="border border-white/[0.06] rounded-xl p-3 space-y-2 overflow-hidden">
       <label className="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={form[formKey]} onChange={e => setForm({...form, [formKey]: e.target.checked})}
           className="w-4 h-4 rounded border-white/20 bg-white/[0.04] accent-primary" />
@@ -74,6 +312,141 @@ function MediaToggle({ icon: Icon, label, color, formKey, form, setForm, childre
         <span className="text-sm text-white/80">{label}</span>
       </label>
       {form[formKey] && <div className="ml-6">{children}</div>}
+    </div>
+  );
+}
+
+// ── GIFT CARD ──────────────────────────────────
+
+// ── OBS SCENE SELECTOR ──────────────────────
+function OBSSceneSelector({ value, onChange }: { value: string; onChange: (sceneName: string) => void }) {
+  const [scenes, setScenes] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [obsConnected, setObsConnected] = useState(false);
+
+  useEffect(() => {
+    const a = (window as any).electronAPI;
+    if (!a?.obsStatus || !a?.obsGetScenes) return;
+    setLoading(true);
+    Promise.all([
+      a.obsStatus().catch(() => ({ connected: false })),
+      a.obsGetScenes().catch(() => ({ scenes: [] })),
+    ]).then(([status, sceneData]) => {
+      setObsConnected(status?.connected ?? false);
+      setScenes(sceneData?.scenes?.map((s: any) => s.name) ?? []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <div className="text-[10px] text-white/30 py-1">Loading OBS scenes...</div>;
+  }
+
+  if (!obsConnected) {
+    return (
+      <div className="text-[10px] text-yellow-400/70 py-1">
+        OBS not connected. Configure OBS in Settings first.
+      </div>
+    );
+  }
+
+  if (scenes.length === 0) {
+    return (
+      <div className="text-[10px] text-white/30 py-1">
+        No scenes found. Check OBS connection.
+      </div>
+    );
+  }
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
+    >
+      <option value="">Select a scene...</option>
+      {scenes.map((scene) => (
+        <option key={scene} value={scene}>{scene}</option>
+      ))}
+    </select>
+  );
+}
+
+// ── SPOTIFY TRACK SELECTOR ──────────────────────
+function SpotifyTrackSelector({ value, trackName, onChange }: { value: string; trackName: string; onChange: (uri: string, name: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Array<{ uri: string; name: string; artist: string; albumArt?: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [spotifyAuthed, setSpotifyAuthed] = useState(true);
+
+  useEffect(() => {
+    const a = (window as any).electronAPI;
+    if (a?.spotifyStatus) {
+      a.spotifyStatus().then((s: any) => setSpotifyAuthed(s?.authenticated ?? false)).catch(() => setSpotifyAuthed(false));
+    }
+  }, []);
+
+  const handleSearch = async () => {
+    if (!query.trim()) return;
+    const a = (window as any).electronAPI;
+    if (!a?.spotifySearch) return;
+    setLoading(true);
+    try {
+      const result = await a.spotifySearch({ query: query.trim(), limit: 8 });
+      setResults((result?.tracks ?? []).map((t: any) => ({
+        uri: t.uri,
+        name: t.name,
+        artist: t.artists?.map((a: any) => a.name).join(", ") || "",
+        albumArt: t.album?.images?.[0]?.url,
+      })));
+    } catch { setResults([]); }
+    setLoading(false);
+  };
+
+  if (!spotifyAuthed) {
+    return <div className="text-[10px] text-yellow-400/70 py-1">Spotify not authenticated. Connect in Settings first.</div>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {trackName && value ? (
+        <div className="flex items-center gap-2 p-2 rounded-lg bg-white/[0.04] border border-white/[0.08]">
+          <Music className="w-4 h-4 text-green-400 shrink-0" />
+          <span className="text-xs text-white/80 truncate flex-1">{trackName}</span>
+          <button onClick={() => onChange("", "")} className="text-[10px] text-white/30 hover:text-white/60">Change</button>
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <input type="text" placeholder="Search tracks..."
+              value={query} onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              className="flex-1 h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/20 outline-none focus:border-primary/40" />
+            <button onClick={handleSearch} disabled={loading}
+              className="h-9 px-3 rounded-xl bg-green-500/20 text-green-400 text-xs font-medium hover:bg-green-500/30 transition-colors disabled:opacity-50">
+              {loading ? "..." : "Search"}
+            </button>
+          </div>
+          {results.length > 0 && (
+            <div className="max-h-40 overflow-y-auto space-y-1">
+              {results.map((track) => (
+                <button key={track.uri} onClick={() => onChange(track.uri, `${track.name} — ${track.artist}`)}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors text-left">
+                  {track.albumArt ? (
+                    <img src={track.albumArt} alt="" className="w-8 h-8 rounded object-cover" />
+                  ) : (
+                    <Music className="w-8 h-8 text-white/20" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-white/80 truncate">{track.name}</div>
+                    <div className="text-[10px] text-white/40 truncate">{track.artist}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -136,6 +509,7 @@ export function ActionsPage() {
   const [showActionModal, setShowActionModal] = useState(false);
   const [editingAction, setEditingAction] = useState<any>(null);
   const [actionForm, setActionForm] = useState<any>(getDefaultActionForm());
+  const [showSoundLibrary, setShowSoundLibrary] = useState(false);
 
   // Event Modal
   const [showEventModal, setShowEventModal] = useState(false);
@@ -160,6 +534,17 @@ export function ActionsPage() {
   const isUnlimited = maxActions === null || plan === 'pro';
   const canCreate = isUnlimited || actions.length < maxActions;
 
+  // [FORENSIC-ACTIONS-PAGE] Actions page render diagnostics
+  console.log('[FORENSIC-ACTIONS-PAGE]', JSON.stringify({
+    storeActionCount: actions.length,
+    storeActionIds: actions.map((a: Action) => a.id),
+    filteredActionCount: filteredActions.length,
+    filteredActionIds: filteredActions.map((a: Action) => a.id),
+    maxActions,
+    isUnlimited,
+    canCreate,
+  }));
+
   // Upgrade dialog state
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const navigate = useNavigate();
@@ -181,6 +566,9 @@ export function ActionsPage() {
       keystrokeDuration: 5, keystrokeOpacity: 100, keystrokeScale: 100, keystrokeAnimation: "fade",
       minecraft: false, minecraftCommand: "",
       minecraftQueue: false, minecraftCooldown: 0, minecraftDelay: 0, minecraftRandom: false,
+      obs: false, obsAction: "switchScene", obsSceneName: "",
+      streamerbot: false, sbActionName: "",
+      spotify: false, spotifyAction: "addToQueue", spotifyTrackUri: "", spotifyTrackName: "",
       screen: "Screen 1", duration: 20,
       displayDuration: 20, mediaVolume: 80, overlayScreen: "Screen 1",
       globalCooldown: 0, userCooldown: 0,
@@ -192,6 +580,7 @@ export function ActionsPage() {
   function getDefaultEventForm() {
     return {
       triggerType: "gift", whoTrigger: "any", actionName: "",
+      actionNames: [], actionMode: "single",
       specificUser: "", giftName: "", minCoins: 1, minLikes: 100,
       keyword: "", enabled: true,
     };
@@ -219,8 +608,8 @@ export function ActionsPage() {
 
   function saveAction(e: React.FormEvent) {
     e.preventDefault();
-    const hasMedia = actionForm.sound || actionForm.video || actionForm.image || actionForm.keystroke || actionForm.minecraft;
-    if (!hasMedia) { toast("Select at least one media type: Sound, Video, Image, Keystroke, or Minecraft"); return; }
+    const hasMedia = actionForm.sound || actionForm.video || actionForm.image || actionForm.keystroke || actionForm.minecraft || actionForm.obs || actionForm.spotify;
+    if (!hasMedia) { toast("Select at least one action type: Sound, Video, Image, Keystroke, Minecraft, OBS, or Spotify"); return; }
     if (!actionForm.name.trim()) { toast("Enter an action name"); return; }
 
     // keystrokeBuffer is already in sync with actionForm.keystrokeKeys via handleKeystrokeInputChange
@@ -267,7 +656,12 @@ export function ActionsPage() {
   }
 
   function openEditEvent(ev: any) {
-    setEventForm({ ...ev });
+    const hasRandomActions = ev.actionNames && ev.actionNames.length > 1;
+    setEventForm({
+      ...ev,
+      actionNames: ev.actionNames || (ev.actionName ? [ev.actionName] : []),
+      actionMode: hasRandomActions ? "random" : "single",
+    });
     setSelectedGift(ev.giftName || "");
     setEditingEvent(ev);
     setShowEventModal(true);
@@ -277,8 +671,32 @@ export function ActionsPage() {
     e.preventDefault();
     e.stopPropagation();
     try {
-      if (!eventForm.actionName) { toast("Select an action to trigger"); return; }
-      const payload = { ...eventForm };
+      const isRandomMode = eventForm.actionMode === "random";
+
+      if (isRandomMode) {
+        const selectedActions = eventForm.actionNames || [];
+        if (selectedActions.length === 0) {
+          toast("Select at least one action");
+          return;
+        }
+        if (selectedActions.length > 8) {
+          toast("Maximum 8 random actions allowed");
+          return;
+        }
+      } else {
+        if (!eventForm.actionName) {
+          toast("Select an action to trigger");
+          return;
+        }
+      }
+
+      const selectedActions = eventForm.actionNames || [];
+      const payload = {
+        ...eventForm,
+        actionNames: isRandomMode ? selectedActions : [],
+        actionName: isRandomMode ? (selectedActions[0] || "") : eventForm.actionName,
+      };
+
       if (editingEvent) {
         updateEvent(editingEvent.id, payload);
       } else {
@@ -365,9 +783,9 @@ export function ActionsPage() {
       timestamp: Date.now(),
     };
 
-    // Use the same executeAction path as TikTok events
-    // This ensures Repeat Combo queue is respected
-    executeAction(action, testEventData);
+    // Use the same executeAction path as TikTok events, but bypass the queue
+    // so repeated test clicks play immediately instead of waiting for the previous test
+    executeAction(action, testEventData, { bypassQueue: true });
 
     // Show test notification (NOT during live TikTok events)
     const effects: string[] = [];
@@ -406,6 +824,13 @@ export function ActionsPage() {
         reason="action_limit"
         currentUsage={actions.length}
         limit={maxActions}
+      />
+
+      {/* ══ SOUND LIBRARY MODAL ═══════════════════ */}
+      <SoundLibraryModal
+        open={showSoundLibrary}
+        onClose={() => setShowSoundLibrary(false)}
+        onSelect={(file, name) => setActionForm({ ...actionForm, soundFile: file, soundFileName: name })}
       />
 
       {/* ── HEADER ─────────────────────────────── */}
@@ -677,21 +1102,33 @@ export function ActionsPage() {
                     setForm={setActionForm}
                   >
                     <div className="space-y-3">
-                      <div>
+                      <div className="min-w-0">
                         <label className="block text-xs text-white/50 mb-1.5">Audio File (MP3, WAV, OGG)</label>
-                        <input
-                          type="file"
-                          accept="audio/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const reader = new FileReader();
-                              reader.onload = () => setActionForm({...actionForm, soundFile: reader.result as string, soundFileName: file.name});
-                              reader.readAsDataURL(file);
-                            }
-                          }}
-                          className="w-full text-xs text-white/40 file:mr-4 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-primary/20 file:text-primary hover:file:bg-primary/30"
-                        />
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex-1 min-w-0 overflow-hidden">
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const reader = new FileReader();
+                                  reader.onload = () => setActionForm({...actionForm, soundFile: reader.result as string, soundFileName: file.name});
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                              className="w-full text-xs text-white/40 file:mr-4 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-primary/20 file:text-primary hover:file:bg-primary/30"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowSoundLibrary(true)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary/20 text-primary text-xs font-medium hover:bg-primary/30 transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <Library className="w-3.5 h-3.5" />
+                            Sound Library
+                          </button>
+                        </div>
                         {actionForm.soundFileName && <p className="text-xs text-white/40 mt-1">{actionForm.soundFileName}</p>}
                       </div>
                       <div>
@@ -969,6 +1406,75 @@ export function ActionsPage() {
                       </div>
                     </div>
                   </MediaToggle>
+
+                  <MediaToggle
+                    icon={Monitor}
+                    label="OBS"
+                    color="text-blue"
+                    formKey="obs"
+                    form={actionForm}
+                    setForm={setActionForm}
+                  >
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1.5">Scene</label>
+                        <OBSSceneSelector
+                          value={actionForm.obsSceneName}
+                          onChange={(sceneName) => setActionForm({...actionForm, obsSceneName: sceneName})}
+                        />
+                      </div>
+                    </div>
+                  </MediaToggle>
+
+                  <MediaToggle
+                    icon={Zap}
+                    label="Streamer.bot"
+                    color="text-purple"
+                    formKey="streamerbot"
+                    form={actionForm}
+                    setForm={setActionForm}
+                  >
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1.5">Action Name</label>
+                        <input type="text" placeholder="Enter Streamer.bot action name"
+                          value={actionForm.sbActionName || ""}
+                          onChange={(e) => setActionForm({...actionForm, sbActionName: e.target.value})}
+                          className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/20 outline-none focus:border-primary/40 font-mono" />
+                        <p className="text-[10px] text-white/30 mt-1">Must match the action name configured in Streamer.bot</p>
+                      </div>
+                    </div>
+                  </MediaToggle>
+
+                  <MediaToggle
+                    icon={Music}
+                    label="Spotify"
+                    color="text-green-400"
+                    formKey="spotify"
+                    form={actionForm}
+                    setForm={setActionForm}
+                  >
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-white/50 mb-1.5">Operation</label>
+                        <select
+                          value={actionForm.spotifyAction || "addToQueue"}
+                          onChange={(e) => setActionForm({...actionForm, spotifyAction: e.target.value, spotifyTrackUri: "", spotifyTrackName: ""})}
+                          className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
+                        >
+                          <option value="addToQueue">Add Track to Queue</option>
+                          <option value="skip">Skip Current Track</option>
+                        </select>
+                      </div>
+                      {actionForm.spotifyAction === "addToQueue" && (
+                        <SpotifyTrackSelector
+                          value={actionForm.spotifyTrackUri || ""}
+                          trackName={actionForm.spotifyTrackName || ""}
+                          onChange={(uri, name) => setActionForm({...actionForm, spotifyTrackUri: uri, spotifyTrackName: name})}
+                        />
+                      )}
+                    </div>
+                  </MediaToggle>
                 </div>
 
                 {/* ── ADVANCED SETTINGS ── */}
@@ -1130,15 +1636,106 @@ export function ActionsPage() {
                           </div>
                         )}
 
-                        {/* Action Select */}
+                        {/* Action Mode Toggle */}
                         <div>
-                          <label className="text-sm font-semibold text-white block mb-2">⚡ Trigger this action:</label>
-                          <select value={eventForm.actionName} onChange={e => setEventForm({...eventForm, actionName: e.target.value})}
-                            className="w-full h-11 px-4 rounded-xl bg-[#1e1e2a] border border-white/[0.12] text-sm text-white outline-none focus:border-primary/40 transition-all appearance-none cursor-pointer" required>
-                            <option value="" className="bg-[#1e1e2a] text-white/50 py-2">-- Select Action --</option>
-                            {actions.map(a => <option key={a.id} value={a.name} className="bg-[#1e1e2a] text-white py-2">{!a.enabled ? "[DISABLED] " : ""}{a.name}</option>)}
-                          </select>
+                          <label className="text-xs font-semibold text-white/50 uppercase tracking-wider block mb-2">Action Mode</label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEventForm({...eventForm, actionMode: "single", actionNames: []})}
+                              className={cn(
+                                "px-3 py-2 rounded-xl text-sm font-medium transition-all",
+                                eventForm.actionMode === "single"
+                                  ? "bg-primary/20 border border-primary/30 text-primary-light"
+                                  : "bg-white/[0.04] border border-white/[0.08] text-white/70 hover:bg-white/[0.08]"
+                              )}
+                            >
+                              ⚡ Trigger this action
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEventForm({...eventForm, actionMode: "random", actionName: ""})}
+                              className={cn(
+                                "px-3 py-2 rounded-xl text-sm font-medium transition-all",
+                                eventForm.actionMode === "random"
+                                  ? "bg-primary/20 border border-primary/30 text-primary-light"
+                                  : "bg-white/[0.04] border border-white/[0.08] text-white/70 hover:bg-white/[0.08]"
+                              )}
+                            >
+                              🎲 Random action
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Single Action Select */}
+                        {eventForm.actionMode === "single" && (
+                          <div>
+                            <label className="text-sm font-semibold text-white block mb-2">⚡ Trigger this action:</label>
+                            <select value={eventForm.actionName} onChange={e => setEventForm({...eventForm, actionName: e.target.value})}
+                              className="w-full h-11 px-4 rounded-xl bg-[#1e1e2a] border border-white/[0.12] text-sm text-white outline-none focus:border-primary/40 transition-all appearance-none cursor-pointer" required>
+                              <option value="" className="bg-[#1e1e2a] text-white/50 py-2">-- Select Action --</option>
+                              {actions.map(a => <option key={a.id} value={a.name} className="bg-[#1e1e2a] text-white py-2">{!a.enabled ? "[DISABLED] " : ""}{a.name}</option>)}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Random Action Multi-Select */}
+                        {eventForm.actionMode === "random" && (
+                          <div>
+                            <label className="text-sm font-semibold text-white block mb-2">
+                              🎲 Trigger one of these actions (random) *
+                              <span className="text-white/30 ml-2 text-xs font-normal">(1-8 actions)</span>
+                            </label>
+                            <div className="max-h-48 overflow-y-auto border border-white/[0.08] rounded-xl bg-white/[0.02] p-2 space-y-1">
+                              {actions.length === 0 ? (
+                                <p className="text-xs text-white/30 text-center py-2">No actions available</p>
+                              ) : (
+                                actions.map(a => {
+                                  const isSelected = (eventForm.actionNames || []).includes(a.name);
+                                  return (
+                                    <label
+                                      key={a.id}
+                                      className={cn(
+                                        "flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all",
+                                        isSelected ? "bg-primary/20 border border-primary/30" : "hover:bg-white/[0.04]",
+                                        !a.enabled && "opacity-50"
+                                      )}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        disabled={!a.enabled}
+                                        onChange={(e) => {
+                                          const currentNames = eventForm.actionNames || [];
+                                          let newNames;
+                                          if (e.target.checked) {
+                                            if (currentNames.length >= 8) {
+                                              toast("Maximum 8 random actions allowed");
+                                              return;
+                                            }
+                                            newNames = [...currentNames, a.name];
+                                          } else {
+                                            newNames = currentNames.filter((n: string) => n !== a.name);
+                                          }
+                                          setEventForm({...eventForm, actionNames: newNames});
+                                        }}
+                                        className="w-4 h-4 rounded border-white/20 bg-white/[0.04] accent-primary"
+                                      />
+                                      <span className="text-sm text-white/70">
+                                        {!a.enabled && "[DISABLED] "}{a.name}
+                                      </span>
+                                    </label>
+                                  );
+                                })
+                              )}
+                            </div>
+                            {(eventForm.actionNames || []).length > 0 && (
+                              <p className="text-xs text-white/40 mt-2">
+                                Selected: {(eventForm.actionNames || []).length}/8
+                              </p>
+                            )}
+                          </div>
+                        )}
 
                         {/* Enabled */}
                         <div className="flex items-center justify-between pt-2 border-t border-white/[0.06]">

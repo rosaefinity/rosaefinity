@@ -54,9 +54,9 @@ async function getSubscription(env: Env, userId: string) {
   const features = isPro && license?.plan
     ? {
         maxActions: null as number | null,
-        maxScenes: license.plan.maxScreens || 10,
-        maxOverlayPresets: license.plan.maxOverlays || 50,
-        maxDevices: license.plan.maxDevices || 5,
+        maxScenes: license.plan.maxScreens ?? 10,
+        maxOverlayPresets: license.plan.maxOverlays ?? 50,
+        maxDevices: license.plan.maxDevices ?? 5,
         actionsUnlimited: true,
         multiScreen: true,
         premiumOverlay: true,
@@ -65,7 +65,7 @@ async function getSubscription(env: Env, userId: string) {
     : {
         maxActions: 5,
         maxScenes: 1,
-        maxOverlayPresets: 10,
+        maxOverlayPresets: 2,
         maxDevices: 1,
         actionsUnlimited: false,
         multiScreen: false,

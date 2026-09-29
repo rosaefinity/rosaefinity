@@ -6,11 +6,15 @@ import { getPrisma } from '../../../database/client.js';
 const prisma = getPrisma();
 
 export const syncRepository = {
-  async upsert(userId: string, entityType: string, entityId: string, data: any, version: number, checksum: string) {
+  async upsert(userId: string, entityType: string, entityId: string, data: any, version: number, checksum: string, operation = 'upsert') {
+    // If operation is 'delete', create/update a tombstone instead of storing data
+    if (operation === 'delete') {
+      return this.delete(userId, entityType, entityId);
+    }
     return prisma.syncRecord.upsert({
       where: { userId_entityType_entityId: { userId, entityType, entityId } },
-      update: { data, version, checksum, serverVersion: { increment: 1 } },
-      create: { userId, entityType, entityId, data, version, checksum, serverVersion: 1 },
+      update: { data, version, checksum, operation, serverVersion: { increment: 1 }, isDeleted: false },
+      create: { userId, entityType, entityId, data, version, checksum, operation, serverVersion: 1, isDeleted: false },
     });
   },
 
@@ -34,8 +38,25 @@ export const syncRepository = {
   },
 
   async delete(userId: string, entityType: string, entityId: string) {
-    return prisma.syncRecord.deleteMany({
-      where: { userId, entityType, entityId },
+    // Soft-delete: mark as tombstone instead of hard-deleting
+    // This allows other devices to discover the deletion via incremental pull
+    return prisma.syncRecord.upsert({
+      where: { userId_entityType_entityId: { userId, entityType, entityId } },
+      update: {
+        isDeleted: true,
+        operation: 'delete',
+        data: {},
+        serverVersion: { increment: 1 },
+      },
+      create: {
+        userId, entityType, entityId,
+        data: {},
+        operation: 'delete',
+        isDeleted: true,
+        version: 1,
+        checksum: '',
+        serverVersion: 1,
+      },
     });
   },
 

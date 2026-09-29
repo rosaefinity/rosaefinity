@@ -236,6 +236,7 @@ export const adminService = {
           licenseKey,
           email: user.email ?? undefined,
           expiresAt,
+          status: 'active',
         },
         include: { plan: true },
       });

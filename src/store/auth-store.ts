@@ -382,6 +382,104 @@ export const useAuthStore = create<AuthState>()(
         } catch {
           // Ignore logout errors
         } finally {
+          // Stop TTS for account isolation
+          try {
+            const { stopTTS } = await import('../services/tts');
+            stopTTS();
+            console.log('[LOGOUT] TTS stopped for account isolation');
+          } catch (err) {
+            console.error('[LOGOUT] Failed to stop TTS:', err);
+          }
+
+          // Capture userId BEFORE clearing auth state
+          const loggedOutUserId = get().currentUser?.id;
+
+          // ── Stop SyncEngine — prevents stale account sync from running ──
+          try {
+            const { resetSyncEngine } = await import('../services/sync/sync-engine');
+            resetSyncEngine();
+            console.log('[LOGOUT] SyncEngine reset for account isolation');
+          } catch (err) {
+            console.error('[LOGOUT] Failed to reset SyncEngine:', err);
+          }
+
+          // ── Clear Electron overlay runtime map ──
+          try {
+            const electronApi = api();
+            if (electronApi?.syncOverlayInstances) {
+              electronApi.syncOverlayInstances([]);
+              console.log('[LOGOUT] Cleared Electron overlay map for account isolation');
+            }
+          } catch (err) {
+            console.error('[LOGOUT] Failed to clear Electron overlay map:', err);
+          }
+
+          // ── Clear account-specific overlay/goal runtime localStorage ──
+          try {
+            const overlayKeys = [
+              'rf_overlay_test',
+              'rf_overlay_test_time',
+              'rf_overlay_aspectRatio',
+              'rf-goal-config',
+              'rf-goals-runtime',
+              'rf-coin-jar',
+              'rf-overlay-favorites',
+              'rf-overlay-active',
+            ];
+            for (const key of overlayKeys) {
+              localStorage.removeItem(key);
+            }
+            console.log('[LOGOUT] Cleared overlay/goal runtime localStorage for account isolation');
+          } catch (err) {
+            console.error('[LOGOUT] Failed to clear overlay localStorage:', err);
+          }
+
+          // Clear local Dexie custom sounds to prevent cross-account leakage
+          // Account B must never hydrate Account A's sounds
+          try {
+            const { db } = await import('../lib/db');
+            await db.sounds.clear();
+            console.log('[LOGOUT] Cleared Dexie sounds table for account isolation');
+          } catch (err) {
+            console.error('[LOGOUT] FAILED to clear Dexie sounds table:', err);
+            // Log but do NOT block logout — authentication state must still be cleared
+          }
+
+          // Clear Electron points-system data (points-users.json) for account isolation
+          // Account B must never hydrate Account A's points
+          try {
+            const a = api();
+            if (a?.clearAllPoints) {
+              const result = await a.clearAllPoints();
+              if (result?.success) {
+                console.log('[LOGOUT] Cleared Electron points-users.json for account isolation');
+              } else {
+                console.error('[LOGOUT] FAILED to clear Electron points-users.json:', result?.error);
+              }
+            }
+          } catch (err) {
+            console.error('[LOGOUT] FAILED to clear Electron points-users.json:', err);
+            // Log but do NOT block logout — authentication state must still be cleared
+          }
+
+          // Clear account-owned app state to prevent cross-account leakage
+          localStorage.removeItem('rf-app-storage');
+          // Clear in-memory profile state so Account B never sees Account A's profiles
+          import('./app-store').then(({ useAppStore }) => {
+            useAppStore.getState().resetProfiles();
+          }).catch(() => {});
+          // Reset legacy goal tracker flag so goals reload for next account (F-001)
+          import('../goals/goal-tracker').then(({ resetGoalsLoaded }) => {
+            resetGoalsLoaded();
+          }).catch(() => {});
+          // Reset legacy goal store state so Account B starts empty (F-001)
+          import('./goal-store').then(({ useGoalStore }) => {
+            useGoalStore.setState({ goals: [], runtime: {}, loaded: false });
+          }).catch(() => {});
+          // Stop profile sync processor (queue items preserved for when user returns)
+          import('../services/profile-sync-processor').then(({ profileSyncProcessor }) => {
+            profileSyncProcessor.stop();
+          }).catch(() => {});
           set({
             currentUser: null,
             session: null,
@@ -440,3 +538,6 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 );
+
+// Export the store instance for non-React contexts (e.g., overlay-store)
+export const authStore = useAuthStore;

@@ -4,11 +4,12 @@ import { getActionMedia } from "../lib/db";
 import { dispatchToEventBus } from "../events/EventDispatcher";
 import { api, safeInvoke } from "../services/electron-service";
 import { normalizeScreen, getNormalizedActionScreen, logScreenTrace } from "../lib/screen-normalizer";
-import { enqueueAction, notifyActionComplete, peekNextQueued } from "../lib/action-queue";
+import { enqueueAction, notifyActionComplete, peekNextQueued, clearQueue } from "../lib/action-queue";
 import { useCoinJarStore, isDuplicateGift } from "./coin-jar-store";
 import type { Action, Event, LiveEvent, ScreenId } from "../types";
 import { getGiftsSync, getGiftImageUrl } from "../services/gift-service";
 import { trackGoalEvent, trackGoalOverlayEvents } from "../goals/goal-tracker";
+import { getTikTokEngine } from "../engine/tiktok/tiktok-engine";
 
 const globalCooldowns: Map<string, number> = new Map();
 const userCooldowns: Map<string, Map<string, number>> = new Map();
@@ -165,6 +166,9 @@ export function dispatchTikTokEvent(data: any) {
         correlationId: cid, source, reason: isDuplicate ? 'duplicate' : 'zero-value',
       }));
     }
+
+    // ── Points: award per-gift using the same effectiveDelta ──
+    useAppStore.getState().awardPoints("gift", data.user, data.nickname, effectiveDelta);
   }
 
   // ── Goal tracking (independent from Screen 1-8) ──
@@ -172,9 +176,25 @@ export function dispatchTikTokEvent(data: any) {
   // Instance-based goal tracking for new goal-likes/followers/gifts modules
   trackGoalOverlayEvents(data);
 
+  // ── Handle disconnect cleanup ──
+  if (data.type === "disconnected") {
+    const screenId: ScreenId = data.screenId || "screen-0";
+    console.log('[DISPATCH-CLEANUP] TikTok disconnected, clearing state for screen', screenId);
+    // Clear action queue
+    clearQueue(screenId);
+    // Clear event pipeline cooldowns and queue
+    const tiktokEngine = getTikTokEngine();
+    tiktokEngine.clearCooldowns();
+    tiktokEngine.clearPipelineQueue();
+    // Clear comment engine state
+    tiktokEngine.clearCommentEngine();
+    console.log('[DISPATCH-CLEANUP] Cleared queue, pipeline, and comment engine for screen', screenId);
+  }
+
   cleanupStaleCooldowns();
   const store = useAppStore.getState();
-  const { events, actions, alertsMasterEnabled, alertSettings } = store;
+  const { events, actions, alertSettings } = store;
+  const alertsMasterEnabled = store.getAlertsMasterEnabled();
 
   if (!alertsMasterEnabled) return;
 
@@ -212,6 +232,16 @@ export function dispatchTikTokEvent(data: any) {
       store.setScreenStats(screenId, { views: views + 1 });
       break;
     }
+  }
+
+  // ── Points: award for FOLLOW and LIKE (GIFT handled above in coin-jar block) ──
+  switch (data.type) {
+    case "follow":
+      useAppStore.getState().awardPoints("follow", data.user, data.nickname, 1);
+      break;
+    case "like":
+      useAppStore.getState().awardPoints("like", data.user, data.nickname, data.likeCount || 1);
+      break;
   }
 
   // Find matching events and execute actions
@@ -311,22 +341,37 @@ export function dispatchTikTokEvent(data: any) {
     })),
   });
   for (const evt of matchingEvents) {
+    // Determine which action(s) to execute
+    let selectedActionName = evt.actionName;
+
+    // If actionNames array exists with 2+ actions, randomly select one
+    if (evt.actionNames && evt.actionNames.length > 1) {
+      const randomIndex = Math.floor(Math.random() * evt.actionNames.length);
+      selectedActionName = evt.actionNames[randomIndex];
+      console.log('[EVENT-RANDOM-SELECT]', {
+        eventId: evt.id,
+        totalActions: evt.actionNames.length,
+        selectedIndex: randomIndex,
+        selectedAction: selectedActionName,
+      });
+    }
+
     console.log('[EVENT-MATCH-DEBUG] All enabled actions in store ' + JSON.stringify({
       actionCount: actions.filter(a => a.enabled).length,
       actionNames: actions.filter(a => a.enabled).map(a => a.name),
       allActions: actions.map(a => ({ name: a.name, enabled: a.enabled })),
     }));
-    const action = actions.find(a => a.name === evt.actionName && a.enabled);
+    const action = actions.find(a => a.name === selectedActionName && a.enabled);
     if (!action) {
       console.log('[EVENT-MATCH-DEBUG] No matching enabled action found ' + JSON.stringify({
-        eventActionName: evt.actionName,
+        eventActionName: selectedActionName,
         availableActions: actions.filter(a => a.enabled).map(a => ({ name: a.name, sound: a.sound, video: a.video, image: a.image, keystroke: a.keystroke, minecraft: a.minecraft })),
       }));
       continue;
     }
     console.log('[EVENT-MATCH-DEBUG] Action found for event ' + JSON.stringify({
       eventId: evt.id,
-      eventActionName: evt.actionName,
+      eventActionName: selectedActionName,
       actionId: action.id,
       actionName: action.name,
       actionSound: action.sound,
@@ -401,7 +446,7 @@ import { setActionExecutor } from "../lib/action-queue";
 setActionExecutor(async (action: Action, eventData: any, actionExecutionId: string) => {
   // For mixed-content actions (media + keystroke/minecraft), non-media was already
   // executed immediately in executeAction. The queue only needs to handle media.
-  const hasNonMedia = action.keystroke || action.minecraft;
+  const hasNonMedia = action.keystroke || action.minecraft || action.obs || action.streamerbot || action.spotify;
   const mode = hasNonMedia ? 'media-only' : 'all';
   await executeActionNow(action, eventData, actionExecutionId, mode);
 });
@@ -426,36 +471,6 @@ function hasRepeatableMedia(action: Action): boolean {
  * This function dispatches media to overlay and tracks completion.
  */
 async function executeActionNow(action: Action, eventData: any, actionExecutionId: string, executionMode: 'all' | 'non-media-only' | 'media-only' = 'all') {
-  // [ACTION-TRACE] gift received
-  console.log('[ACTION-TRACE] gift received', JSON.stringify({
-    actionId: action.id,
-    actionName: action.name,
-    actionType: action.sound ? 'sound' : action.video ? 'video' : action.image ? 'image' : action.keystroke ? 'keystroke' : action.minecraft ? 'minecraft' : 'other',
-    triggerType: eventData.type,
-    giftId: eventData.giftId,
-    giftName: eventData.giftName,
-    screenId: eventData.screenId,
-    timestamp: Date.now(),
-  }));
-
-  // [ACTION-TRACE] trigger matched
-  console.log('[ACTION-TRACE] trigger matched', JSON.stringify({
-    actionId: action.id,
-    actionName: action.name,
-    eventType: eventData.type,
-    giftName: eventData.giftName,
-  }));
-
-  // [ACTION-TRACE] action execution started
-  console.log('[ACTION-TRACE] action execution started', JSON.stringify({
-    actionId: action.id,
-    actionName: action.name,
-    actionType: action.sound ? 'sound' : action.video ? 'video' : action.image ? 'image' : action.keystroke ? 'keystroke' : action.minecraft ? 'minecraft' : 'other',
-    screenId: eventData.screenId,
-    overlayScreen: action.overlayScreen,
-    timestamp: Date.now(),
-  }));
-
   const electronAPI = api();
   try {
   const vol = (action.soundVolume ?? action.mediaVolume ?? 80) / 100;
@@ -476,19 +491,6 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
     const media = await getActionMedia(action.id, "image").catch(() => null) as { file: string } | null;
     if (media) imageFile = media.file;
   }
-
-  // [ACTION-TRACE] media asset resolved
-  console.log('[ACTION-TRACE] media asset resolved', JSON.stringify({
-    actionId: action.id,
-    actionName: action.name,
-    soundFile: soundFile ? soundFile.substring(0, 100) : null,
-    videoFile: videoFile ? videoFile.substring(0, 100) : null,
-    imageFile: imageFile ? imageFile.substring(0, 100) : null,
-    soundFileFromDB: action.sound && !action.soundFile,
-    videoFileFromDB: action.video && !action.videoFile,
-    imageFileFromDB: action.image && !action.imageFile,
-    timestamp: Date.now(),
-  }));
 
   // Normalize screen for overlay routing
   const normalizedScreen = getNormalizedActionScreen(action);
@@ -512,17 +514,6 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
 
   // ── Play sound effect - ROUTE TO OVERLAY WIDGET ──
   if (executionMode !== 'non-media-only' && action.sound && soundFile) {
-    // [ACTION-TRACE] media output requested - sound
-    console.log('[ACTION-TRACE] media output requested', JSON.stringify({
-      actionId: action.id,
-      mediaType: 'sound',
-      soundFile: soundFile.substring(0, 100),
-      volume: vol,
-      playbackContext: 'overlay-widget',
-      actionExecutionId,
-      timestamp: Date.now(),
-    }));
-
     // Dispatch sound event to overlay widget (for TikTok LIVE Studio Browser Source capture)
     const soundOverlayData = {
       type: "sound",
@@ -538,27 +529,8 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
       timestamp: Date.now(),
     };
 
-    console.log('[OVERLAY-DISPATCH]', {
-      actionId: action.id,
-      actionName: action.name,
-      overlayId: normalizedScreen,
-      overlayData: {
-        type: "sound",
-        actionName: action.name,
-        screen: normalizedScreen,
-        soundFile: soundFile.substring(0, 100),
-      },
-    });
     sendToOverlay(soundOverlayData);
 
-    // [ACTION-TRACE] overlay dispatch sent - sound
-    console.log('[ACTION-TRACE] overlay dispatch sent', JSON.stringify({
-      actionId: action.id,
-      type: "sound",
-      screen: normalizedScreen,
-      channels: ['BroadcastChannel', 'CustomEvent', 'localStorage', 'SSE'],
-      timestamp: Date.now(),
-    }));
   }
 
   // ── Send visual to overlay ──
@@ -603,39 +575,6 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
   // Update overlayData with normalized screen
   overlayData.screen = normalizedScreen;
 
-  // [ACTION-TRACE] media output requested - video/image
-  if (action.video && videoFile) {
-    console.log('[ACTION-TRACE] media output requested', JSON.stringify({
-      actionId: action.id,
-      mediaType: 'video',
-      videoFile: videoFile.substring(0, 100),
-      targetScreen: normalizedScreen,
-      targetOverlayScreen: action.overlayScreen,
-      timestamp: Date.now(),
-    }));
-  }
-  if (action.image && imageFile) {
-    console.log('[ACTION-TRACE] media output requested', JSON.stringify({
-      actionId: action.id,
-      mediaType: 'image',
-      imageFile: imageFile.substring(0, 100),
-      targetScreen: normalizedScreen,
-      targetOverlayScreen: action.overlayScreen,
-      timestamp: Date.now(),
-    }));
-  }
-
-  console.log('[OVERLAY-DISPATCH]', {
-    actionId: action.id,
-    actionName: action.name,
-    overlayId: normalizedScreen,
-    overlayData: {
-      type: overlayData.type,
-      actionName: overlayData.actionName,
-      screen: overlayData.screen,
-      duration: overlayData.duration,
-    },
-  });
   // In non-media-only mode, skip media overlay dispatch (keystroke/minecraft handled separately)
   if (executionMode !== 'non-media-only') {
     sendToOverlay(overlayData);
@@ -651,15 +590,6 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
       }
     }
   }
-
-  // [ACTION-TRACE] overlay dispatch sent
-  console.log('[ACTION-TRACE] overlay dispatch sent', JSON.stringify({
-    actionId: action.id,
-    type: overlayData.type,
-    screen: normalizedScreen,
-    channels: ['BroadcastChannel', 'CustomEvent', 'localStorage', 'SSE'],
-    timestamp: Date.now(),
-  }));
 
   // ── Forward to Event Bus V2 ──
   dispatchToEventBus(eventData);
@@ -716,14 +646,26 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
 
   // ── Trigger Streamer.bot ──
   // In media-only mode (queued), skip streamerbot — it was already triggered immediately
-  if (executionMode !== 'media-only' && electronAPI) {
-    electronAPI.sbTrigger({ actionName: action.name, eventData });
+  if (executionMode !== 'media-only' && electronAPI && action.streamerbot && action.sbActionName) {
+    electronAPI.sbTrigger({ actionName: action.sbActionName, eventData });
   }
 
   // ── Switch OBS scene if configured ──
   // In media-only mode (queued), skip OBS — it was already switched immediately
-  if (executionMode !== 'media-only' && electronAPI && action.overlayScreen) {
-    safeInvoke(electronAPI.obsSwitchScene, { sceneName: `Screen ${action.overlayScreen}` });
+  if (executionMode !== 'media-only' && electronAPI && action.obs && action.obsSceneName) {
+    safeInvoke(electronAPI.obsSwitchScene, { sceneName: action.obsSceneName });
+  }
+
+  // ── Execute Spotify action if configured ──
+  // In media-only mode (queued), skip Spotify
+  if (executionMode !== 'media-only' && electronAPI && action.spotify && action.spotifyAction) {
+    try {
+      if (action.spotifyAction === "addToQueue" && action.spotifyTrackUri) {
+        electronAPI.spotifyAddToQueue({ uri: action.spotifyTrackUri });
+      } else if (action.spotifyAction === "skip") {
+        electronAPI.spotifySkip();
+      }
+    } catch (_) {}
   }
 
   console.log('[ACTION-SUCCESS]', {
@@ -744,7 +686,7 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
  * Public executeAction - entry point for all action execution.
  * Handles Repeat Combo queue logic with media eligibility checking.
  */
-export async function executeAction(action: Action, eventData: any) {
+export async function executeAction(action: Action, eventData: any, options?: { bypassQueue?: boolean }) {
   const normalizedScreen = getNormalizedActionScreen(action);
   const actionExecutionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -756,13 +698,25 @@ export async function executeAction(action: Action, eventData: any) {
     timestamp: Date.now(),
   }));
 
+  // Test button bypass: execute immediately without queue
+  if (options?.bypassQueue) {
+    console.log('[ACTION-TEST-BYPASS] queue bypassed for test execution', JSON.stringify({
+      actionId: action.id,
+      actionName: action.name,
+      screen: normalizedScreen,
+      timestamp: Date.now(),
+    }));
+    await executeActionNow(action, eventData, actionExecutionId);
+    return;
+  }
+
   // Check media eligibility for queue serialization.
   // Video actions ALWAYS queue (prevents overlap/replacement on rapid triggers).
   // Non-video media (sound/image) queue only when repeatCombo is enabled.
   const shouldQueue = hasRepeatableMedia(action) && (action.video || action.repeatCombo === true);
 
   // Detect mixed-content actions (media + non-media like keystroke/minecraft)
-  const hasNonMedia = action.keystroke || action.minecraft;
+  const hasNonMedia = action.keystroke || action.minecraft || action.obs || action.streamerbot || action.spotify;
   const hasMedia = action.video || action.sound || action.image;
 
   console.log('[REPEAT-COMBO-ELIGIBILITY]', JSON.stringify({

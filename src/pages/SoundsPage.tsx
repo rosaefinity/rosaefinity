@@ -11,17 +11,16 @@ import {
   Plus, Play, Trash2, Volume2, VolumeX, Loader2, X,
   Settings, Music, FileText, CheckCircle2
 } from "lucide-react";
+import { getBuiltInSoundCatalog, getBuiltInSoundDataUrl } from "../lib/builtin-sounds";
 
-const builtInSounds = [
-  { id: "builtin-alert", name: "Classic Alert", file: null, category: "builtin" },
-  { id: "builtin-chime", name: "Soft Chime", file: null, category: "builtin" },
-  { id: "builtin-pop", name: "Pop", file: null, category: "builtin" },
-  { id: "builtin-success", name: "Success", file: null, category: "builtin" },
-  { id: "builtin-error", name: "Error", file: null, category: "builtin" },
-];
+const builtInSounds = getBuiltInSoundCatalog().map((s) => ({
+  ...s,
+  file: null as string | null,
+  category: 'builtin',
+}));
 
 export function SoundsPage() {
-  const { customSounds, addSound, updateSound, deleteSound } = useAppStore();
+  const { customSounds, addSound, updateSound, deleteSound, currentProfileId, getCurrentProfileCustomSounds } = useAppStore();
   const { plan } = useLicenseStore();
   const [showModal, setShowModal] = useState(false);
   const [editingSound, setEditingSound] = useState<any>(null);
@@ -29,14 +28,17 @@ export function SoundsPage() {
   const [masterVolume, setMasterVolume] = useState(80);
   const [playingId, setPlayingId] = useState<string | null>(null);
 
-  const canAddSound = plan === 'pro' || customSounds.length < 3;
-  const allSounds = [...builtInSounds, ...customSounds];
+  const profileCustomSounds = getCurrentProfileCustomSounds();
+  const canAddSound = plan === 'pro' || profileCustomSounds.length < 3;
+  const allSounds = [...builtInSounds, ...profileCustomSounds];
 
   // Load sounds from Dexie on mount (restores media blobs lost by partialize)
   useEffect(() => {
     const loadFromDB = async () => {
+      if (!currentProfileId) return;
       try {
-        const dbSounds = await getAllSounds();
+        const { getSoundsByProfile } = await import('../lib/db');
+        const dbSounds = await getSoundsByProfile(currentProfileId);
         const store = useAppStore.getState();
         // Merge: only add sounds in DB but not in store (with files)
         for (const dbSound of dbSounds) {
@@ -44,13 +46,13 @@ export function SoundsPage() {
           if (existing && !existing.file && dbSound.file) {
             store.updateSound(dbSound.id, { file: dbSound.file, fileName: dbSound.fileName });
           } else if (!existing) {
-            store.addSound({ name: dbSound.name, file: dbSound.file, fileName: dbSound.fileName, enabled: true } as any);
+            store.addSound({ name: dbSound.name, file: dbSound.file, fileName: dbSound.fileName, enabled: true, profileId: currentProfileId } as any);
           }
         }
       } catch (_) {}
     };
     loadFromDB();
-  }, []);
+  }, [currentProfileId]);
 
   const resetForm = () => {
     setFormData({ name: "", file: "" as any, fileName: "" });
@@ -82,10 +84,14 @@ export function SoundsPage() {
     setShowModal(false);
   };
 
-  const playSound = (sound: any) => {
+  const playSound = async (sound: any) => {
     if (playingId === sound.id) { setPlayingId(null); return; }
-    if (sound.file) {
-      const audio = new Audio(sound.file);
+    let file = sound.file;
+    if (!file && sound.id?.startsWith('builtin-')) {
+      file = await getBuiltInSoundDataUrl(sound.id);
+    }
+    if (file) {
+      const audio = new Audio(file);
       audio.volume = masterVolume / 100;
       audio.play().then(() => setPlayingId(sound.id)).catch(console.error);
       audio.onended = () => setPlayingId(null);
@@ -157,11 +163,11 @@ export function SoundsPage() {
           ))}
         </div>
 
-        {customSounds.length > 0 && (
+        {profileCustomSounds.length > 0 && (
           <>
             <h3 className="text-sm font-semibold text-white mb-3">Custom Sounds</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {customSounds.map((sound) => (
+              {profileCustomSounds.map((sound) => (
                 <motion.div key={sound.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-xl border border-white/[0.06] bg-card p-4 hover:border-white/[0.12] transition-all">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -191,7 +197,7 @@ export function SoundsPage() {
           </>
         )}
 
-        {customSounds.length === 0 && (
+        {profileCustomSounds.length === 0 && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-2xl border border-white/[0.06] bg-card p-8 text-center">
             <Music className="w-12 h-12 text-white/20 mx-auto mb-3" />
             <h3 className="text-sm font-semibold text-white mb-1">No custom sounds yet</h3>

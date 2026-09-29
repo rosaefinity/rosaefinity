@@ -44,3 +44,6 @@ coverage/
 *.njsproj
 *.sln
 *.sw?
+
+# Wrangler local dev state
+server/worker/.wrangler/

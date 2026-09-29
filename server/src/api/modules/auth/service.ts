@@ -230,9 +230,9 @@ export const authService = {
     const features = isPro && license?.plan
       ? {
           maxActions: null as number | null, // null = unlimited
-          maxScenes: license.plan.maxScreens || 10,
-          maxOverlayPresets: license.plan.maxOverlays || 50,
-          maxDevices: license.plan.maxDevices || 5,
+          maxScenes: license.plan.maxScreens ?? 10,
+          maxOverlayPresets: license.plan.maxOverlays ?? 50,
+          maxDevices: license.plan.maxDevices ?? 5,
           actionsUnlimited: true,
           multiScreen: true,
           premiumOverlay: true,
@@ -241,7 +241,7 @@ export const authService = {
       : {
           maxActions: 5,
           maxScenes: 1,
-          maxOverlayPresets: 10,
+          maxOverlayPresets: 2,
           maxDevices: 1,
           actionsUnlimited: false,
           multiScreen: false,

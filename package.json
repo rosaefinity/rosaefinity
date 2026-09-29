@@ -85,6 +85,10 @@
         "from": "public",
         "to": "public",
         "filter": "**/*"
+      },
+      {
+        "from": "src/services/tts/engines/piper_worker.py",
+        "to": "tts/piper_worker.py"
       }
     ],
     "win": {

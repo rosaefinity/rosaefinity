@@ -130,14 +130,18 @@ export const useLicenseStore = create<LicenseStore>()(
             isInitialized: true,
             isLoading: false,
           });
+          // Notify listeners (e.g. app-store profile lock recalculation) that entitlements are now authoritative
+          window.dispatchEvent(new CustomEvent('rosae:license-updated'));
           console.log('[ENTITLEMENT-ELECTRON] store after update', { plan: sub.plan, wasStaleFree: prevPlan === 'free' && sub.plan === 'pro' });
         } else {
           console.log('[ENTITLEMENT-ELECTRON] no subscription found, defaulting to free');
           set({ isInitialized: true, isLoading: false });
+          window.dispatchEvent(new CustomEvent('rosae:license-updated'));
         }
       } catch (err: any) {
         console.error('[ENTITLEMENT-ELECTRON] initialize error:', err);
         set({ isInitialized: true, isLoading: false, lastError: err.message });
+        window.dispatchEvent(new CustomEvent('rosae:license-updated'));
       }
     },
 

@@ -61,7 +61,7 @@ const DEFAULT_PLANS = [
     maxActions: 50,
     maxSounds: 20,
     maxOverlays: 10,
-    maxProfiles: 5,
+    maxProfiles: 10,
     maxScreens: 3,
     maxPointsUsers: 10,
     maxDevices: 3,

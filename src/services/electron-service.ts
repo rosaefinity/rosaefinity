@@ -175,6 +175,7 @@ export interface ElectronAPI {
   halvePoints: (percent: number) => void;
   toggleChallenge: (active: boolean) => void;
   deductPoints: (opts: { username: string; amount: number }) => Promise<any>;
+  clearAllPoints: () => Promise<any>;
   onPointsAwarded: (cb: (data: any) => void) => () => void;
   onPointsReset: (cb: (data: any) => void) => () => void;
   onPointsHalved: (cb: (data: any) => void) => () => void;

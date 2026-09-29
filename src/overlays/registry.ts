@@ -79,10 +79,6 @@ const _initialModules: AnyOverlayModule[] = [
 
 const { registry: overlayRegistry, byId, byCategory } = registryBuilder(_initialModules);
 
-console.log('[OVERLAY-TRACE] registry count =', overlayRegistry.length);
-console.log('[OVERLAY-TRACE] registry ids =', overlayRegistry.map(m => m.id));
-console.log('[OVERLAY-TRACE] has goal-progress (Goal Likes) =', overlayRegistry.some(m => m.id === 'goal-progress'));
-
 export { overlayRegistry };
 
 // ─── Lookup Helpers (Map-based, O(1)) ───

@@ -27,7 +27,7 @@ const WEB_CAST_EVENT = {
   LIKE: "like",
   ROOM_USER: "roomUser",
   SUBSCRIBE: "subscribe",
-  COMMENT: "comment",
+  COMMENT: "chat",
   FOLLOW: "follow",
   SHARE: "share",
   MEMBER: "member",
@@ -870,9 +870,9 @@ class TikTokService extends EventEmitter {
           this._emitEvent(this._normalizeSubscribeEvent(screenId, cleanUsername, data));
         });
 
-        // COMMENT
-        if (this.WebcastEvent.COMMENT) {
-          connection.on(this.WebcastEvent.COMMENT, (data) => {
+        // COMMENT (chat)
+        if (this.WebcastEvent.CHAT) {
+          connection.on(this.WebcastEvent.CHAT, (data) => {
             this._emitEvent(this._normalizeCommentEvent(screenId, cleanUsername, data));
           });
         }
@@ -2058,9 +2058,9 @@ class TikTokService extends EventEmitter {
     return {
       type: "comment",
       screenId,
-      user: data.user?.uniqueId || data.uniqueId || "someone",
+      user: data.user?.id || data.uniqueId || "someone",
       nickname: data.user?.nickname || data.nickname || "",
-      comment: data.comment || data.message || "",
+      comment: data.content || "",
       timestamp: Date.now(),
     };
   }

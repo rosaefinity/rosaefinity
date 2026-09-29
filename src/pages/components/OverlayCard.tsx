@@ -2,7 +2,7 @@ import { memo, useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '../../lib/utils';
 import type { AnyOverlayModule, OverlayInstance } from '../../overlays/types';
-import { getBrowserSourceUrlForModule } from '../../lib/browser-source-url';
+import { getBrowserSourceUrl, getBrowserSourceUrlForModule } from '../../lib/browser-source-url';
 import { emitTestEvent } from '../../events/EventDispatcher';
 import { useOverlayStore } from '../../lib/overlay-store';
 import { createOverlayConfig } from '../../overlays/createConfig';
@@ -46,8 +46,8 @@ function OverlayCardInner({
 
   const meta = module.metadata;
   const browserSourceUrl = useMemo(
-    () => getBrowserSourceUrlForModule(meta.id),
-    [meta.id]
+    () => instance ? getBrowserSourceUrl(instance.browserSourceId) : getBrowserSourceUrlForModule(meta.id),
+    [instance, meta.id]
   );
 
   const status = useMemo((): StatusInfo => {

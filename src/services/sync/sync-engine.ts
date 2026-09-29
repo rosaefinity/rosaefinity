@@ -81,7 +81,7 @@ class SyncEngine {
       version,
       updatedAt: Date.now(),
       deletedAt: operation === 'delete' ? Date.now() : null,
-      checksum: this.computeChecksum(data),
+      checksum: await this.computeChecksum(data),
       deviceId: this.deviceId,
       userId: this.userId,
       syncStatus: 'pending',
@@ -140,11 +140,15 @@ class SyncEngine {
   /** Push all pending queue items to server */
   private async pushPending(): Promise<number> {
     const client = getSyncApiClient();
-    const items = await syncQueue.getReadyItems(this.config.batchSize);
+    const items = await syncQueue.getReadyItems(this.config.batchSize, this.userId!);
     if (items.length === 0) return 0;
 
+    // Defense-in-depth: skip any items that don't belong to the current user
+    const myItems = items.filter(item => item.entity.userId === this.userId);
+    if (myItems.length === 0) return 0;
+
     const payload = {
-      records: items.map(item => ({
+      records: myItems.map(item => ({
         entityType: item.entity.entityType,
         entityId: item.entity.entityId,
         operation: item.entity.operation,
@@ -161,7 +165,7 @@ class SyncEngine {
 
       // Mark accepted items as synced
       for (const accepted of result.accepted) {
-        const item = items.find(i =>
+        const item = myItems.find(i =>
           i.entity.entityType === accepted.entityType &&
           i.entity.entityId === accepted.entityId
         );
@@ -172,13 +176,13 @@ class SyncEngine {
 
       // Handle rejected items
       for (const rejected of result.rejected) {
-        const item = items.find(i =>
+        const item = myItems.find(i =>
           i.entity.entityType === rejected.entityType &&
           i.entity.entityId === rejected.entityId
         );
         if (item) {
           if (rejected.reason.includes('version')) {
-            // Version conflict â€” mark for conflict resolution
+            // Version conflict — mark for conflict resolution
             await syncQueue.markFailed(item.id, rejected.reason);
           } else {
             await syncQueue.markFailed(item.id, rejected.reason);
@@ -191,7 +195,7 @@ class SyncEngine {
       return result.accepted.length;
     } catch (err: any) {
       // Mark all items as failed for retry
-      for (const item of items) {
+      for (const item of myItems) {
         await syncQueue.markFailed(item.id, err.message);
       }
       throw err;
@@ -216,8 +220,11 @@ class SyncEngine {
 
   /** Apply a remote entity locally, returns true if conflict detected */
   private async applyRemoteEntity(remote: SyncEntity): Promise<boolean> {
-    // Emit event for stores to handle
-    // In a real implementation, this would dispatch to the appropriate store
+    if (remote.entityType === 'overlay') {
+      return this.applyRemoteOverlay(remote);
+    }
+
+    // Unsupported entity types — dispatch event for future consumers
     const event = new CustomEvent('rosae:sync-apply', {
       detail: {
         entityType: remote.entityType,
@@ -229,8 +236,41 @@ class SyncEngine {
       },
     });
     window.dispatchEvent(event);
+    return false;
+  }
 
-    return false; // No conflict detected at engine level
+  /** Apply a remote overlay entity to the local Overlay Store */
+  private async applyRemoteOverlay(remote: SyncEntity): Promise<boolean> {
+    try {
+      // Dynamic import to avoid circular dependency at module load time
+      const { useOverlayStore } = await import('../../lib/overlay-store');
+      const store = useOverlayStore.getState();
+
+      if (remote.operation === 'delete') {
+        await store.removeRemoteOverlay(remote.entityId);
+        return false;
+      }
+
+      // create or update — data contains the OverlayInstance fields
+      const data = remote.data as Record<string, unknown>;
+      const instance = {
+        id: remote.entityId,
+        moduleId: (data.moduleId as string) || '',
+        name: (data.name as string) || '',
+        enabled: data.enabled !== false,
+        browserSourceId: (data.browserSourceId as string) || remote.entityId,
+        config: (data.config as Record<string, unknown>) || {},
+        configVersion: (data.configVersion as number) || 1,
+        createdAt: (data.createdAt as number) || remote.updatedAt,
+        updatedAt: remote.updatedAt,
+      };
+
+      await store.applyRemoteOverlay(instance);
+      return false;
+    } catch (err) {
+      console.error('[SyncEngine] Failed to apply remote overlay:', err);
+      return false;
+    }
   }
 
   /** Resolve a conflict */
@@ -257,7 +297,7 @@ class SyncEngine {
 
   /** Retry all failed items */
   async retryAll(): Promise<number> {
-    return syncQueue.retryAll();
+    return syncQueue.retryAll(this.userId || undefined);
   }
 
   /** Set status change callback */
@@ -311,15 +351,14 @@ class SyncEngine {
     window.dispatchEvent(new CustomEvent('rosae:sync-status', { detail: { status } }));
   }
 
-  private computeChecksum(data: unknown): string {
-    const str = JSON.stringify(data);
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const chr = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(36);
+  private async computeChecksum(data: unknown): Promise<string> {
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    const encoder = new TextEncoder();
+    const dataBuffer = encoder.encode(str);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+    const hashArray = new Uint8Array(hashBuffer);
+    const hashHex = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex.substring(0, 16);
   }
 
   private getDeviceId(): string {
