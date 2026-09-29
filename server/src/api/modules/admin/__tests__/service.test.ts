@@ -178,14 +178,14 @@ describe('extendLicense', () => {
       expiresAt: new Date('2028-01-20T12:00:00Z'),
     });
     mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
-    mockPrisma.license.update.mockResolvedValue({});
+    mockPrisma.license.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.subscription.updateMany.mockResolvedValue({});
     mockPrisma.user.update.mockResolvedValue({});
 
     await adminService.downgradeUser('user-1');
 
-    // Verify expiresAt was cleared via update (canonical license targeted)
-    expect(mockPrisma.license.update).toHaveBeenCalledWith(
+    // Verify expiresAt was cleared via updateMany (all active/grace Pro licenses revoked)
+    expect(mockPrisma.license.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'revoked', expiresAt: null }),
       })
