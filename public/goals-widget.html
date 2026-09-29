@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RosaeFinity Goal Progress</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    #goal-root {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ══════════════════════════════════════════════
+       KEYFRAME ANIMATIONS
+       ══════════════════════════════════════════════ */
+    @keyframes shine-sweep {
+      0%   { transform: translateX(-100%) skewX(-20deg); }
+      100% { transform: translateX(400%) skewX(-20deg); }
+    }
+    @keyframes container-pulse {
+      0%   { filter: brightness(1); }
+      25%  { filter: brightness(1.15); }
+      100% { filter: brightness(1); }
+    }
+    @keyframes pct-pop {
+      0%   { transform: scale(1); }
+      30%  { transform: scale(1.08); }
+      100% { transform: scale(1); }
+    }
+    @keyframes twinkle {
+      0%, 100% { opacity: 0.3; transform: scale(0.8); }
+      50%      { opacity: 1;   transform: scale(1.15); }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 0.5; }
+      50%      { opacity: 1; }
+    }
+    @keyframes shimmer {
+      0%   { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    @keyframes crown-float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-1px); }
+    }
+  </style>
+</head>
+<body>
+  <div id="goal-root"></div>
+
+  <script>
+    // ═══════════════════════════════════════════════════════════════
+    // Goal Progress Browser Source — Full-Width Responsive Overlay
+    // ═══════════════════════════════════════════════════════════════
+
+    var config = {
+      goalType: 'likes',
+      target: 7000,
+      title: 'Goal',
+      reachedBehavior: 'increase',
+      increaseAmount: 1000,
+      actionId: null,
+      barColor: '#8b5cf6',
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      textColor: '#ffffff',
+      showPercentage: true,
+      showNumbers: true,
+    };
+
+    var current = 0;
+    var previousPct = -1;
+
+    function typeLabel() {
+      var map = { likes: 'LIKES', followers: 'FOLLOWERS', gifts: 'COINS' };
+      return map[config.goalType] || config.goalType.toUpperCase();
+    }
+
+    function escapeHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // ── Color utilities ──
+    function hexToRgba(hex, a) {
+      if (hex.charAt(0) === 'r') return hex;
+      hex = hex.replace('#', '');
+      if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+      return 'rgba(' + parseInt(hex.substr(0,2),16) + ',' + parseInt(hex.substr(2,2),16) + ',' + parseInt(hex.substr(4,2),16) + ',' + a + ')';
+    }
+    function lighten(hex, amt) {
+      if (hex.charAt(0) === 'r') return hex;
+      hex = hex.replace('#', '');
+      if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+      var r = Math.min(255, parseInt(hex.substr(0,2),16) + Math.round(255*amt));
+      var g = Math.min(255, parseInt(hex.substr(2,2),16) + Math.round(255*amt));
+      var b = Math.min(255, parseInt(hex.substr(4,2),16) + Math.round(255*amt));
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+
+    // ── Responsive size helper: scales with viewport width ──
+    // Returns a CSS clamp() string: min + preferred(vw) + max
+    function vw(minPx, vwPct, maxPx) {
+      return 'clamp(' + minPx + 'px, ' + vwPct + 'vw, ' + maxPx + 'px)';
+    }
+
+    function render() {
+      var target = config.target;
+      var dc = current;
+      var pct = target > 0 ? Math.min(100, (dc / target) * 100) : 0;
+      var isReached = dc >= target;
+      var pctChanged = previousPct >= 0 && Math.abs(pct - previousPct) > 0.01;
+      previousPct = pct;
+
+      // ── Derived colors ──
+      var glowMain = isReached ? 'rgba(34,197,94,0.5)' : hexToRgba(config.barColor, 0.5);
+      var glowSoft = isReached ? 'rgba(34,197,94,0.25)' : hexToRgba(config.barColor, 0.25);
+      var barGrad = isReached
+        ? 'linear-gradient(90deg, #22c55e, #4ade80, #86efac)'
+        : 'linear-gradient(90deg, ' + config.barColor + ', ' + lighten(config.barColor, 0.15) + ', ' + lighten(config.barColor, 0.3))';
+      var pinkAccent = '#ec4899';
+
+      // ── SVG Sparkle helper ──
+      function sparkle(x, y, size, delay, color) {
+        return '<svg style="position:absolute;left:' + x + ';top:' + y + ';width:' + size + ';height:' + size + ';animation:twinkle 2.5s ease-in-out ' + delay + 's infinite;pointer-events:none;" viewBox="0 0 24 24" fill="' + color + '">'
+             + '<path d="M12 0l2.5 9.5L24 12l-9.5 2.5L12 24l-2.5-9.5L0 12l9.5-2.5z"/>'
+             + '</svg>';
+      }
+
+      var h = '';
+
+      // ════════════════════════════════════════════
+      // HEADER: crown + title + accent dot
+      // ════════════════════════════════════════════
+      h += '<div style="'
+         + 'display:flex;align-items:center;gap:' + vw(4, 0.6, 10) + ';'
+         + 'margin-bottom:' + vw(4, 0.5, 10) + ';'
+         + '">'
+         // Crown
+         + '<span style="'
+         + 'font-size:' + vw(16, 2.5, 36) + ';'
+         + 'filter:drop-shadow(0 0 6px ' + glowMain + ');'
+         + 'animation:crown-float 3s ease-in-out infinite;'
+         + 'line-height:1;'
+         + '">👑</span>'
+         // Title
+         + '<span style="'
+         + 'font-size:' + vw(14, 2.2, 32) + ';'
+         + 'font-weight:800;'
+         + 'color:' + config.textColor + ';'
+         + 'text-shadow:0 0 12px ' + glowSoft + ', 0 1px 3px rgba(0,0,0,0.6);'
+         + 'letter-spacing:0.03em;'
+         + '">' + escapeHtml(config.title) + '</span>'
+         // Accent dot
+         + '<span style="'
+         + 'display:inline-block;'
+         + 'width:' + vw(4, 0.5, 8) + ';height:' + vw(4, 0.5, 8) + ';'
+         + 'border-radius:50%;'
+         + 'background:' + pinkAccent + ';'
+         + 'box-shadow:0 0 6px ' + pinkAccent + ', 0 0 14px ' + hexToRgba(pinkAccent, 0.4) + ';'
+         + 'animation:breathe 3s ease-in-out infinite;'
+         + '"></span>'
+         + '</div>';
+
+      // ════════════════════════════════════════════
+      // PROGRESS BAR ROW: bar + percentage badge
+      // ════════════════════════════════════════════
+      h += '<div style="'
+         + 'display:flex;align-items:center;gap:' + vw(6, 0.8, 14) + ';'
+         + '">'
+         // Bar container — FULL WIDTH
+         + '<div style="'
+         + 'flex:1;position:relative;'
+         + 'height:' + vw(14, 2.8, 30) + ';'
+         + 'border-radius:9999px;'
+         + 'background:rgba(255,255,255,0.06);'
+         + 'border:1px solid rgba(255,255,255,0.08);'
+         + 'overflow:visible;'
+         + '">'
+         // Outer glow
+         + '<div style="'
+         + 'position:absolute;top:-3px;bottom:-3px;left:0;'
+         + 'width:' + pct + '%;'
+         + 'border-radius:9999px;'
+         + 'background:' + glowSoft + ';'
+         + 'filter:blur(8px);'
+         + 'transition:width 600ms cubic-bezier(0.4,0,0.2,1);'
+         + 'pointer-events:none;z-index:0;'
+         + '"></div>'
+         // Inner track
+         + '<div style="'
+         + 'position:absolute;inset:0;border-radius:9999px;overflow:hidden;z-index:1;'
+         + '">'
+         // Fill
+         + '<div id="bar-fill" style="'
+         + 'position:absolute;top:0;bottom:0;left:0;'
+         + 'width:' + pct + '%;'
+         + 'border-radius:9999px;'
+         + 'background:' + barGrad + ';'
+         + 'transition:width 600ms cubic-bezier(0.4,0,0.2,1);'
+         + '">'
+         // Top highlight
+         + '<div style="'
+         + 'position:absolute;top:0;left:0;right:0;height:45%;'
+         + 'background:linear-gradient(180deg, rgba(255,255,255,0.22), transparent);'
+         + 'border-radius:9999px 9999px 0 0;'
+         + '"></div>'
+         // Shine sweep
+         + '<div style="position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;border-radius:9999px;">'
+         + '<div style="'
+         + 'position:absolute;top:0;left:0;width:35%;height:100%;'
+         + 'background:linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);'
+         + 'animation:shine-sweep 4s ease-in-out infinite;'
+         + '"></div>'
+         + '</div>'
+         + '</div>' // end fill
+         + '</div>' // end inner track
+         + '</div>' // end bar container
+
+         // ── Percentage badge ──
+         + '<div id="pct-badge" style="'
+         + 'display:flex;align-items:center;justify-content:center;'
+         + 'min-width:' + vw(44, 6, 80) + ';'
+         + 'padding:' + vw(3, 0.4, 6) + ' ' + vw(8, 1, 16) + ';'
+         + 'border-radius:9999px;'
+         + 'background:rgba(0,0,0,0.4);'
+         + 'border:1.5px solid ' + hexToRgba(config.barColor, 0.5) + ';'
+         + 'box-shadow:0 0 10px ' + glowSoft + ', inset 0 0 8px ' + hexToRgba(config.barColor, 0.1) + ';'
+         + 'transition:border-color 600ms, box-shadow 600ms;'
+         + '">'
+         + '<span style="'
+         + 'font-size:' + vw(11, 1.6, 22) + ';'
+         + 'font-weight:800;'
+         + 'color:' + config.textColor + ';'
+         + 'text-shadow:0 0 8px ' + glowSoft + ';'
+         + 'letter-spacing:0.02em;'
+         + 'white-space:nowrap;'
+         + '">' + Math.round(pct) + '%</span>'
+         + '</div>'
+         + '</div>'; // end bar row
+
+      // ════════════════════════════════════════════
+      // GOAL INFO ROW
+      // ════════════════════════════════════════════
+      if (config.showNumbers) {
+        h += '<div style="'
+           + 'display:flex;align-items:center;justify-content:space-between;'
+           + 'margin-top:' + vw(3, 0.4, 8) + ';'
+           + 'position:relative;'
+           + '">'
+           + '<span style="'
+           + 'font-size:' + vw(10, 1.4, 18) + ';'
+           + 'color:' + config.textColor + ';'
+           + 'opacity:0.8;'
+           + 'text-shadow:0 1px 3px rgba(0,0,0,0.5);'
+           + '">'
+           + '<span style="font-weight:700;opacity:1;">' + dc.toLocaleString() + '</span>'
+           + ' <span style="opacity:0.5;">/</span> '
+           + '<span style="font-weight:500;">' + target.toLocaleString() + '</span>'
+           + ' <span style="font-weight:600;opacity:0.6;">' + typeLabel() + '</span>'
+           + '</span>'
+           + sparkle('calc(100% - ' + vw(10, 1.2, 20) + ')', '0', vw(6, 0.7, 12), 0, hexToRgba(config.barColor, 0.5))
+           + sparkle('calc(100% - ' + vw(22, 2.5, 40) + ')', vw(3, 0.3, 6), vw(5, 0.5, 9), 1.2, hexToRgba(pinkAccent, 0.4))
+           + '</div>';
+      }
+
+      // ════════════════════════════════════════════
+      // BOTTOM NEON ACCENT LINE
+      // ════════════════════════════════════════════
+      h += '<div style="'
+         + 'margin-top:' + vw(3, 0.3, 6) + ';'
+         + 'height:1px;'
+         + 'background:linear-gradient(90deg, transparent, ' + hexToRgba(config.barColor, 0.3) + ', ' + hexToRgba(pinkAccent, 0.2) + ', transparent);'
+         + 'background-size:200% 100%;'
+         + 'animation:shimmer 6s linear infinite;'
+         + 'border-radius:1px;'
+         + '"></div>';
+
+      // ── Render: FULL WIDTH layout ──
+      var root = document.getElementById('goal-root');
+      root.innerHTML = // Outer: full viewport, no centering, no max-width constraint
+        '<div id="goal-wrap" style="'
+        + 'width:100%;height:100%;'
+        + 'display:flex;align-items:center;justify-content:center;'
+        + 'padding:' + vw(6, 1.5, 24) + ';'
+        + '">'
+        // Inner: fills available width, no max-width cap
+        + '<div style="'
+        + 'width:100%;'
+        + 'padding:' + vw(8, 1.4, 20) + ' ' + vw(12, 2, 28) + ';'
+        + 'border-radius:' + vw(8, 1.2, 16) + ';'
+        + 'background:' + config.backgroundColor + ';'
+        + 'border:1px solid rgba(255,255,255,0.06);'
+        + 'backdrop-filter:blur(8px);'
+        + '-webkit-backdrop-filter:blur(8px);'
+        + 'box-shadow:0 4px 24px rgba(0,0,0,0.3), 0 0 40px ' + glowSoft + ';'
+        + '--glow-color:' + glowMain + ';'
+        + 'position:relative;overflow:hidden;'
+        + '">'
+        // Corner sparkles
+        + sparkle(vw(4, 0.4, 10), vw(4, 0.4, 10), vw(8, 1, 16), 0.5, hexToRgba(config.barColor, 0.35))
+        + sparkle('calc(100% - ' + vw(14, 1.6, 28) + ')', 'calc(100% - ' + vw(14, 1.6, 28) + ')', vw(6, 0.7, 12), 1.8, hexToRgba(pinkAccent, 0.3))
+        + h
+        + '</div>'
+        + '</div>';
+
+      // ── Size diagnostics ──
+      var vpW = window.innerWidth;
+      var vpH = window.innerHeight;
+      var wrap = document.getElementById('goal-wrap');
+      var inner = wrap ? wrap.firstElementChild : null;
+      var bar = document.getElementById('bar-fill');
+      console.log('[GOALS-WIDGET-SIZE] viewport = ' + vpW + 'x' + vpH);
+      console.log('[GOALS-WIDGET-SIZE] body = ' + document.body.offsetWidth + 'x' + document.body.offsetHeight);
+      if (inner) {
+        var cs = getComputedStyle(inner);
+        console.log('[GOALS-WIDGET-SIZE] container = ' + inner.offsetWidth + 'x' + inner.offsetHeight);
+        console.log('[GOALS-WIDGET-SIZE] computed maxWidth = ' + cs.maxWidth);
+        console.log('[GOALS-WIDGET-SIZE] computed transform = ' + cs.transform);
+      }
+      if (bar) {
+        console.log('[GOALS-WIDGET-SIZE] bar width = ' + bar.style.width);
+      }
+      console.log('[GOALS-WIDGET-SIZE] devicePixelRatio = ' + window.devicePixelRatio);
+
+      console.log('[GOALS-WIDGET] rendered current=' + dc + ' target=' + target + ' percentage=' + pct.toFixed(1) + '%');
+    }
+
+    // ── SSE connection ──
+    var sseUrl = 'http://127.0.0.1:18890/events';
+    var es = null;
+    var retryCount = 0;
+
+    function connectSSE() {
+      es = new EventSource(sseUrl);
+      es.onopen = function() {
+        retryCount = 0;
+        console.log('[GOALS-WIDGET] SSE connected');
+      };
+      es.onmessage = function(e) {
+        if (!e.data || e.data.trim() === '') return;
+        try {
+          var data = JSON.parse(e.data);
+          console.log('[GOALS-WIDGET] event received:', data.type);
+
+          if (data.type === 'goal-progress') {
+            var oldCurrent = current;
+            current = data.current || 0;
+            if (data.target) config.target = data.target;
+            if (data.goalType) config.goalType = data.goalType;
+            if (data.title) config.title = data.title;
+            if (data.barColor) config.barColor = data.barColor;
+            console.log('[GOALS-WIDGET] updating current=' + current + ' target=' + config.target);
+            render();
+
+            // Pulse animations on update
+            var wrap = document.getElementById('goal-wrap');
+            if (wrap && current !== oldCurrent) {
+              wrap.style.animation = 'none';
+              void wrap.offsetWidth;
+              wrap.style.animation = 'container-pulse 500ms ease-out';
+            }
+            var badge = document.getElementById('pct-badge');
+            if (badge && current !== oldCurrent) {
+              badge.style.animation = 'none';
+              void badge.offsetWidth;
+              badge.style.animation = 'pct-pop 400ms ease-out';
+            }
+          }
+        } catch(err) {}
+      };
+      es.onerror = function() {
+        es.close(); es = null;
+        if (retryCount < 50) {
+          var delay = Math.min(1000 * Math.pow(1.5, retryCount), 30000);
+          retryCount++;
+          setTimeout(connectSSE, delay);
+        }
+      };
+    }
+
+    console.log('[GOALS-WIDGET] HTML loaded');
+    console.log('[GOALS-WIDGET] config:', JSON.stringify(config));
+    connectSSE();
+    render();
+  </script>
+</body>
+</html>
