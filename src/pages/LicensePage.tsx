@@ -69,7 +69,7 @@ const PLAN_DETAILS = {
   },
 };
 
-export function LicensePage(): JSX.Element {
+export function LicensePage(): React.JSX.Element {
   const navigate = useNavigate();
   const {
     plan, status, features, expiresAt,

@@ -13,7 +13,7 @@ interface SelectFieldProps {
   disabled?: boolean;
 }
 
-export function SelectField({ label, value, options, onChange, disabled }: SelectFieldProps): JSX.Element {
+export function SelectField({ label, value, options, onChange, disabled }: SelectFieldProps): React.JSX.Element {
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       onChange(e.target.value);

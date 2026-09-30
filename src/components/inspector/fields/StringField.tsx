@@ -8,7 +8,7 @@ interface StringFieldProps {
   disabled?: boolean;
 }
 
-export function StringField({ label, value, onChange, placeholder, disabled }: StringFieldProps): JSX.Element {
+export function StringField({ label, value, onChange, placeholder, disabled }: StringFieldProps): React.JSX.Element {
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(e.target.value);

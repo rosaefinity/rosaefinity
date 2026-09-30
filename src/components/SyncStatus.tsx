@@ -1,3 +1,4 @@
+import React from "react";
 // =============================================
 // RosaeFinity — Sync Status Indicator
 // Compact status display for header/sidebar.
@@ -24,7 +25,7 @@ interface SyncStatusProps {
   className?: string;
 }
 
-export function SyncStatus({ compact = false, className }: SyncStatusProps): JSX.Element {
+export function SyncStatus({ compact = false, className }: SyncStatusProps): React.JSX.Element {
   const navigate = useNavigate();
   const { status, isOnline, pendingCount, conflictCount } = useSyncStore();
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.idle;

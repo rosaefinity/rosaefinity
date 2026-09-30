@@ -8,7 +8,7 @@ interface ColorFieldProps {
   disabled?: boolean;
 }
 
-export function ColorField({ label, value, onChange, onCommit, disabled }: ColorFieldProps): JSX.Element {
+export function ColorField({ label, value, onChange, onCommit, disabled }: ColorFieldProps): React.JSX.Element {
   const colorInputRef = useRef<HTMLInputElement>(null);
 
   const handleHexChange = useCallback(

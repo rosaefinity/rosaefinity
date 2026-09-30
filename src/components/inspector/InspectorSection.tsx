@@ -13,7 +13,7 @@ export function InspectorSection({
   defaultOpen = true,
   children,
   className,
-}: InspectorSectionProps): JSX.Element {
+}: InspectorSectionProps): React.JSX.Element {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   const toggle = useCallback(() => {

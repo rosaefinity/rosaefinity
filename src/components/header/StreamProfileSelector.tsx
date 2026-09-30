@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { ProfileSettingsModal } from '../profiles/ProfileSettingsModal';
 import type { StreamProfile } from '../../types';
 
-export function StreamProfileSelector(): JSX.Element {
+export function StreamProfileSelector(): React.JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<StreamProfile | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);

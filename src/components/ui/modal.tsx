@@ -46,7 +46,7 @@ interface ModalState extends ModalConfig {
 }
 
 // â”€â”€ Provider â”€â”€
-export function ModalProvider({ children }: { children: React.ReactNode }): JSX.Element {
+export function ModalProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [modals, setModals] = useState<ModalState[]>([]);
 
   const openModal = useCallback((config: ModalConfig): string => {

@@ -16,7 +16,7 @@ const ALIGNMENTS: { value: TextAlign; icon: string; label: string }[] = [
   { value: "justify", icon: "☐", label: "Justify" },
 ];
 
-export function AlignmentField({ label, value, onChange, disabled }: AlignmentFieldProps): JSX.Element {
+export function AlignmentField({ label, value, onChange, disabled }: AlignmentFieldProps): React.JSX.Element {
   return (
     <div className="flex flex-col gap-1">
       <label className="text-xs text-white/50 font-medium">{label}</label>

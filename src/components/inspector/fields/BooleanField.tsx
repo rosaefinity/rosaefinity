@@ -7,7 +7,7 @@ interface BooleanFieldProps {
   disabled?: boolean;
 }
 
-export function BooleanField({ label, value, onChange, disabled }: BooleanFieldProps): JSX.Element {
+export function BooleanField({ label, value, onChange, disabled }: BooleanFieldProps): React.JSX.Element {
   const handleToggle = useCallback(() => {
     if (!disabled) {
       onChange(!value);

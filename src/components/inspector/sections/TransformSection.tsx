@@ -8,7 +8,7 @@ interface TransformSectionProps {
   onUpdate: (changes: Partial<Omit<Widget, "id">>) => void;
 }
 
-export function TransformSection({ widget, onUpdate }: TransformSectionProps): JSX.Element {
+export function TransformSection({ widget, onUpdate }: TransformSectionProps): React.JSX.Element {
   const handleXChange = useCallback(
     (x: number) => onUpdate({ x }),
     [onUpdate],

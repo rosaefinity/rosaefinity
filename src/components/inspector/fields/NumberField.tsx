@@ -22,7 +22,7 @@ export function NumberField({
   step = 1,
   disabled,
   scrubSensitivity = 1,
-}: NumberFieldProps): JSX.Element {
+}: NumberFieldProps): React.JSX.Element {
   const [localValue, setLocalValue] = useState(String(value));
   const isScrubbing = useRef(false);
   const startX = useRef(0);

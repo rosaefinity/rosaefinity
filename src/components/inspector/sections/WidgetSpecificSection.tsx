@@ -14,7 +14,7 @@ interface WidgetSpecificSectionProps {
   onUpdate: (changes: Partial<Omit<Widget, "id">>) => void;
 }
 
-export function WidgetSpecificSection({ widget, onUpdate }: WidgetSpecificSectionProps): JSX.Element | null {
+export function WidgetSpecificSection({ widget, onUpdate }: WidgetSpecificSectionProps): React.JSX.Element | null {
   const updateProp = useCallback(
     (key: string, value: unknown) => {
       onUpdate({ props: { ...widget.props, [key]: value } });
@@ -46,7 +46,7 @@ function TextWidgetFields({
 }: {
   widget: Widget;
   updateProp: (key: string, value: unknown) => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const props = widget.props as TextWidgetProps;
 
   return (
@@ -105,7 +105,7 @@ function ImageWidgetFields({
 }: {
   widget: Widget;
   updateProp: (key: string, value: unknown) => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const props = widget.props as ImageWidgetProps;
 
   return (
@@ -137,7 +137,7 @@ function BrowserWidgetFields({
 }: {
   widget: Widget;
   updateProp: (key: string, value: unknown) => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const props = widget.props as BrowserWidgetProps;
 
   return (
@@ -158,7 +158,7 @@ function VideoWidgetFields({
 }: {
   widget: Widget;
   updateProp: (key: string, value: unknown) => void;
-}): JSX.Element {
+}): React.JSX.Element {
   const props = widget.props as VideoWidgetProps;
 
   return (

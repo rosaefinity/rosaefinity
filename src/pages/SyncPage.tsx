@@ -27,7 +27,7 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function SyncPage(): JSX.Element {
+export function SyncPage(): React.JSX.Element {
   const {
     status, isOnline, config, stats, pendingCount, conflictCount, conflicts,
     sync, setConfig, retryAll, forceSync, refreshStats,

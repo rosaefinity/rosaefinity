@@ -49,7 +49,7 @@ interface CanvasConnection {
   toInput: string;
 }
 
-export function WorkflowPage(): JSX.Element {
+export function WorkflowPage(): React.JSX.Element {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
   const [canvasNodes, setCanvasNodes] = useState<CanvasNode[]>([]);

@@ -175,7 +175,7 @@ function normalizeLicense(raw: unknown): UserDetail['license'] {
 
 // ── Main Component ──
 
-export function AdminUsersPage(): JSX.Element {
+export function AdminUsersPage(): React.JSX.Element {
   const navigate = useNavigate();
   const { hasRole } = useAuthStore();
   const isAdmin = hasRole('admin');

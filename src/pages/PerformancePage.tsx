@@ -1,3 +1,4 @@
+import React from "react";
 // =============================================
 // RosaeFinity — Performance Dashboard
 // FPS, memory, CPU, queues, throughput, timing.
@@ -15,7 +16,7 @@ import {
   TrendingUp, TrendingDown, CheckCircle2, AlertTriangle,
 } from 'lucide-react';
 
-export function PerformancePage(): JSX.Element {
+export function PerformancePage(): React.JSX.Element {
   const [fps, setFps] = useState(0);
   const [memory, setMemory] = useState({ used: 0, total: 0, limit: 0 });
   const [engineStats, setEngineStats] = useState<any>(null);

@@ -1,3 +1,4 @@
+import React from "react";
 // =============================================
 // RosaeFinity — Upgrade Dialog
 // Reusable modal shown when user hits a feature/limit gate.
@@ -37,7 +38,7 @@ export function UpgradeDialog({
   reason = 'feature_locked',
   currentUsage,
   limit,
-}: UpgradeDialogProps): JSX.Element {
+}: UpgradeDialogProps): React.JSX.Element {
   const navigate = () => {
     onClose();
     safeNavigate('/payment', 'UpgradeDialog:navigate');

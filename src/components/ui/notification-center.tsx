@@ -41,7 +41,7 @@ export function useNotifications(): NotificationContextValue {
 }
 
 // â”€â”€ Provider â”€â”€
-export function NotificationProvider({ children }: { children: React.ReactNode }): JSX.Element {
+export function NotificationProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [history, setHistory] = useState<Notification[]>([]);
 
@@ -147,7 +147,7 @@ function NotificationItem({ notification, onDismiss }: { notification: Notificat
 }
 
 // â”€â”€ History Panel â”€â”€
-export function NotificationHistory(): JSX.Element {
+export function NotificationHistory(): React.JSX.Element {
   const { history, clearHistory } = useNotifications();
   const [open, setOpen] = useState(false);
 

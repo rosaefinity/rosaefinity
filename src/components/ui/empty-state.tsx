@@ -1,3 +1,4 @@
+import React from "react";
 // =============================================
 // RosaeFinity — Empty State Component
 // Beautiful empty states for all lists.
@@ -18,7 +19,7 @@ interface EmptyStateProps {
   className?: string;
 }
 
-export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps): JSX.Element {
+export function EmptyState({ icon: Icon, title, description, action, className }: EmptyStateProps): React.JSX.Element {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}

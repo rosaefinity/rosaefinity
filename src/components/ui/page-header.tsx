@@ -14,7 +14,7 @@ interface PageHeaderProps {
   className?: string;
 }
 
-export function PageHeader({ title, subtitle, icon, actions, className }: PageHeaderProps): JSX.Element {
+export function PageHeader({ title, subtitle, icon, actions, className }: PageHeaderProps): React.JSX.Element {
   return (
     <div className={cn('flex items-center justify-between mb-6', className)}>
       <div className="flex items-center gap-3">

@@ -60,7 +60,7 @@ const INJECTED_STYLES = `
 
 // ─── SVG Icons (self-contained, no external dependencies) ───
 
-function HeartIcon({ color }: { color: string }): JSX.Element {
+function HeartIcon({ color }: { color: string }): React.JSX.Element {
   const id = `gpi-h-${color.replace("#", "")}`;
   return (
     <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -83,7 +83,7 @@ function HeartIcon({ color }: { color: string }): JSX.Element {
   );
 }
 
-function FollowerIcon({ color }: { color: string }): JSX.Element {
+function FollowerIcon({ color }: { color: string }): React.JSX.Element {
   const id = `gpi-f-${color.replace("#", "")}`;
   return (
     <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -104,7 +104,7 @@ function FollowerIcon({ color }: { color: string }): JSX.Element {
   );
 }
 
-function GiftIcon({ color }: { color: string }): JSX.Element {
+function GiftIcon({ color }: { color: string }): React.JSX.Element {
   const id = `gpi-g-${color.replace("#", "")}`;
   return (
     <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -125,7 +125,7 @@ function GiftIcon({ color }: { color: string }): JSX.Element {
   );
 }
 
-function GoalIcon({ goalType, color }: { goalType: string; color: string }): JSX.Element {
+function GoalIcon({ goalType, color }: { goalType: string; color: string }): React.JSX.Element {
   switch (goalType) {
     case "likes": return <HeartIcon color={color} />;
     case "followers": return <FollowerIcon color={color} />;
@@ -220,7 +220,7 @@ export function GoalProgressRenderer({
   mode,
   events,
   instanceId,
-}: RendererProps<GoalProgressConfig> & { instanceId?: string }): JSX.Element {
+}: RendererProps<GoalProgressConfig> & { instanceId?: string }): React.JSX.Element {
   console.log('[PREVIEW-RUNTIME-2]', JSON.stringify({
     textColor: config?.textColor,
     barColor: config?.barColor,

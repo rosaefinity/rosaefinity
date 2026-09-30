@@ -11,7 +11,7 @@ interface AppearanceSectionProps {
   onUpdate: (changes: Partial<Omit<Widget, "id">>) => void;
 }
 
-export function AppearanceSection({ widget, onUpdate }: AppearanceSectionProps): JSX.Element {
+export function AppearanceSection({ widget, onUpdate }: AppearanceSectionProps): React.JSX.Element {
   const currentProps = widget.props;
 
   const updateProp = useCallback(

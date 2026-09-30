@@ -1,3 +1,4 @@
+import React from "react";
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
@@ -20,7 +21,7 @@ interface ProfileSettingsModalProps {
   onClose: () => void;
 }
 
-export function ProfileSettingsModal({ profile, onClose }: ProfileSettingsModalProps): JSX.Element {
+export function ProfileSettingsModal({ profile, onClose }: ProfileSettingsModalProps): React.JSX.Element {
   const updateProfile = useAppStore((s) => s.updateProfile);
 
   const [name, setName] = useState(profile.name);

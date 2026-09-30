@@ -19,7 +19,7 @@ interface RouteGuardProps {
 
 const ROLE_LEVEL: Record<AccountType, number> = { guest: 0, free: 1, pro: 2, admin: 3 };
 
-export function RouteGuard({ children, requiredRole, publicOnly }: RouteGuardProps): JSX.Element {
+export function RouteGuard({ children, requiredRole, publicOnly }: RouteGuardProps): React.JSX.Element {
   const { currentUser, isLoading, initialized } = useAuthStore();
   const location = useLocation();
   const prevRouteRef = useRef(window.location.hash);

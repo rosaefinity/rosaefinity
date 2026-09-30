@@ -28,7 +28,7 @@ const WIDGET_TYPE_LABELS: Record<string, string> = {
   webcam: "Webcam",
 };
 
-export function GeneralSection({ widget, onUpdate }: GeneralSectionProps): JSX.Element {
+export function GeneralSection({ widget, onUpdate }: GeneralSectionProps): React.JSX.Element {
   const handleNameChange = useCallback(
     (name: string) => {
       onUpdate({ props: { ...widget.props, name } });

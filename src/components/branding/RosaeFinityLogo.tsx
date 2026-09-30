@@ -1,3 +1,4 @@
+import React from "react";
 interface RosaeFinityLogoProps {
   className?: string;
   size?: number;
@@ -7,7 +8,7 @@ interface RosaeFinityLogoProps {
 // and Electron production (resolves relative to dist/index.html inside asar)
 const LOGO_SRC = './logo-rosaefinity-transparent.png';
 
-export function RosaeFinityLogo({ className = '', size }: RosaeFinityLogoProps): JSX.Element {
+export function RosaeFinityLogo({ className = '', size }: RosaeFinityLogoProps): React.JSX.Element {
   const style = size ? { width: size, height: size } : undefined;
 
   return (

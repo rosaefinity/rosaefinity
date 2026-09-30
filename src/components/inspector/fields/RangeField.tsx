@@ -22,7 +22,7 @@ export function RangeField({
   step = 0.01,
   disabled,
   formatValue,
-}: RangeFieldProps): JSX.Element {
+}: RangeFieldProps): React.JSX.Element {
   const [localValue, setLocalValue] = useState(value);
   const prevValue = useRef(value);
   if (prevValue.current !== value) {

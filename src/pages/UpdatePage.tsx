@@ -1,3 +1,4 @@
+import React from "react";
 // =============================================
 // RosaeFinity — Update Management Page
 // Version info, channel, check/download, preferences.
@@ -34,7 +35,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof
   progress: { label: 'Downloading...', color: 'text-purple-400', icon: Loader2 },
 };
 
-export function UpdatePage(): JSX.Element {
+export function UpdatePage(): React.JSX.Element {
   const {
     status, currentVersion, latestVersion, channel, progress,
     currentInfo, releaseNotes, lastCheckedAt, lastInstalledAt,

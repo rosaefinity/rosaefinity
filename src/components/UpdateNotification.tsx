@@ -11,7 +11,7 @@ import { useUpdateStore } from '../store/update-store';
 import { Button } from './ui/button';
 import { Download, ArrowRight, X, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 
-export function UpdateNotification(): JSX.Element | null {
+export function UpdateNotification(): React.JSX.Element | null {
   const navigate = useNavigate();
   const { status, currentInfo, progress, error, downloadUpdate, clearError } = useUpdateStore();
   const [dismissed, setDismissed] = useState(false);

@@ -35,7 +35,7 @@ const USERNAMES = ['StreamerFan', 'LiveViewer', 'GiftMaster', 'ChatKing', 'ProGa
 const GIFT_NAMES = ['Rose', 'TikTok', 'Heart', 'Diamond', 'Star', 'Crown', 'Fire', 'Rainbow', 'Unicorn', 'Galaxy'];
 const COMMENTS = ['Hello!', 'Nice stream!', 'Love it!', 'GG!', 'Awesome!', 'First!', 'Let\'s go!', 'Wow!', 'Amazing!', 'Cool!'];
 
-export function StressTestPage(): JSX.Element {
+export function StressTestPage(): React.JSX.Element {
   const [config, setConfig] = useState<StressConfig>(DEFAULT_CONFIG);
   const [isRunning, setIsRunning] = useState(false);
   const [stats, setStats] = useState({ total: 0, perSecond: 0, gifts: 0, comments: 0, likes: 0, joins: 0 });

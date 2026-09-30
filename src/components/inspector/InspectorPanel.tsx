@@ -19,7 +19,7 @@ interface InspectorPanelProps {
   snapshot: EditorSnapshot;
 }
 
-export function InspectorPanel({ instance, snapshot }: InspectorPanelProps): JSX.Element {
+export function InspectorPanel({ instance, snapshot }: InspectorPanelProps): React.JSX.Element {
   const {
     selectedWidget,
     selectedWidgets,

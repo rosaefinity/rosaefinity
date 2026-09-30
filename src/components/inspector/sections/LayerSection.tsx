@@ -10,7 +10,7 @@ interface LayerSectionProps {
   onLayerCommand: (command: LayerCommand) => void;
 }
 
-export function LayerSection({ widget, onUpdate, onLayerCommand }: LayerSectionProps): JSX.Element {
+export function LayerSection({ widget, onUpdate, onLayerCommand }: LayerSectionProps): React.JSX.Element {
   const handleZIndexChange = useCallback(
     (zIndex: number) => onUpdate({ zIndex: Math.round(zIndex) }),
     [onUpdate],
