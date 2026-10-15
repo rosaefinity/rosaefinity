@@ -13,6 +13,10 @@ export interface Goal {
   title: string;
   reachedBehavior: GoalReachedBehavior;
   increaseAmount: number;
+  /** Original configured target — step size for 'increase' mode
+   *  (newTarget = oldTarget + initialTarget). Set at creation and on
+   *  user target edits; NOT modified by system-driven increase/double. */
+  initialTarget?: number;
   actionId: string | null;
   enabled: boolean;
   createdAt: number;
@@ -26,7 +30,7 @@ export interface Goal {
   backgroundColor?: string;
 }
 
-/** Runtime goal state (not persisted — derived from screen stats on startup) */
+/** Runtime goal state (persisted to localStorage rf-goals-runtime) */
 export interface GoalRuntime {
   goalId: string;
   current: number;
@@ -34,4 +38,8 @@ export interface GoalRuntime {
   /** Tracks the last target for which the completion action was fired.
    *  Prevents duplicate action execution across events. */
   lastCompletedTarget: number;
+  /** LIVE-session identity (TikTok roomId) this progress belongs to. */
+  sessionId?: string | null;
+  /** Last observed cumulative like total for session-delta math. */
+  lastLikeTotal?: number;
 }

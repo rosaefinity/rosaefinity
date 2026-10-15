@@ -2,10 +2,13 @@
 // RosaeFinity - electron/main.cjs
 // Electron Main Process (v2 — full backend)
 // =============================================
-console.log("[TIKTOK-MAIN-BOOT]", __filename);
-console.log("[TIKTOK-MAIN-PID]", process.pid);
+// Boot diagnostics — debug only
+if (process.env.RF_DEBUG === "1" || process.argv.includes("--dev")) {
+  console.log("[TIKTOK-MAIN-BOOT]", __filename);
+  console.log("[TIKTOK-MAIN-PID]", process.pid);
+}
 
-const { app, BrowserWindow, ipcMain, nativeTheme, Menu, Tray, shell, desktopCapturer, session } = require("electron");
+const { app, BrowserWindow, ipcMain, nativeTheme, Menu, Tray, shell, desktopCapturer, session, screen } = require("electron");
 const path = require("path");
 const { exec } = require("child_process");
 const http = require("http");
@@ -34,6 +37,13 @@ const { startGlobalHook, stopGlobalHook, isHookRunning } = require("./backend/gl
 const updateManager = require("./backend/update-manager.cjs");
 const { getTikTokService } = require("./backend/tiktok-service.cjs");
 const localTTS = require("./backend/local-tts.cjs");
+const { createMediaRegistry } = require("./backend/media-registry.cjs");
+
+// ── FIX 1+2: In-process media registry for /media/{mediaId} ──
+// Media bytes arrive from the renderer via IPC after Dexie resolution.
+// The HTTP route never accepts filesystem paths from clients.
+const mediaRegistry = createMediaRegistry();
+const MEDIA_HTTP_PORT = 18890;
 
 // ── Phase 2: Stability Modules ──────────────
 const { Logger } = require("./logger.cjs");
@@ -41,6 +51,7 @@ const { MemoryManager } = require("./memory-manager.cjs");
 const { ServiceMonitor } = require("./service-monitor.cjs");
 
 const isDev = process.env.NODE_ENV === "development" || process.argv.includes("--dev");
+const isDebug = isDev || process.env.RF_DEBUG === "1";
 
 // ── State ───────────────────────────────────
 let mainWindow          = null;
@@ -99,62 +110,168 @@ function broadcastSSE(data) {
 }
 
 function startSSEServer() {
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, `http://localhost:${SSE_PORT}`);
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url, `http://localhost:${SSE_PORT}`);
 
-    // ── UNIVERSAL REQUEST LOGGER ──
-    const ua = req.headers["user-agent"] || "unknown";
-    const referer = req.headers["referer"] || "none";
-    const origin = req.headers["origin"] || "none";
-    console.log("[HTTP-IN] " + req.method + " " + url.pathname + " UA=" + ua.substring(0, 80) + " REFERER=" + referer.substring(0, 60));
-
-    // ── Response logger (wraps res.end) ──
-    const origEnd = res.end;
-    res.end = function(...args) {
-      const ct = res.getHeader("content-type") || "unknown";
-      console.log("[HTTP-OUT] " + url.pathname + " STATUS=" + res.statusCode + " CONTENT-TYPE=" + ct);
-      return origEnd.apply(this, args);
-    };
-
-    // ── SSE stream endpoint ──
-    if (url.pathname === "/events" && req.method === "GET") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-      });
-      res.write(":\n\n"); // initial comment to flush headers
-      // Push stored Goal Progress config to newly connected client
-      if (storedGoalConfig) {
-        res.write(`data: ${JSON.stringify({ type: 'goal-config-update', config: storedGoalConfig })}\n\n`);
+      // ── UNIVERSAL REQUEST LOGGER (debug only) ──
+      if (isDebug) {
+        const ua = req.headers["user-agent"] || "unknown";
+        const referer = req.headers["referer"] || "none";
+        const origin = req.headers["origin"] || "none";
+        console.log("[HTTP-IN] " + req.method + " " + url.pathname + " UA=" + ua.substring(0, 80) + " REFERER=" + referer.substring(0, 60));
       }
-      sseClients.push(res);
-      req.on("close", () => { sseClients = sseClients.filter(c => c !== res); });
-      return;
-    }
 
-    // ── Health check endpoint ──
-    if (url.pathname === "/health") {
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      });
-      res.end(JSON.stringify({
-        status: "ok",
-        sseClients: sseClients.length,
-        uptime: process.uptime(),
-        timestamp: Date.now(),
-      }));
-      return;
-    }
+      // ── Main App HTML (desktop UI) - serves dist/index.html for production ──
+      if ((url.pathname === "/" || url.pathname === "/index.html") && req.method === "GET") {
+        if (!isDev) {
+          // Production: serve dist/index.html so /assets/* resolves correctly via HTTP
+          const htmlStrategies = [
+            path.join(__dirname, "../dist/index.html"),
+            path.join(process.resourcesPath || "", "dist", "index.html"),
+            path.join(app.getAppPath(), "dist", "index.html"),
+            path.join(process.cwd(), "dist", "index.html"),
+          ];
 
-    // ── Overlay widget HTML ──
+          let served = false;
+          for (const htmlPath of htmlStrategies) {
+            try {
+              if (!fs.existsSync(htmlPath)) continue;
+              const html = fs.readFileSync(htmlPath, "utf-8");
+              if (isDebug) {
+                console.log('[SERVER] Serving desktop UI index.html', {
+                  requestedUrl: req.url,
+                  resolvedFilePath: htmlPath,
+                  contentLength: html.length,
+                  timestamp: Date.now(),
+                });
+              }
+              res.writeHead(200, {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-cache",
+                "Access-Control-Allow-Origin": "*",
+              });
+              res.end(html);
+              served = true;
+              break;
+            } catch (_) {}
+          }
+          if (!served) {
+            console.error('[SERVER] index.html not found in any strategy', { strategies: htmlStrategies });
+            res.writeHead(404); res.end("App not found");
+          }
+          return;
+        }
+        // Dev mode: let Vite dev server handle / via proxy (or return 404 so mainWindow loads from Vite directly)
+        // We intentionally don't serve index.html here in dev mode.
+      }
+
+      // ── SSE stream endpoint ──
+      if (url.pathname === "/events" && req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.write(":\n\n"); // initial comment to flush headers
+        // Push stored Goal Progress config to newly connected client
+        if (storedGoalConfig) {
+          res.write(`data: ${JSON.stringify({ type: 'goal-config-update', config: storedGoalConfig })}\n\n`);
+        }
+        sseClients.push(res);
+        req.on("close", () => { sseClients = sseClients.filter(c => c !== res); });
+        return;
+      }
+
+      // ── Health check endpoint ──
+      if (url.pathname === "/health") {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({
+          status: "ok",
+          sseClients: sseClients.length,
+          uptime: process.uptime(),
+          timestamp: Date.now(),
+          media: mediaRegistry.stats(),
+        }));
+        return;
+      }
+
+      // ── Local media endpoint (FIX 1+2) ──
+      // Serves only media previously registered via IPC (Dexie-resolved).
+      // Unknown ids → 404. No filesystem path acceptance.
+      if (url.pathname.startsWith("/media/") && req.method === "GET") {
+        const rawId = decodeURIComponent(url.pathname.slice("/media/".length));
+        const entry = mediaRegistry.get(rawId);
+        if (!entry) {
+          if (isDebug) {
+            console.log("[HTTP-MEDIA]", JSON.stringify({
+              mediaId: rawId,
+              status: 404,
+              reason: "not-registered",
+            }));
+          }
+          res.writeHead(404, {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+          });
+          res.end("Media not found");
+          return;
+        }
+
+        const size = entry.size;
+        const rangeHeader = req.headers.range;
+        const headersBase = {
+          "Content-Type": entry.contentType,
+          "Accept-Ranges": "bytes",
+          "Access-Control-Allow-Origin": "*",
+          // mediaId is content-hashed on re-register; safe to cache long-term
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "X-RF-Media-Hash": entry.hash,
+        };
+
+        if (rangeHeader) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+          if (m) {
+            let start = m[1] === "" ? Math.max(0, size - Number(m[2])) : Number(m[1]);
+            let end = m[2] === "" ? size - 1 : Number(m[2]);
+            if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end >= size || start > end) {
+              res.writeHead(416, {
+                "Content-Range": `bytes */${size}`,
+                ...headersBase,
+              });
+              res.end();
+              return;
+            }
+            const chunk = entry.buffer.subarray(start, end + 1);
+            res.writeHead(206, {
+              ...headersBase,
+              "Content-Range": `bytes ${start}-${end}/${size}`,
+              "Content-Length": chunk.length,
+            });
+            res.end(chunk);
+            return;
+          }
+        }
+
+        res.writeHead(200, {
+          ...headersBase,
+          "Content-Length": size,
+        });
+        res.end(entry.buffer);
+        return;
+      }
+
+      // ── Overlay widget HTML ──
     if (url.pathname === "/overlay-widget.html" || url.pathname === "/overlay-widget") {
       const htmlPath = isDev
         ? path.join(__dirname, "../public/overlay-widget.html")
         : path.join(__dirname, "../dist/overlay-widget.html");
       try {
+        const fileExists = fs.existsSync(htmlPath);
         const html = fs.readFileSync(htmlPath, "utf-8");
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
@@ -216,12 +333,6 @@ function startSSEServer() {
           try {
             if (!fs.existsSync(htmlPath)) continue;
             const html = fs.readFileSync(htmlPath, "utf-8");
-            console.log('[COIN-JAR-SSE] serving coin-jar.html', JSON.stringify({
-              requestedUrl: req.url,
-              resolvedFilePath: htmlPath,
-              contentLength: html.length,
-              timestamp: Date.now(),
-            }));
             res.writeHead(200, {
               "Content-Type": "text/html; charset=utf-8",
               "Cache-Control": "no-store, no-cache, must-revalidate",
@@ -348,7 +459,7 @@ function startSSEServer() {
           "Access-Control-Allow-Origin": "*",
         });
         if (instance) {
-          res.end(JSON.stringify({ moduleId: instance.moduleId, config: instance.config }));
+          res.end(JSON.stringify({ moduleId: instance.moduleId, config: instance.config, instanceId: instance.id }));
         } else {
           res.writeHead(404, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
           res.end(JSON.stringify({ error: "Instance not found", browserSourceId }));
@@ -395,10 +506,18 @@ function startSSEServer() {
       req.on("end", () => {
         try {
           const data = JSON.parse(body);
+          if (data?.type === "media-complete") {
+            // Media-complete relay is a critical production path — keep error logging
+          }
           broadcastSSE(data);
           sendToOverlay("overlay:action", data);
           sendToRenderer("overlay:event", data);
-        } catch (_) {}
+          if (data?.type === "media-complete") {
+            // Media-complete relay is a critical production path — keep error logging
+          }
+        } catch (error) {
+          console.error("[MEDIA-COMPLETE-RELAY][SERVER-ERROR]", JSON.stringify({ error: error instanceof Error ? error.message : String(error), timestamp: Date.now() }));
+        }
         res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS" });
         res.end("ok");
       });
@@ -441,7 +560,6 @@ function startSSEServer() {
     // Handles /assets/* (bundled JS/CSS) and root-level public files (logos, favicon)
     if (url.pathname.startsWith("/assets/") || /\.(png|svg|ico|jpg|jpeg|gif|woff2?|ttf|eot)$/.test(url.pathname)) {
       const assetPath = url.pathname.replace(/^\//, '');
-      console.log("[GOALS-ASSET] requested =", url.pathname);
       const distStrategies = [
         path.join(__dirname, "../dist", assetPath),
         path.join(process.resourcesPath || "", "dist", assetPath),
@@ -463,7 +581,6 @@ function startSSEServer() {
             '.woff': 'font/woff',
           }[ext] || 'application/octet-stream';
           const data = fs.readFileSync(filePath);
-          console.log("[GOALS-ASSET] resolved =", filePath, "exists = true size =", data.length);
           res.writeHead(200, {
             'Content-Type': contentType,
             'Access-Control-Allow-Origin': '*',
@@ -480,8 +597,7 @@ function startSSEServer() {
     // ── Dev mode: proxy /assets/ to Vite dev server ──
     // coin-jar.html references /assets/ paths in production build
     if (isDev && url.pathname.startsWith("/assets/")) {
-      console.log(`[COIN-JAR-REQUEST] ${url.pathname} → proxy→Vite`);
-      const viteUrl = `http://127.0.0.1:5173${url.pathname}`;
+      const viteUrl = `http://127.0.0.1:5173${url.pathname}${url.search}`;
       http.get(viteUrl, (proxyRes) => {
         const contentType = proxyRes.headers['content-type'] || 'application/octet-stream';
         res.writeHead(proxyRes.statusCode || 200, {
@@ -500,19 +616,16 @@ function startSSEServer() {
     // ── Dev mode: proxy /src/* and /node_modules/* to Vite dev server ──
     // coin-jar.html and goals-widget.html in dev mode reference /src/ paths
     if (isDev && (url.pathname.startsWith("/src/") || url.pathname.startsWith("/node_modules/"))) {
-      console.log(`[GOALS-PROXY] ${url.pathname} → proxy→Vite`);
-      const viteUrl = `http://127.0.0.1:5173${url.pathname}`;
+      const viteUrl = `http://127.0.0.1:5173${url.pathname}${url.search}`;
       http.get(viteUrl, (proxyRes) => {
         const contentType = proxyRes.headers['content-type'] || 'application/octet-stream';
-        console.log(`[GOALS-PROXY] ${url.pathname} ← status=${proxyRes.statusCode} content-type=${contentType}`);
         res.writeHead(proxyRes.statusCode || 200, {
           'Content-Type': contentType,
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-store',
         });
         proxyRes.pipe(res);
-      }).on('error', (err) => {
-        console.log(`[GOALS-PROXY] ${url.pathname} ← ERROR: ${err.message}`);
+      }).on('error', () => {
         res.writeHead(502);
         res.end('Vite dev server not available for source proxy');
       });
@@ -521,7 +634,7 @@ function startSSEServer() {
 
     // ── Diagnostic test endpoints ──
     if (url.pathname === "/goals-test.html") {
-      console.log("[GOALS-SERVE] /goals-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
+      if (isDebug) console.log("[GOALS-SERVE] /goals-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, no-cache",
@@ -536,7 +649,7 @@ GOALS STATIC TEST
       return;
     }
     if (url.pathname === "/goals-js-test.html") {
-      console.log("[GOALS-SERVE] /goals-js-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
+      if (isDebug) console.log("[GOALS-SERVE] /goals-js-test.html requested by", req.headers["user-agent"]?.substring(0, 60));
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, no-cache",
@@ -549,7 +662,6 @@ HTML OK — WAITING FOR JS
 </div>
 <script>
 document.getElementById("test").textContent = "HTML + INLINE JS OK";
-console.log("[GOALS-RUNTIME] inline JS test executed");
 </script>
 </body></html>`);
       return;
@@ -559,12 +671,19 @@ console.log("[GOALS-RUNTIME] inline JS test executed");
   });
 
   server.listen(SSE_PORT, "127.0.0.1", () => {
-    console.log(`[RF] Overlay SSE server running on http://127.0.0.1:${SSE_PORT}`);
-    console.log(`[RF]   → OBS/TikTok Studio: http://127.0.0.1:${SSE_PORT}/overlay-widget.html`);
-    console.log(`[RF]   → SSE stream:        http://127.0.0.1:${SSE_PORT}/events`);
+    if (isDebug) {
+      console.log(`[SERVER] HTTP server listening on 127.0.0.1:${SSE_PORT}`);
+      console.log(`[RF] Overlay SSE server running on http://127.0.0.1:${SSE_PORT}`);
+      console.log(`[RF]   → OBS/TikTok Studio: http://127.0.0.1:${SSE_PORT}/overlay-widget.html`);
+      console.log(`[RF]   → SSE stream:        http://127.0.0.1:${SSE_PORT}/events`);
+      console.log(`[RF]   → Desktop UI:        http://127.0.0.1:${SSE_PORT}/`);
+    }
+    resolve();
   });
   server.on("error", (err) => {
     console.error(`[RF] SSE server error on port ${SSE_PORT}:`, err.message);
+    reject(err);
+  });
   });
 }
 
@@ -580,6 +699,64 @@ try {
   nutKeyboard = nut.keyboard;
   nutKey = nut.Key;
 } catch (_) { /* not available */ }
+
+// ── Native Windows SendInput (for reliable multi-modifier combos) ───
+let nativeSendInput = null;
+try {
+  const nativeModulePath = require.resolve("./backend/sendinput-native.cjs");
+  nativeSendInput = require(nativeModulePath);
+
+  // NATIVE-MODULE-IDENTITY: prove which file the Action path loads
+  if (isDebug) {
+    console.log("[NATIVE-MODULE-IDENTITY]", JSON.stringify({
+      file: "sendinput-native.cjs",
+      resolvedPath: nativeModulePath,
+      moduleInstanceId: `nat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      processPid: process.pid,
+      processArch: process.arch,
+      processExecPath: process.execPath,
+      dirname: __dirname,
+    }));
+
+    // NATIVE-WIRING-1: Verify module loaded and exports exist
+    const exportedKeys = Object.keys(nativeSendInput || {});
+    console.log("[NATIVE-WIRING-1]", JSON.stringify({
+      moduleLoaded: !!nativeSendInput,
+      exportedKeys,
+    }));
+  }
+
+  // Verify critical exports exist
+  if (!nativeSendInput.sendNativeKeystroke) {
+    if (isDebug) console.error("[NATIVE-WIRING-ERROR]", JSON.stringify({
+      error: "sendNativeKeystroke export missing",
+      exportedKeys,
+    }));
+    nativeSendInput = null;
+  } else if (!nativeSendInput.parseComboToVK) {
+    if (isDebug) console.error("[NATIVE-WIRING-ERROR]", JSON.stringify({
+      error: "parseComboToVK export missing",
+      exportedKeys,
+    }));
+    nativeSendInput = null;
+  } else {
+    if (isDebug) console.log("[SendInput-Native] Loaded successfully");
+  }
+} catch (err) {
+  if (isDebug) console.error("[NATIVE-WIRING-ERROR]", JSON.stringify({
+    error: err.message,
+    stack: err.stack,
+  }));
+  if (isDebug) console.warn("[SendInput-Native] Failed to load:", err.message);
+  nativeSendInput = null;
+}
+
+// RUNTIME-KEYBOARD-VERSION: Prove which keyboard variable name is in use
+if (isDebug) console.log("[RUNTIME-KEYBOARD-VERSION]", JSON.stringify({
+  nativeVariable: "nativeSendInput",
+  hasNativeModule: !!nativeSendInput,
+  moduleType: nativeSendInput ? typeof nativeSendInput : "null",
+}));
 
 // =============================================
 //  PATH RESOLUTION (Phase 1 — production black screen fix)
@@ -642,6 +819,9 @@ function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900,
     minWidth: 1200, minHeight: 700,
+    // width/height mean the web contents size (not OS frame) — avoids
+    // content-size vs bounds desync with titleBarStyle hidden
+    useContentSize: true,
     backgroundColor: "#0a0a0f",
     titleBarStyle: "hidden",
     titleBarOverlay: { color: "#0a0a0f", symbolColor: "#ffffff", height: 36 },
@@ -652,16 +832,193 @@ function createMainWindow() {
       nodeIntegration: false,
       webSecurity: false,
       sandbox: false,
+      zoomFactor: 1,
     },
     show: false,
   });
 
+  // ── Viewport sync ──
+  // Windows + titleBarStyle/titleBarOverlay can leave Chromium's renderer
+  // viewport stuck at Electron default 800x600 while getBounds() reports a
+  // large OS window. setContentSize is then a no-op (Electron already thinks
+  // content is large). Force a real resize so Chromium re-lays out.
+  const MAIN_CONTENT_W = 1400;
+  const MAIN_CONTENT_H = 900;
+
+  const readRendererViewport = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(null);
+    return mainWindow.webContents
+      .executeJavaScript(
+        `JSON.stringify({ w: window.innerWidth, h: window.innerHeight, outerW: window.outerWidth, outerH: window.outerHeight })`,
+      )
+      .then((s) => {
+        try { return JSON.parse(s); } catch { return null; }
+      })
+      .catch(() => null);
+  };
+
+  const forceChromiumResize = (targetW, targetH) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const b = mainWindow.getBounds();
+      // setBounds on the OS window forces Windows to re-send size to Chromium
+      // even when getContentBounds() already reports a large size (the bug:
+      // Electron bounds/content can look correct while innerWidth stays 800x600).
+      const w = Math.max(b.width, targetW + 16);
+      const h = Math.max(b.height, targetH + 39);
+      mainWindow.setBounds({ x: b.x, y: b.y, width: w, height: h });
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        try { mainWindow.setContentSize(targetW, targetH); } catch (_) {}
+        try { mainWindow.webContents.setZoomFactor(1); } catch (_) {}
+        // Zoom nudge forces Chromium reflow when bounds already "match"
+        try {
+          mainWindow.webContents.setZoomFactor(0.98);
+          setTimeout(() => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              try { mainWindow.webContents.setZoomFactor(1); } catch (_) {}
+            }
+          }, 30);
+        } catch (_) {}
+      }, 40);
+    } catch (err) {
+      console.error("[ELECTRON-VIEWPORT] force resize failed", err);
+    }
+  };
+
+  const syncMainWindowViewport = async (reason) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const bounds = mainWindow.getBounds();
+      const content = mainWindow.getContentBounds();
+      const renderer = await readRendererViewport();
+      const rw = renderer?.w || 0;
+      const rh = renderer?.h || 0;
+
+      const targetW = Math.max(content.width, bounds.width - 20, MAIN_CONTENT_W, 1200);
+      const targetH = Math.max(content.height, bounds.height - 48, MAIN_CONTENT_H, 700);
+
+      // Chromium viewport stuck while OS window is large — the reported bug
+      const rendererStuck = (rw > 0 && rw < 1000 && bounds.width > 1000) ||
+        (rw > 0 && rh > 0 && (rw < bounds.width - 80 || rh < bounds.height - 80));
+      const contentSmall = content.width < 1000 || content.height < 650;
+
+      if (isDebug) {
+        console.log("[ELECTRON-VIEWPORT]", reason, {
+          bounds,
+          content,
+          renderer,
+          targetW,
+          targetH,
+          rendererStuck,
+          contentSmall,
+        });
+      }
+
+      if (rendererStuck || contentSmall) {
+        forceChromiumResize(targetW, targetH);
+        setTimeout(async () => {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          const r2 = await readRendererViewport();
+          if (isDebug) console.log("[ELECTRON-VIEWPORT] after-nudge", reason, r2);
+          if (r2 && (r2.w < 1000 || r2.h < 650 || r2.w < mainWindow.getBounds().width - 80)) {
+            // Reload renderer so Chromium re-reads the real window size
+            if (isDebug) console.log("[ELECTRON-VIEWPORT] reloading renderer to resync viewport");
+            try { mainWindow.webContents.reload(); } catch (_) {}
+          }
+        }, 250);
+      }
+    } catch (err) {
+      console.error("[ELECTRON-VIEWPORT] sync failed", err);
+    }
+  };
+
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+    setTimeout(() => { syncMainWindowViewport("ready-to-show"); }, 80);
+    setTimeout(() => { syncMainWindowViewport("ready-to-show-late"); }, 500);
+  });
+
+  // Windows maximize + titleBarStyle:hidden/titleBarOverlay can leave Chromium's
+  // innerWidth at the Electron default 800x600 while getContentBounds() reports
+  // the full work area (e.g. 1920x1032). setContentSize is a no-op because
+  // Electron already believes content is large. Force OS bounds + zoom reflow.
+  const fixMaximizedRendererViewport = (reason) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      let wa = null;
+      try {
+        const display = screen.getDisplayMatching(mainWindow.getBounds());
+        wa = display.workArea;
+      } catch (_) {
+        wa = null;
+      }
+      const content = mainWindow.getContentBounds();
+      const targetW = Math.max(wa?.width || 0, content.width, MAIN_CONTENT_W, 1200);
+      const targetH = Math.max(wa?.height || 0, content.height, MAIN_CONTENT_H, 700);
+      const frameW = 16;
+      const frameH = 39;
+      const bounds = mainWindow.getBounds();
+
+      if (isDebug) {
+        console.log("[ELECTRON-VIEWPORT] fix-maximized", reason, {
+          bounds,
+          content,
+          wa,
+          targetW,
+          targetH,
+        });
+      }
+
+      // 1px OS nudge — forces Windows to re-send size to Chromium
+      mainWindow.setBounds({
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width + 2,
+        height: bounds.height + 2,
+      });
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        try {
+          mainWindow.setContentSize(targetW, targetH);
+          mainWindow.setBounds({
+            x: wa ? wa.x - Math.floor(frameW / 2) : bounds.x,
+            y: wa ? wa.y - Math.floor(frameH / 2) : bounds.y,
+            width: targetW + frameW,
+            height: targetH + frameH,
+          });
+        } catch (_) {}
+        try {
+          mainWindow.webContents.setZoomFactor(1.02);
+          setTimeout(() => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              try { mainWindow.webContents.setZoomFactor(1); } catch (_) {}
+              readRendererViewport().then((r) => {
+                if (isDebug) console.log("[ELECTRON-VIEWPORT] fix-maximized-verify", reason, r);
+              });
+            }
+          }, 40);
+        } catch (_) {}
+      }, 30);
+    } catch (err) {
+      console.error("[ELECTRON-VIEWPORT] fix-maximized failed", err);
+    }
+  };
+
+  mainWindow.on("maximize", () => setTimeout(() => fixMaximizedRendererViewport("maximize"), 60));
+  mainWindow.on("unmaximize", () => setTimeout(() => syncMainWindowViewport("unmaximize"), 80));
+  mainWindow.on("resize", () => setTimeout(() => syncMainWindowViewport("resize"), 150));
+  mainWindow.webContents.on("did-finish-load", () => {
+    setTimeout(() => syncMainWindowViewport("did-finish-load"), 200);
+  });
+
   // ── Diagnostics ──
   mainWindow.webContents.on("did-start-loading", () => {
-    console.log("[ELECTRON] did-start-loading");
+    if (isDebug) console.log("[ELECTRON] did-start-loading");
   });
 
   mainWindow.webContents.on("did-finish-load", () => {
+    if (!isDebug) return;
     console.log("[ELECTRON] did-finish-load");
 
     // Step 6: Verify the actual DOM
@@ -750,40 +1107,39 @@ function createMainWindow() {
 
   mainWindow.webContents.on("unresponsive", () => {
     console.error("[ELECTRON] renderer UNRESPONSIVE");
-    console.error("[RENDERER] UNRESPONSIVE");
   });
 
   mainWindow.webContents.on("responsive", () => {
-    console.log("[ELECTRON] renderer responsive");
+    if (isDebug) console.log("[ELECTRON] renderer responsive");
   });
 
-  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    console.log("[RENDERER-CONSOLE]", {
-      level,
-      message,
-      line,
-      sourceId
+  // RENDERER-CONSOLE: Only in debug mode to avoid leaking arbitrary renderer logs
+  if (isDebug) {
+    mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      console.log("[RENDERER-CONSOLE]", {
+        level,
+        message,
+        line,
+        sourceId
+      });
     });
-  });
+  }
 
   // ── Load content ──
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
   } else {
-    const indexPath = resolveIndexHtml();
-    if (indexPath) {
-      mainWindow.loadFile(indexPath);
-    } else {
-      console.error("[RF] CRITICAL: index.html not found at any expected path");
-      loadErrorPage("index.html-not-found");
-    }
+    // Load via HTTP server so /assets/* resolves correctly
+    const productionUrl = `http://127.0.0.1:${SSE_PORT}/`;
+    if (isDebug) console.log("[ELECTRON] Loading production UI from", productionUrl);
+    mainWindow.loadURL(productionUrl);
+    if (isDebug) console.log("[ELECTRON] Production UI load initiated");
   }
 
   // ── Show when ready (prevent white flash) ──
-  mainWindow.once("ready-to-show", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
-  });
+  // Viewport sync is registered above (ready-to-show + maximize/resize).
+  // Do not register a second ready-to-show show() handler here.
 
   // ── Phase 1: Close handler (graceful shutdown) ──
   mainWindow.on("closed", () => {
@@ -866,8 +1222,106 @@ function friendlyError(err, username) {
 // =============================================
 //  KEYSTROKE SIMULATION
 // =============================================
-async function sendKeystroke(keys, holdMs = 100, eventData) {
+// Serialize ALL keyboard injection (native SendInput + nut-js + robotjs + SendKeys).
+// Concurrent Action/test IPC calls can otherwise interleave modifier DOWN/UP
+// and leave Ctrl/Shift/Alt stuck in the foreground app (e.g. Notepad).
+let keystrokeQueue = Promise.resolve();
+
+/**
+ * Run a keyboard task after any previously queued keystroke finishes.
+ * Failed tasks do not block later tasks.
+ */
+function enqueueKeystroke(task) {
+  const run = keystrokeQueue.then(() => task(), () => task());
+  keystrokeQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function sendKeystroke(keys, holdMs = 100, eventData, rfKeyId) {
   if (!keys) return false;
+  // Queue the entire injection path so Action A completes fully
+  // (including modifier UP) before Action B begins.
+  return enqueueKeystroke(() => sendKeystrokeBody(keys, holdMs, eventData, rfKeyId));
+}
+
+// RF-KEY counters (per process) for duplicate-invocation audit
+const rfKeyCounters = {
+  ipcHandle: 0,
+  sendKeystroke: 0,
+  nativeSequence: 0,
+  lastRfKeyId: null,
+};
+
+/**
+ * Log foreground window immediately before keyboard work (diagnose only).
+ */
+function logForegroundForRfKey(stage, rfKeyId) {
+  let fg = null;
+  try {
+    if (nativeSendInput && typeof nativeSendInput.getForegroundWindow === "function") {
+      fg = nativeSendInput.getForegroundWindow();
+    }
+  } catch (err) {
+    fg = { error: err.message };
+  }
+  if (isDebug) console.log("[RF-KEY-FOREGROUND]", JSON.stringify({ stage, id: rfKeyId || null, foreground: fg }));
+  return fg;
+}
+
+/**
+ * Read Windows Ctrl state (diagnostic only — never used to fake-release).
+ */
+function logRfCtrlState(stage, rfKeyId) {
+  let state = null;
+  try {
+    if (nativeSendInput && typeof nativeSendInput.readAsyncKeyState === "function") {
+      const s = nativeSendInput.readAsyncKeyState(0x11);
+      state = { value: s.hex, pressed: s.pressed, toggle: s.toggleSinceLastCall };
+    }
+  } catch (err) {
+    state = { error: err.message };
+  }
+  if (isDebug) console.log("[RF-CTRL-STATE]", JSON.stringify({ stage, id: rfKeyId || null, ...state }));
+  return state;
+}
+
+/**
+ * Monitor for delayed keyboard sequences after Action completes (500ms).
+ * Uses a lightweight marker: any further sendKeystroke/native logs will show
+ * as additional RF-KEY-TRACE / NATIVE-KEY-SEQUENCE with a different id.
+ */
+function startRfKeyAfterMonitor(rfKeyId, keys) {
+  const start = Date.now();
+  const timer = setInterval(() => {
+    const elapsed = Date.now() - start;
+    if (elapsed >= 500) {
+      clearInterval(timer);
+      if (isDebug) console.log("[RF-KEY-AFTER]", JSON.stringify({
+        elapsedMs: elapsed,
+        source: "monitor-end",
+        keys,
+        id: rfKeyId,
+        note: "If additional NATIVE-KEY-SEQUENCE / RF-KEY-TRACE appeared during this window, report them",
+      }));
+      return;
+    }
+  }, 100);
+  // unref so monitor does not keep Electron alive
+  if (typeof timer.unref === "function") timer.unref();
+}
+
+async function sendKeystrokeBody(keys, holdMs = 100, eventData, rfKeyId) {
+  const rfKey = rfKeyId || `RF-KEY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  rfKeyCounters.sendKeystroke += 1;
+  rfKeyCounters.lastRfKeyId = rfKey;
+
+  if (isDebug) console.log("[RF-KEY-TRACE]", JSON.stringify({
+    stage: "sendKeystroke",
+    id: rfKey,
+    keys,
+    holdMs,
+    sendKeystrokeCallCount: rfKeyCounters.sendKeystroke,
+  }));
 
   // Resolve placeholders from eventData
   let resolvedKeys = keys;
@@ -884,102 +1338,266 @@ async function sendKeystroke(keys, holdMs = 100, eventData) {
       .replace(/\{submonth\}/gi, String(eventData.subMonth || ""));
   }
 
-  console.log(`[Keystroke] Attempting to send: "${resolvedKeys}" (hold: ${holdMs}ms)`);
+  if (isDebug) console.log(`[Keystroke] sending "${resolvedKeys}" (hold: ${holdMs}ms) rfKey=${rfKey}`);
 
-  // Try nut-js first (modern, native Node.js)
-  if (nutKeyboard && nutKey) {
-    try {
-      const parts = resolvedKeys.split("+").map(k => k.trim());
-      const modifiers = [];
-      let key = null;
-      for (const p of parts) {
-        const l = p.toLowerCase();
-        if (["control", "shift", "alt", "meta", "command"].includes(l)) modifiers.push(l === "command" ? "meta" : l);
-        else key = p;
+  // Route ALL modifier combinations through native Windows SendInput
+  // Execution order:
+  // 1. Any combo with 1+ modifiers → native Windows SendInput (koffi FFI) FIRST
+  // 2. 0 modifiers → nut-js pressKey/releaseKey
+  // 3. Fallback → robotjs → SendKeys
+  // A successful native SendInput MUST return immediately (no fallback after success).
+  if (nativeSendInput) {
+    const keymap = require("./backend/keystroke-keymap.cjs");
+    const nutSequences = resolvedKeys.split(/\s+/).filter(s => s.length > 0);
+    let hasAnyModifier = false;
+    for (const seq of nutSequences) {
+      const { modifiers } = keymap.parseKeystrokeCombo(seq);
+      if (modifiers.length >= 1) {
+        hasAnyModifier = true;
+        break;
       }
-      // Map key to nut-js Key enum
-      const keyMapNut = {
-        "ENTER": nutKey.Enter, "TAB": nutKey.Tab, "ESCAPE": nutKey.Escape, "ESC": nutKey.Escape,
-        "BACKSPACE": nutKey.Backspace, "DELETE": nutKey.Delete, "DEL": nutKey.Delete,
-        "SPACE": nutKey.Space, "SPACEBAR": nutKey.Space,
-        "UP": nutKey.Up, "DOWN": nutKey.Down, "LEFT": nutKey.Left, "RIGHT": nutKey.Right,
-        "ARROWUP": nutKey.Up, "ARROWDOWN": nutKey.Down, "ARROWLEFT": nutKey.Left, "ARROWRIGHT": nutKey.Right,
-        "HOME": nutKey.Home, "END": nutKey.End, "PAGEUP": nutKey.PageUp, "PAGEDOWN": nutKey.PageDown,
-        "PGUP": nutKey.PageUp, "PGDN": nutKey.PageDown,
-        "F1": nutKey.F1, "F2": nutKey.F2, "F3": nutKey.F3, "F4": nutKey.F4, "F5": nutKey.F5,
-        "F6": nutKey.F6, "F7": nutKey.F7, "F8": nutKey.F8, "F9": nutKey.F9, "F10": nutKey.F10, "F11": nutKey.F11, "F12": nutKey.F12,
-        // Letters A-Z
-        "A": nutKey.A, "B": nutKey.B, "C": nutKey.C, "D": nutKey.D, "E": nutKey.E, "F": nutKey.F,
-        "G": nutKey.G, "H": nutKey.H, "I": nutKey.I, "J": nutKey.J, "K": nutKey.K, "L": nutKey.L,
-        "M": nutKey.M, "N": nutKey.N, "O": nutKey.O, "P": nutKey.P, "Q": nutKey.Q, "R": nutKey.R,
-        "S": nutKey.S, "T": nutKey.T, "U": nutKey.U, "V": nutKey.V, "W": nutKey.W, "X": nutKey.X,
-        "Y": nutKey.Y, "Z": nutKey.Z,
-        // Numbers 0-9
-        "0": nutKey.Num0, "1": nutKey.Num1, "2": nutKey.Num2, "3": nutKey.Num3, "4": nutKey.Num4,
-        "5": nutKey.Num5, "6": nutKey.Num6, "7": nutKey.Num7, "8": nutKey.Num8, "9": nutKey.Num9,
-      };
-
-      const nutKeyCode = keyMapNut[key?.toUpperCase()] || nutKey[key] || key;
-      if (nutKeyCode) {
-        // Press modifiers
-        for (const mod of modifiers) {
-          if (mod === "control") await nutKeyboard.pressKey(nutKey.LeftControl);
-          else if (mod === "shift") await nutKeyboard.pressKey(nutKey.LeftShift);
-          else if (mod === "alt") await nutKeyboard.pressKey(nutKey.LeftAlt);
-          else if (mod === "meta") await nutKeyboard.pressKey(nutKey.LeftMeta);
-        }
-        // Press main key
-        await nutKeyboard.pressKey(nutKeyCode);
-        // Hold
-        await new Promise(r => setTimeout(r, holdMs));
-        // Release main key
-        await nutKeyboard.releaseKey(nutKeyCode);
-        // Release modifiers (reverse order)
-        for (const mod of [...modifiers].reverse()) {
-          if (mod === "control") await nutKeyboard.releaseKey(nutKey.LeftControl);
-          else if (mod === "shift") await nutKeyboard.releaseKey(nutKey.LeftShift);
-          else if (mod === "alt") await nutKeyboard.releaseKey(nutKey.LeftAlt);
-          else if (mod === "meta") await nutKeyboard.releaseKey(nutKey.LeftMeta);
-        }
-        console.log("[Keystroke] Sent via nut-js successfully");
-        return true;
-      }
-    } catch (err) {
-      console.warn("[Keystroke] nut-js failed:", err.message);
     }
-  } else {
-    console.log("[Keystroke] nut-js not available");
+
+    if (hasAnyModifier) {
+      if (isDebug) console.log("[Keystroke] modifier combo → native SendInput", rfKey);
+      try {
+        const result = await nativeSendInput.sendNativeKeystroke(resolvedKeys, holdMs);
+        rfKeyCounters.nativeSequence += 1;
+        if (isDebug) {
+          logForegroundForRfKey("after-native-send", rfKey);
+          logRfCtrlState("after-native-0ms", rfKey);
+        }
+        if (result) {
+          if (isDebug) console.log("[Keystroke] native SendInput success", rfKey);
+          return true;
+        }
+        if (isDebug) console.log("[Keystroke] native SendInput returned false, falling back");
+      } catch (err) {
+        console.warn("[Keystroke] Native SendInput failed:", err.message);
+      }
+    }
   }
 
-  // Try robotjs
+  // Try nut-js for 0-modifier keys ONLY (modifier combos already handled by SendInput above)
+  // If SendInput was unavailable or failed, this is the fallback for modifier combos too.
+  if (nutKeyboard && nutKey) {
+    try {
+      const keymap = require("./backend/keystroke-keymap.cjs");
+      const nutSequences = resolvedKeys.split(/\s+/).filter(s => s.length > 0);
+      if (isDebug) console.log(`[Keystroke-DIAG] nutSequences to process: ${JSON.stringify(nutSequences)}`);
+      let allSucceeded = true;
+
+      for (const seq of nutSequences) {
+        const { modifiers, main } = keymap.parseKeystrokeCombo(seq);
+        const nutKeyName = keymap.mapTokenToNutKeyName(main, nutKey);
+        const nutKeyCode = nutKeyName ? nutKey[nutKeyName] : undefined;
+        const MOD_TO_NUT = {
+          control: () => nutKey.LeftControl,
+          shift: () => nutKey.LeftShift,
+          alt: () => nutKey.LeftAlt,
+          meta: () => nutKey.LeftMeta,
+        };
+        const modKeyCodes = [];
+        const modKeyNames = [];
+        for (const mod of modifiers) {
+          const resolve = MOD_TO_NUT[mod];
+          if (!resolve) continue;
+          const code = resolve();
+          if (code != null) {
+            modKeyCodes.push(code);
+            modKeyNames.push(mod);
+          }
+        }
+        const allKeys = [...new Set([...modKeyCodes, nutKeyCode])];
+        const allNames = [...new Set([...modKeyNames, nutKeyName])];
+
+        // Log for 0-modifier keys (modifier combos already logged by SendInput path)
+        if (modKeyCodes.length === 0) {
+          if (isDebug) console.log("[KEYTRACE-3]", JSON.stringify({
+            seq,
+            mainKey: main,
+            modifiers,
+            modifierNames: modKeyNames,
+            modifierCodes: modKeyCodes,
+            mainNutKeyName: nutKeyName,
+            mainKeyCode: nutKeyCode,
+            pressSequence: allNames,
+            pressCodes: allKeys,
+            releaseSequence: [...allNames].reverse(),
+            backend: "nut-js",
+          }));
+        } else {
+          if (isDebug) console.log("[MODIFIER-FORENSIC]", JSON.stringify({
+            seq,
+            parsedModifiers: modifiers,
+            mainKey: main,
+            modifierKeys: modKeyNames,
+            modifierCodes: modKeyCodes,
+            mainNutKeyName: nutKeyName,
+            mainKeyCode: nutKeyCode,
+            pressSequence: allNames,
+            pressCodes: allKeys,
+            releaseSequence: [...allNames].reverse(),
+            backend: "nut-js-fallback",
+          }));
+        }
+
+        if (isDebug) console.log(`[Keystroke-DIAG] seq="${seq}" -> modifiers=[${modifiers.join(',')}] main="${main}"`);
+        if (!main) continue;
+        if (isDebug) console.log(`[Keystroke-DIAG] main="${main}" -> nutKeyName="${nutKeyName}"`);
+        if (nutKeyCode == null) {
+          console.warn("[Keystroke] unmapped key for nut-js:", main);
+          allSucceeded = false;
+          continue;
+        }
+        if (isDebug) console.log(`[Keystroke-DIAG] nutKeyCode for "${nutKeyName}": ${nutKeyCode}`);
+
+        if (modKeyCodes.length === 0) {
+          // Single key (no modifiers): hold via press/release
+          await nutKeyboard.pressKey(nutKeyCode);
+          try {
+            await new Promise(r => setTimeout(r, holdMs));
+          } finally {
+            await nutKeyboard.releaseKey(nutKeyCode);
+          }
+        } else {
+          // Fallback for modifier combos (only reached if SendInput failed)
+          // try/finally: release EVERY key we successfully pressed, even if hold/release throws
+          console.log(`[Keystroke-DIAG] Fallback: pressKey(${allKeys.join(', ')}) for "${seq}"`);
+          const pressedNutKeys = [];
+          try {
+            for (const k of allKeys) {
+              await nutKeyboard.pressKey(k);
+              pressedNutKeys.push(k);
+            }
+            await new Promise(r => setTimeout(r, holdMs));
+          } finally {
+            while (pressedNutKeys.length > 0) {
+              const k = pressedNutKeys.pop();
+              try {
+                await nutKeyboard.releaseKey(k);
+              } catch (relErr) {
+                console.warn("[Keystroke] nut-js release failed:", relErr.message);
+              }
+            }
+          }
+        }
+      }
+
+      if (allSucceeded) {
+        console.log("[Keystroke] Sent via nut-js successfully");
+        console.log("[RF-KEY-PATH]", JSON.stringify({
+          path: "nut-js",
+          outcome: "success",
+          id: rfKey,
+          resolvedKeys,
+        }));
+        return true;
+      }
+      console.log("[Keystroke] nut-js had failures, falling back");
+      console.log("[RF-KEY-PATH]", JSON.stringify({
+        path: "nut-js",
+        outcome: "partial-failure-will-fallback",
+        id: rfKey,
+        resolvedKeys,
+      }));
+    } catch (err) {
+      console.warn("[Keystroke] nut-js failed:", err.message);
+      // Fall through to robotjs/SendKeys
+    }
+  } else {
+    if (isDebug) console.log("[Keystroke] nut-js not available");
+  }
+
+  // Try robotjs (for single key and single modifier combos if nut-js unavailable)
   if (robot) {
     try {
-      const parts = resolvedKeys.split("+").map(k => k.trim());
-      const modifiers = [];
-      let key = null;
-      for (const p of parts) {
-        const l = p.toLowerCase();
-        if (["ctrl", "shift", "alt", "meta", "command"].includes(l)) modifiers.push(l === "command" ? "meta" : l);
-        else key = p;
+      const keymap = require("./backend/keystroke-keymap.cjs");
+      const robotSequences = resolvedKeys.split(/\s+/).filter(s => s.length > 0);
+      if (isDebug) console.log(`[Keystroke-DIAG] FALLBACK: robotjs path, robotSequences: ${JSON.stringify(robotSequences)}`);
+      let allSucceeded = true;
+      for (const seq of robotSequences) {
+        const { modifiers, main } = keymap.parseKeystrokeCombo(seq);
+        if (isDebug) console.log(`[Keystroke-DIAG] robotjs seq="${seq}" -> modifiers=[${modifiers.join(',')}] main="${main}"`);
+        if (!main) continue;
+        const robotKey = keymap.mapTokenToRobotjsName(main);
+        if (isDebug) console.log(`[Keystroke-DIAG] robotjs main="${main}" -> robotKey="${robotKey}"`);
+        if (!robotKey) {
+          console.warn("[Keystroke] unmapped key for robotjs:", main);
+          allSucceeded = false;
+          continue;
+        }
+        if (modifiers.length === 0) {
+          // Single key — await hold so the keystroke queue cannot start the
+          // next action while this key is still down.
+          robot.keyToggle(robotKey, "down");
+          try {
+            await new Promise(r => setTimeout(r, holdMs));
+          } finally {
+            robot.keyToggle(robotKey, "up");
+          }
+        } else if (modifiers.length === 1) {
+          // Single modifier — try/finally releases main + modifier even on throw
+          const pressedRobotKeys = [];
+          try {
+            for (const mod of modifiers) {
+              robot.keyToggle(mod, "down");
+              pressedRobotKeys.push(mod);
+            }
+            robot.keyToggle(robotKey, "down");
+            pressedRobotKeys.push(robotKey);
+            await new Promise(r => setTimeout(r, holdMs));
+          } finally {
+            while (pressedRobotKeys.length > 0) {
+              const k = pressedRobotKeys.pop();
+              try { robot.keyToggle(k, "up"); } catch (_) {}
+            }
+          }
+        } else {
+          // 2+ modifiers should have been handled by native SendInput
+          // If we reach here, native SendInput wasn't available - try robotjs
+          if (isDebug) console.log("[Keystroke-DIAG] 2+ modifiers with robotjs fallback (SendInput unavailable)");
+          try {
+            const pressedRobotKeys = [];
+            try {
+              for (const mod of modifiers) {
+                robot.keyToggle(mod, "down");
+                pressedRobotKeys.push(mod);
+              }
+              robot.keyToggle(robotKey, "down");
+              pressedRobotKeys.push(robotKey);
+              await new Promise(r => setTimeout(r, holdMs));
+            } finally {
+              while (pressedRobotKeys.length > 0) {
+                const k = pressedRobotKeys.pop();
+                try { robot.keyToggle(k, "up"); } catch (_) {}
+              }
+            }
+          } catch (e) {
+            console.warn("[Keystroke] robotjs multi-modifier failed:", e.message);
+            allSucceeded = false;
+          }
+        }
       }
-      if (key) {
-        for (const mod of modifiers) robot.keyToggle(mod, "down");
-        robot.keyToggle(key, "down");
-        setTimeout(() => {
-          robot.keyToggle(key, "up");
-          for (const mod of modifiers) robot.keyToggle(mod, "up");
-        }, holdMs);
-        console.log("[Keystroke] Sent via robotjs successfully");
+      if (allSucceeded) {
+        if (isDebug) console.log("[Keystroke] Sent via robotjs successfully");
+        if (isDebug) console.log("[RF-KEY-PATH]", JSON.stringify({
+          path: "robotjs",
+          outcome: "success",
+          id: rfKey,
+          resolvedKeys,
+        }));
         return true;
       }
     } catch (err) {
       console.warn("[Keystroke] robotjs failed:", err.message);
     }
   } else {
-    console.log("[Keystroke] robotjs not available");
+    if (isDebug) console.log("[Keystroke] robotjs not available");
   }
 
-  // Windows PowerShell SendKeys (most reliable on Windows)
+  // Windows PowerShell SendKeys (fallback for numpad/special cases)
+  // Note: SendKeys has no first-class numpad keys — numpad requires nut-js.
   const keyMap = {
     ENTER: "{ENTER}", TAB: "{TAB}", ESCAPE: "{ESC}", ESC: "{ESC}",
     BACKSPACE: "{BACKSPACE}", BKSP: "{BACKSPACE}",
@@ -995,46 +1613,146 @@ async function sendKeystroke(keys, holdMs = 100, eventData) {
   const modMap = { ctrl: "^", control: "^", shift: "+", shiftkey: "+", alt: "%", altkey: "%" };
 
   function comboToPsKeys(combo) {
-    const parts = combo.split("+").map(p => p.trim());
-    const mainKey = parts.pop().toUpperCase();
-    const modifiers = parts.map(p => p.toLowerCase());
-    const specialKey = keyMap[mainKey] || keyMap[mainKey.toUpperCase()];
-    let psKey = specialKey || mainKey;
+    const parts = combo.split("+").map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) return "";
+    // Modifier-only tokens (Ctrl / Shift / Alt) must not be typed as letters.
+    const MOD_ONLY = {
+      CTRL: "^",
+      CONTROL: "^",
+      SHIFT: "+",
+      ALT: "%",
+      META: "~",
+      COMMAND: "~",
+      CMD: "~",
+    };
+    const modAliases = {
+      ctrl: "^",
+      control: "^",
+      shift: "+",
+      shiftkey: "+",
+      alt: "%",
+      altkey: "%",
+      meta: "~",
+      command: "~",
+      cmd: "~",
+    };
+    // If every part is a modifier, emit modifier prefixes only (no literal key text).
+    const allMods = parts.every(p => modAliases[p.toLowerCase()] || MOD_ONLY[p.toUpperCase()]);
+    if (allMods) {
+      // Stable order: Ctrl, Shift, Alt, Meta
+      const order = ["ctrl", "control", "shift", "alt", "meta", "command", "cmd"];
+      const sorted = [...parts].sort(
+        (a, b) => order.indexOf(a.toLowerCase()) - order.indexOf(b.toLowerCase())
+      );
+      return sorted.map(p => modAliases[p.toLowerCase()] || MOD_ONLY[p.toUpperCase()]).join("");
+    }
+    const mainRaw = parts[parts.length - 1];
+    const modParts = parts.slice(0, -1);
+    // Resolve main key via keymap so "Comma" → "," not "COMMA"
+    let psKey = null;
+    try {
+      const km = require("./backend/keystroke-keymap.cjs");
+      psKey = km.mapTokenToSendKeys(mainRaw);
+    } catch (_) { /* keymap optional */ }
+    if (psKey == null) {
+      const mainKey = mainRaw.toUpperCase();
+      psKey = keyMap[mainKey] || (mainRaw.length === 1 ? mainRaw : mainKey);
+    }
     let result = psKey;
-    // Keep modifiers in original order (Ctrl+Shift+L → ^+L, not +^L)
-    modifiers.forEach(mod => {
-      const mc = modMap[mod];
+    // Keep modifiers in stable order (Ctrl, Shift, Alt) as SendKeys prefixes.
+    const order = ["ctrl", "control", "shift", "alt", "meta", "command", "cmd"];
+    const sortedMods = [...modParts].sort(
+      (a, b) => order.indexOf(a.toLowerCase()) - order.indexOf(b.toLowerCase())
+    );
+    sortedMods.forEach(mod => {
+      const mc = modMap[mod] || modAliases[mod.toLowerCase()];
       if (mc) result = mc + result;
     });
     return result;
   }
 
-  const sequences = resolvedKeys.split(/\s+/).filter(s => s.length > 0);
+  const fallbackSequences = resolvedKeys.split(/\s+/).filter(s => s.length > 0);
+  if (isDebug) console.log(`[Keystroke-DIAG] FALLBACK: SendKeys path, fallbackSequences: ${JSON.stringify(fallbackSequences)}`);
+
+  // KEY-FINAL-2: Log IPC payload and modifier analysis
+  if (isDebug) console.log("[KEY-FINAL-2]", JSON.stringify({
+    IPCPayload: { keys: resolvedKeys, holdMs, eventData: eventData ? { user: eventData.user, giftName: eventData.giftName } : null },
+    fallbackSequences,
+    normalizedModifiers: fallbackSequences.map(seq => {
+      const parts = seq.split('+').map(p => p.trim()).filter(Boolean);
+      const MOD_ALIASES = { control: 'control', ctrl: 'control', shift: 'shift', alt: 'alt', meta: 'meta', command: 'meta', cmd: 'meta' };
+      return parts.filter(p => MOD_ALIASES[p.toLowerCase()]).map(p => MOD_ALIASES[p.toLowerCase()]);
+    }),
+    modifierCount: fallbackSequences.map(seq => {
+      const parts = seq.split('+').map(p => p.trim()).filter(Boolean);
+      const MOD_ALIASES = { control: 'control', ctrl: 'control', shift: 'shift', alt: 'alt', meta: 'meta', command: 'meta', cmd: 'meta' };
+      return parts.filter(p => MOD_ALIASES[p.toLowerCase()]).length;
+    }),
+  }));
+
+  // KEY-FINAL-3: Log selected path
+  if (isDebug) console.log("[KEY-FINAL-3]", JSON.stringify({
+    selectedPath: "SendKeys",
+    sendKeysFallback: true,
+    fallbackSequences,
+  }));
+
+  // Use comboToPsKeys for EACH sequence to properly parse + modifiers
   let psSendKeys = "";
-  sequences.forEach(seq => {
-    if (seq.includes("+")) {
-      psSendKeys += comboToPsKeys(seq);
-    } else {
-      const upper = seq.toUpperCase();
-      const sk = keyMap[upper];
-      if (sk) psSendKeys += sk;
-      else if (upper.length === 1) psSendKeys += upper;
-      else seq.split("").forEach(ch => { const u = ch.toUpperCase(); psSendKeys += (keyMap[u] || u); });
-    }
+  fallbackSequences.forEach(seq => {
+    const psKeys = comboToPsKeys(seq);
+    psSendKeys += psKeys;
   });
+
+  if (isDebug) console.log(`[Keystroke-DIAG] SendKeys result: "${psSendKeys}"`);
+  // KEYTRACE-5: SendKeys result
+  if (isDebug) console.log("[KEYTRACE-5]", JSON.stringify({
+    sendKeysString: psSendKeys,
+    backend: "PowerShell-SendKeys",
+  }));
 
   const psCmd = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${psSendKeys.replace(/'/g, "''")}')"`;
 
-  console.log(`[Keystroke] Executing PowerShell command: ${psCmd}`);
+  if (isDebug) console.log(`[Keystroke] Executing PowerShell command: ${psCmd}`);
+
+  // KEY-FINAL-4: Log exact SendKeys value
+  if (isDebug) console.log("[KEY-FINAL-4]", JSON.stringify({
+    exactSendKeysValue: psSendKeys,
+    command: psCmd,
+  }));
+
+  // KEY-FOCUS: Log window focus state
+  let activeWindowInfo = "unknown";
+  try {
+    activeWindowInfo = mainWindow && !mainWindow.isDestroyed() ? "main-window-exists" : "no-main-window";
+  } catch (_) {
+    activeWindowInfo = "error-checking-window";
+  }
+  if (isDebug) console.log("[KEY-FOCUS]", JSON.stringify({
+    activeWindow: activeWindowInfo,
+    targetWindow: "foreground (SendKeys targets active window)",
+    foregroundWindow: "unknown (Windows determines)",
+    note: "SendKeys sends to the currently focused window",
+  }));
 
   return new Promise((resolve) => {
-    exec(psCmd, { timeout: 5000 }, (err) => {
+    exec(psCmd, { timeout: 5000 }, (err, stdout, stderr) => {
+      // KEY-FINAL-5: Log execution result
+      if (isDebug) console.log("[KEY-FINAL-5]", JSON.stringify({
+        executionMethod: "PowerShell-SendKeys",
+        command: psCmd,
+        exitCode: err ? err.code : 0,
+        stdout: stdout ? stdout.trim() : "",
+        stderr: (stderr ? stderr.trim() : (err && err.message ? err.message : "")),
+        success: !err,
+      }));
+
       if (err) {
         console.error("[Keystroke] PowerShell SendKeys failed:", err.message);
         // Fallback: Electron sendInputEvent (only works for focused Electron window)
         if (mainWindow && !mainWindow.isDestroyed()) {
-          console.log("[Keystroke] Falling back to Electron sendInputEvent");
-          sequences.forEach((seq, i) => {
+          if (isDebug) console.log("[Keystroke] Falling back to Electron sendInputEvent");
+          fallbackSequences.forEach((seq, i) => {
             setTimeout(() => {
               try {
                 const kc = seq.toUpperCase();
@@ -1048,7 +1766,13 @@ async function sendKeystroke(keys, holdMs = 100, eventData) {
           resolve(false);
         }
       } else {
-        console.log("[Keystroke] Sent via PowerShell SendKeys successfully");
+        if (isDebug) console.log("[Keystroke] Sent via PowerShell SendKeys successfully");
+        if (isDebug) console.log("[RF-KEY-PATH]", JSON.stringify({
+          path: "sendkeys",
+          outcome: "success",
+          id: rfKey,
+          resolvedKeys: psSendKeys,
+        }));
         resolve(true);
       }
     });
@@ -1066,7 +1790,7 @@ function getTikTokServiceInstance() {
     // Forward service events to renderer and overlay
     tiktokService.on("event", (event) => {
       const { type, screenId, ...data } = event;
-      console.log(`[TIKTOK-DISCONNECT-TRACE][EVENT]`, JSON.stringify({
+      if (isDebug) console.log(`[TIKTOK-DISCONNECT-TRACE][EVENT]`, JSON.stringify({
         screenId,
         eventType: type,
         reason: data.reason || null,
@@ -1086,6 +1810,33 @@ function getTikTokServiceInstance() {
         sendToRenderer("tiktok:viewers", { screenId, viewerCount: data.viewerCount });
       } else {
         // All other events (gift, like, comment, follow, share, subscribe, member)
+        // FIX (LIVE Action parity): combo tick gifts are ACTION-only.
+        // They reach the renderer so dispatchTikTokEvent can run Actions
+        // immediately, but they are NOT broadcast to overlay/SSE so gift
+        // animations and browser-source gift feeds keep final-only behavior.
+        const isComboTickGift = type === 'gift' && data && data.isComboTick === true;
+
+        if (isComboTickGift) {
+          if (isDebug) console.log('[GIFT-ACTION-PARITY] main-forward combo-tick ACTION-only', JSON.stringify({
+            source: 'LIVE_GIFT',
+            type,
+            screenId,
+            giftId: data.giftId,
+            giftName: data.giftName,
+            repeatCount: data.repeatCount,
+            combo: data.combo,
+            repeatEnd: data.repeatEnd,
+            isComboTick: true,
+            sentToRenderer: true,
+            sentToOverlay: false,
+            sentToSSE: false,
+            timestamp: Date.now(),
+          }));
+          sendToRenderer("tiktok:event", { type, screenId, ...data });
+          return;
+        }
+
+
         sendToRenderer("tiktok:event", { type, screenId, ...data });
         sendToOverlay("overlay:event", { type, screenId, ...data });
         // CRITICAL: Broadcast gift events to SSE so Browser Sources receive them
@@ -1094,11 +1845,12 @@ function getTikTokServiceInstance() {
         broadcastSSE({ type, screenId, ...data });
 
         // [REAL-GIFT-DEBUG][MAIN-FORWARD] Event forwarded to all channels
-        if (type === 'gift') {
+        if (isDebug && type === 'gift') {
           console.log('[REAL-GIFT-DEBUG][MAIN-FORWARD]', JSON.stringify({
             type, screenId,
             giftId: data.giftId, giftName: data.giftName,
             giftImageUrl: data.giftImageUrl || '(empty)',
+            isComboTick: false,
             sentToRenderer: true,
             sentToOverlay: true,
             sentToSSE: true,
@@ -1128,11 +1880,11 @@ function disconnectTikTok(screenId) {
 
 async function manualReconnect(screenId, username) {
   const service = getTikTokServiceInstance();
-  // Reset any lock and reconnect
-  await service.disconnect(screenId);
-  await service.connect(screenId, username).catch((err) => {
-    console.error(`[TIKTOK] manual reconnect failed for ${screenId}:`, err.message);
-  });
+  try {
+    return await service.connect(screenId, username);
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 // =============================================
@@ -1142,14 +1894,15 @@ async function manualReconnect(screenId, username) {
 // ── TikTok (per-screen) ──
 console.log("[TIKTOK-IPC-REGISTER] registering tiktok:connect and tiktok:disconnect");
 ipcMain.handle("tiktok:connect", async (_, { screenId, username }) => {
-  console.log(`[TIKTOK-IPC] tiktok:connect invoked screenId=${screenId} username=${username}`);
-  await manualReconnect(screenId, username);
-  return { success: true };
+  if (isDebug) console.log(`[TIKTOK-IPC] tiktok:connect invoked screenId=${screenId} username=${username}`);
+  const result = await manualReconnect(screenId, username);
+  // Return the actual connection result from the service: { success, alreadyConnected, alreadyConnecting, error, isRateLimit, cooldownRemainingMs, roomId, viewerCount }
+  return result;
 });
 ipcMain.handle("tiktok:disconnect", async (_, { screenId }) => {
   const service = getTikTokServiceInstance();
   const beforeState = service.getState(screenId);
-  console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
+  if (isDebug) console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
     screenId,
     beforeStatus: beforeState.state,
     beforeUsername: beforeState.username,
@@ -1159,7 +1912,7 @@ ipcMain.handle("tiktok:disconnect", async (_, { screenId }) => {
     console.error(`[TIKTOK-IPC] tiktok:disconnect failed for ${screenId}:`, err.message);
   });
   const afterState = service.getState(screenId);
-  console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
+  if (isDebug) console.log(`[TIKTOK-DISCONNECT-TRACE][MAIN]`, JSON.stringify({
     screenId,
     afterStatus: afterState.state,
     afterUsername: afterState.username,
@@ -1168,8 +1921,10 @@ ipcMain.handle("tiktok:disconnect", async (_, { screenId }) => {
   }));
   return { success: true };
 });
-console.log("[TIKTOK-IPC-REGISTERED] tiktok:connect registered");
-console.log("[TIKTOK-IPC-REGISTERED] tiktok:disconnect registered");
+if (isDebug) {
+  console.log("[TIKTOK-IPC-REGISTERED] tiktok:connect registered");
+  console.log("[TIKTOK-IPC-REGISTERED] tiktok:disconnect registered");
+}
 
 // ── Overlay ──
 ipcMain.on("overlay:open", () => createOverlayWindow());
@@ -1196,6 +1951,22 @@ ipcMain.on("goal:config", (_, config) => {
 });
 
 // ── v3.1 Overlay Instance Sync (browser source config resolution) ──
+// Config-changed broadcasts are limited to instances whose moduleId/config
+// actually changed. Unrelated Browser Sources must not refetch/rerender.
+const overlayConfigSignatures = new Map(); // browserSourceId -> signature
+
+function instanceConfigSignature(inst) {
+  try {
+    return JSON.stringify({
+      moduleId: inst.moduleId,
+      config: inst.config,
+      configVersion: inst.configVersion,
+    });
+  } catch (_) {
+    return `unserializable:${inst.moduleId}:${Date.now()}`;
+  }
+}
+
 ipcMain.on("overlay:sync-instances", (_, instances) => {
   overlayInstancesByBrowserSourceId.clear();
   for (const inst of instances) {
@@ -1207,29 +1978,47 @@ ipcMain.on("overlay:sync-instances", (_, instances) => {
 });
 
 // ── Immediate instance sync: renderer pushes instances right after Dexie load ──
-// This eliminates the config-fetch race by populating the map before
-// Browser Source /config requests arrive.
+// Populate the map first (config-fetch race fix), then broadcast ONLY for
+// instances whose signature changed since the last push/sync.
 ipcMain.on("overlay:push-instances", (_, instances) => {
   for (const inst of instances) {
     if (inst.browserSourceId) {
       overlayInstancesByBrowserSourceId.set(inst.browserSourceId, inst);
     }
   }
-  console.log("[OVERLAY-SYNC] pushed", instances.length, "instances,", overlayInstancesByBrowserSourceId.size, "total with browserSourceId");
-  // Notify connected Browser Sources about the full instance set update
+
+  const changedBrowserSourceIds = [];
   for (const inst of instances) {
-    if (inst.browserSourceId) {
-      broadcastSSE({ type: 'overlay-config-changed', browserSourceId: inst.browserSourceId });
+    if (!inst.browserSourceId) continue;
+    const sig = instanceConfigSignature(inst);
+    const prev = overlayConfigSignatures.get(inst.browserSourceId);
+    if (prev !== sig) {
+      overlayConfigSignatures.set(inst.browserSourceId, sig);
+      // First-seen instances still need a notify (startup race), but
+      // identical re-pushes of unchanged configs are silent.
+      changedBrowserSourceIds.push(inst.browserSourceId);
     }
+  }
+
+  console.log("[OVERLAY-SYNC] pushed", instances.length, "instances,", overlayInstancesByBrowserSourceId.size, "total with browserSourceId,", changedBrowserSourceIds.length, "config-changed");
+  for (const browserSourceId of changedBrowserSourceIds) {
+    broadcastSSE({ type: 'overlay-config-changed', browserSourceId });
   }
 });
 
 ipcMain.on("overlay:updated", (_, instance) => {
   if (instance && instance.browserSourceId) {
+    const sig = instanceConfigSignature(instance);
+    const prev = overlayConfigSignatures.get(instance.browserSourceId);
     overlayInstancesByBrowserSourceId.set(instance.browserSourceId, instance);
-    console.log("[OVERLAY-SYNC] updated instance:", instance.moduleId, instance.browserSourceId.substring(0, 8));
-    // Notify connected Browser Sources to re-fetch config
-    broadcastSSE({ type: 'overlay-config-changed', browserSourceId: instance.browserSourceId });
+    if (prev !== sig) {
+      overlayConfigSignatures.set(instance.browserSourceId, sig);
+      console.log("[OVERLAY-SYNC] updated instance:", instance.moduleId, instance.browserSourceId.substring(0, 8));
+      // Only the affected Browser Source refetches config
+      broadcastSSE({ type: 'overlay-config-changed', browserSourceId: instance.browserSourceId });
+    } else {
+      console.log("[OVERLAY-SYNC] updated instance (no config change):", instance.moduleId, instance.browserSourceId.substring(0, 8));
+    }
   }
 });
 
@@ -1237,6 +2026,7 @@ ipcMain.on("overlay:deleted", (_, instanceId) => {
   for (const [bsid, inst] of overlayInstancesByBrowserSourceId) {
     if (inst.id === instanceId) {
       overlayInstancesByBrowserSourceId.delete(bsid);
+      overlayConfigSignatures.delete(bsid);
       console.log("[OVERLAY-SYNC] deleted instance:", bsid.substring(0, 8));
       break;
     }
@@ -1324,15 +2114,146 @@ ipcMain.handle("overlay:push-state", async (_, { token, goals }) => {
 });
 
 // ── Keystroke ──
-ipcMain.on("keystroke:send", async (_, { keys, holdMs, eventData }) => {
-  console.log(`[Keystroke IPC] on called: keys="${keys}", holdMs=${holdMs}, eventData=${JSON.stringify(eventData)}`);
-  await sendKeystroke(keys, holdMs, eventData);
+ipcMain.on("keystroke:send", async (_, { keys, holdMs, eventData, rfKeyId }) => {
+  if (isDebug) console.log(`[Keystroke IPC] on called: keys="${keys}", holdMs=${holdMs}, rfKeyId=${rfKeyId || "none"}`);
+  await sendKeystroke(keys, holdMs, eventData, rfKeyId);
 });
 // Also handle invoke-style (used by ActionsPage testAction)
-ipcMain.handle("send-keystroke", async (_, keys, holdMs, eventData) => {
-  console.log(`[Keystroke IPC] invoke called: keys="${keys}", holdMs=${holdMs}, eventData=${JSON.stringify(eventData)}`);
-  return await sendKeystroke(keys, holdMs || 100, eventData || null);
+ipcMain.handle("send-keystroke", async (_, keys, holdMs, eventData, rfKeyId) => {
+  rfKeyCounters.ipcHandle += 1;
+  if (isDebug) console.log("[Keystroke IPC] invoke", JSON.stringify({ keys, holdMs: holdMs || 100, rfKeyId: rfKeyId || null }));
+  const result = await sendKeystroke(keys, holdMs || 100, eventData || null, rfKeyId);
+  if (isDebug) console.log("[Keystroke IPC] result", JSON.stringify({ result, rfKeyId: rfKeyId || null }));
+  return result;
 });
+
+// ── Diagnostic: Direct native SendInput test from Electron main process ──
+// This allows testing nativeSendInput WITHOUT going through the Action execution path.
+// Used to distinguish between:
+//   A. Native SendInput itself is broken
+//   B. Action execution path is broken
+ipcMain.handle("diagnostic:native-keystroke-test", async (_, { keys, holdMs }) => {
+  console.log("[DIAG-NATIVE-TEST] Direct native keystroke test requested");
+  console.log("[DIAG-NATIVE-TEST] Keys:", keys, "HoldMs:", holdMs || 100);
+
+  if (!nativeSendInput) {
+    console.log("[DIAG-NATIVE-TEST] nativeSendInput module NOT available");
+    return { success: false, error: "nativeSendInput module not available" };
+  }
+
+  try {
+    const result = await nativeSendInput.sendNativeKeystroke(keys, holdMs || 100);
+    console.log("[DIAG-NATIVE-TEST] Result:", result);
+    return { success: result, keys };
+  } catch (err) {
+    console.log("[DIAG-NATIVE-TEST] Error:", err.message);
+    return { success: false, error: err.message };
+  }
+});
+
+// Packaged runtime diagnostic
+ipcMain.handle("diagnostic:packaged-runtime", async () => {
+  console.log(`[DIAG-PKG] diagnostic:packaged-runtime called`);
+  try {
+    const result = {
+      processType: process.type,
+      platform: process.platform,
+      arch: process.arch,
+      cwd: process.cwd(),
+      dirname: __dirname,
+      resourcesPath: process.resourcesPath,
+      appPath: require('electron').app.getAppPath(),
+      isPackaged: require('electron').app.isPackaged,
+      nutKeyboard: !!nutKeyboard,
+      nutKey: !!nutKey,
+      robot: !!robot,
+      keystrokeKeymapExists: false,
+      nutKeyValues: {},
+      robotjsValues: {},
+    };
+
+    // Check nutKey values
+    if (nutKey) {
+      result.nutKeyValues = {
+        NumPad1: nutKey.NumPad1,
+        Num1: nutKey.Num1,
+        NumPadAdd: nutKey.NumPadAdd,
+        Add: nutKey.Add,
+        NumPadEnter: nutKey.NumPadEnter,
+        Enter: nutKey.Enter,
+        F5: nutKey.F5,
+      };
+    }
+
+    // Check robotjs
+    if (robot) {
+      result.robotjsValues = {
+        hasNumpad: typeof robot.keyToggle === 'function',
+      };
+    }
+
+    // Check keystroke-keymap.cjs
+    try {
+      const keymap = require("./backend/keystroke-keymap.cjs");
+      result.keystrokeKeymapExists = true;
+      result.keymapTest = {
+        Numpad1: keymap.mapTokenToNutKeyName('Numpad1', nutKey),
+        F5: keymap.mapTokenToNutKeyName('F5', nutKey),
+        CtrlNumpad1: keymap.parseKeystrokeCombo('Ctrl+Numpad1'),
+      };
+    } catch (e) {
+      result.keystrokeKeymapError = e.message;
+    }
+
+    console.log(`[DIAG-PKG] result:`, JSON.stringify(result, null, 2));
+    return { success: true, ...result };
+  } catch (err) {
+    console.error("[DIAG-PKG] error:", err);
+    return { success: false, error: err.message, stack: err.stack };
+  }
+});
+
+// Diagnostic: test keystroke execution in packaged
+ipcMain.handle("diagnostic:test-packaged-keystroke", async (_, keys, holdMs) => {
+  console.log(`[DIAG-PKG-KEY] test-packaged-keystroke called keys="${keys}" holdMs=${holdMs}`);
+  try {
+    const result = await sendKeystroke(keys, holdMs || 100, null);
+    console.log(`[DIAG-PKG-KEY] sendKeystroke returned: ${result}`);
+    return { success: result, keys, holdMs };
+  } catch (err) {
+    console.error("[DIAG-PKG-KEY] error:", err);
+    return { success: false, error: err.message, stack: err.stack };
+  }
+});
+
+
+
+// Auto-run diagnostic on startup
+setTimeout(async () => {
+  console.log('[DIAGNOSTIC-AUTO] Starting nut-js Numpad tests...');
+  if (nutKeyboard && nutKey) {
+    const tests = ['NumPad1', 'NumPadAdd', 'NumPadEnter', 'Enter', 'Num1'];
+    for (const keyName of tests) {
+      try {
+        const nutKeyCode = nutKey[keyName];
+        if (nutKeyCode == null) {
+          console.log(`[DIAGNOSTIC-AUTO] ${keyName}: nutKey.${keyName} = undefined`);
+        } else {
+          console.log(`[DIAGNOSTIC-AUTO] ${keyName}: nutKey.${keyName} = ${nutKeyCode}`);
+          await nutKeyboard.pressKey(nutKeyCode);
+          await new Promise(r => setTimeout(r, 100));
+          await nutKeyboard.releaseKey(nutKeyCode);
+          console.log(`[DIAGNOSTIC-AUTO] ${keyName}: PRESS/RELEASE successful`);
+        }
+      } catch (err) {
+        console.error(`[DIAGNOSTIC-AUTO] ${keyName} ERROR:`, err.message);
+      }
+    }
+    console.log('[DIAGNOSTIC-AUTO] Available NumPad keys in nutKey:', Object.keys(nutKey).filter(k => k.includes('NumPad') || k.includes('Add') || k.includes('Subtract') || k.includes('Multiply') || k.includes('Divide') || k.includes('Decimal') || k === 'Enter'));
+  } else {
+    console.log('[DIAGNOSTIC-AUTO] nut-js not available');
+  }
+}, 3000);
 
 // ── Global Input Hook (keyboard + mouse capture) ──
 ipcMain.handle("global-hook:start", (_, screen) => {
@@ -1382,6 +2303,35 @@ ipcMain.on("window:close", () => mainWindow?.close());
 ipcMain.on("open:external", (_, url) => shell.openExternal(url));
 
 // ── System Theme ──
+// ── FIX 1+2: Register Dexie-resolved media for local HTTP serving ──
+ipcMain.handle("media:register", async (_, payload) => {
+  try {
+    const result = mediaRegistry.register(payload || {});
+    console.log("[MEDIA-REGISTER]", JSON.stringify({
+      mediaId: result.mediaId || (payload && payload.mediaId) || null,
+      success: !!result.success,
+      cached: !!result.cached,
+      size: result.size || 0,
+      contentType: result.contentType || null,
+      code: result.code || null,
+    }));
+    if (result.success) {
+      return {
+        ...result,
+        mediaUrl: mediaRegistry.absoluteUrlFor(result.mediaId, MEDIA_HTTP_PORT || SSE_PORT),
+      };
+    }
+    return result;
+  } catch (err) {
+    console.error("[MEDIA-REGISTER] error", err);
+    return {
+      success: false,
+      error: err && err.message ? err.message : String(err),
+      code: "REGISTER_EXCEPTION",
+    };
+  }
+});
+
 ipcMain.handle("get-system-theme", () => nativeTheme.shouldUseDarkColors ? "dark" : "light");
 nativeTheme.on("updated", () => {
   sendToRenderer("system-theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
@@ -1406,6 +2356,13 @@ ipcMain.handle("points:deduct", (_, { username, amount }) => pointsSystem.deduct
 ipcMain.handle("points:clearAll", () => { pointsSystem.clearAllPoints(); return { success: true }; });
 
 // ── OBS Controller ──
+// Mirror controller.connected (single authoritative flag) to the renderer
+// so Setup and Create Action always share the same OBS connection state.
+if (typeof obsController.onStatusChange === "function") {
+  obsController.onStatusChange((status) => {
+    sendToRenderer("obs:status-changed", { connected: !!status?.connected });
+  });
+}
 ipcMain.on("obs:setConfig", (_, config) => obsController.setConfig(config));
 ipcMain.handle("obs:connect", async () => await obsController.connect());
 ipcMain.handle("obs:disconnect", () => { obsController.disconnect(); return { success: true }; });
@@ -1679,9 +2636,26 @@ app.whenReady().then(async () => {
 
   logger.info("Application starting", { version: app.getVersion() });
 
-  createMainWindow();
   createTray();
-  startSSEServer();
+  // Start SSE server first and wait for it to be ready
+  await startSSEServer();
+
+  // In development, clear the session cache BEFORE creating the main window.
+  // This prevents the main window from loading with stale Vite pre-bundle hashes,
+  // which can cause 504 (Gateway Timeout) or 404 errors during development.
+  if (isDev && session && session.defaultSession) {
+    try {
+      console.log("[ELECTRON-DEV] Awaiting session cache clear on startup...");
+      await session.defaultSession.clearCache();
+      console.log("[ELECTRON-DEV] Session cache cleared successfully.");
+    } catch (err) {
+      console.error("[ELECTRON-DEV] Failed to clear session cache during startup:", err);
+    }
+  }
+
+  console.log("[ELECTRON] SSE server ready, creating main window");
+
+  createMainWindow();
 
   // Set main window for service monitor notifications
   serviceMonitor.setMainWindow(mainWindow);

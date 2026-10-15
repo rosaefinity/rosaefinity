@@ -1,6 +1,6 @@
 import { useAppStore } from "./app-store";
 import { sendToOverlay } from "../lib/overlay-bus";
-import { getActionMedia } from "../lib/db";
+import { db, getActionMedia } from "../lib/db";
 import { dispatchToEventBus } from "../events/EventDispatcher";
 import { api, safeInvoke } from "../services/electron-service";
 import { normalizeScreen, getNormalizedActionScreen, logScreenTrace } from "../lib/screen-normalizer";
@@ -10,6 +10,7 @@ import type { Action, Event, LiveEvent, ScreenId } from "../types";
 import { getGiftsSync, getGiftImageUrl } from "../services/gift-service";
 import { trackGoalEvent, trackGoalOverlayEvents } from "../goals/goal-tracker";
 import { getTikTokEngine } from "../engine/tiktok/tiktok-engine";
+import { overlayDebugEnabled } from "../lib/overlay-debug";
 
 const globalCooldowns: Map<string, number> = new Map();
 const userCooldowns: Map<string, Map<string, number>> = new Map();
@@ -18,6 +19,19 @@ const userCooldowns: Map<string, Map<string, number>> = new Map();
 // TikTok's repeatCount is CUMULATIVE (total seen), not per-event delta.
 // Track per-gift cumulative repeatCount to calculate the true delta.
 const lastGiftRepeatCount = new Map<string, number>();
+
+function getGiftTrackKey(data: any): string {
+  return [data.screenId || 'screen-0', data.roomId || 'room-unknown', data.user || 'unknown', data.giftId || data.giftName || 'gift'].join(':');
+}
+
+function getGiftDelta(data: any): number {
+  const repeatCount = Math.max(1, Number(data.repeatCount) || 1);
+  const key = getGiftTrackKey(data);
+  const previous = lastGiftRepeatCount.get(key);
+  lastGiftRepeatCount.set(key, repeatCount);
+  if (previous === undefined) return repeatCount;
+  return Math.max(0, repeatCount - previous);
+}
 
 // Bounded cooldown maps — clear entries older than 1 hour to prevent unbounded growth
 const COOLDOWN_MAX_AGE_MS = 60 * 60 * 1000;
@@ -41,7 +55,7 @@ function cleanupStaleCooldowns(): void {
 export function dispatchTikTokEvent(data: any) {
   if (!data) return;
 
-  console.log('[EVENT-RECEIVED]', {
+  if (overlayDebugEnabled()) console.log('[EVENT-RECEIVED]', {
     type: data.type,
     screenId: data.screenId,
     giftName: data.giftName,
@@ -53,16 +67,17 @@ export function dispatchTikTokEvent(data: any) {
 
   // ── Coin Jar: accumulate gift coins (independent of alerts/actions) ──
   if (data.type === "gift") {
-    // [REAL-GIFT-DEBUG][DISPATCH-INPUT] Gift event reached dispatch
-    console.log('[REAL-GIFT-DEBUG][DISPATCH-INPUT]', JSON.stringify({
-      type: data.type,
-      screenId: data.screenId,
-      giftId: data.giftId || '(empty)',
-      giftName: data.giftName || '(empty)',
-      repeatCount: data.repeatCount || 1,
-      diamondCount: data.diamondCount || 0,
-      giftImageUrl: data.giftImageUrl || '(empty)',
-    }));
+    if (overlayDebugEnabled()) {
+      console.log('[REAL-GIFT-DEBUG][DISPATCH-INPUT]', JSON.stringify({
+        type: data.type,
+        screenId: data.screenId,
+        giftId: data.giftId || '(empty)',
+        giftName: data.giftName || '(empty)',
+        repeatCount: data.repeatCount || 1,
+        diamondCount: data.diamondCount || 0,
+        giftImageUrl: data.giftImageUrl || '(empty)',
+      }));
+    }
     const giftId = data.giftId || '';
     const userId = data.user || 'unknown';
     const repeatCount = data.repeatCount || 1;
@@ -86,89 +101,126 @@ export function dispatchTikTokEvent(data: any) {
     }
     const source = data._source || 'unknown';
 
-    // [COIN-JAR-GIFT-TRACE][DISPATCH] Image URL resolution audit
-    console.log('[COIN-JAR-GIFT-TRACE][DISPATCH]', JSON.stringify({
-      screenId: data.screenId,
-      giftId: data.giftId || '(empty)',
-      giftName: data.giftName || '(empty)',
-      diamondCount: data.diamondCount || 0,
-      repeatCount: data.repeatCount || 1,
-      incomingGiftImageUrl: data.giftImageUrl || '(empty)',
-      resolvedGiftImageUrl: rawImageUrl || '(empty)',
-      imageSource,
-    }));
+    if (overlayDebugEnabled()) {
+      // [COIN-JAR-GIFT-TRACE][DISPATCH] Image URL resolution audit
+      console.log('[COIN-JAR-GIFT-TRACE][DISPATCH]', JSON.stringify({
+        screenId: data.screenId,
+        giftId: data.giftId || '(empty)',
+        giftName: data.giftName || '(empty)',
+        diamondCount: data.diamondCount || 0,
+        repeatCount: data.repeatCount || 1,
+        incomingGiftImageUrl: data.giftImageUrl || '(empty)',
+        resolvedGiftImageUrl: rawImageUrl || '(empty)',
+        imageSource,
+      }));
 
-    // CorrelationId: giftId-userId-timestamp (matches tiktok-service format)
-    const cid = `${giftId || 'none'}-${userId}-${timestamp}`;
+      // CorrelationId: giftId-userId-timestamp (matches tiktok-service format)
+      const cid = `${giftId || 'none'}-${userId}-${timestamp}`;
 
-    console.log('[COIN-JAR-REAL-LIVE][DISPATCH]', JSON.stringify({
-      giftId, giftName: data.giftName, giftImageUrl: rawImageUrl || '(empty)',
-    }));
+      console.log('[COIN-JAR-REAL-LIVE][DISPATCH]', JSON.stringify({
+        giftId, giftName: data.giftName, giftImageUrl: rawImageUrl || '(empty)',
+      }));
 
-    // NORMALIZED stage
-    console.log(`[COIN-JAR-LIVE][${cid}] NORMALIZED`, JSON.stringify({
-      correlationId: cid, source, giftId, giftName: data.giftName,
-      diamondCount, repeatCount, coinValue, screenId: data.screenId,
-    }));
+      // NORMALIZED stage
+      console.log(`[COIN-JAR-LIVE][${cid}] NORMALIZED`, JSON.stringify({
+        correlationId: cid, source, giftId, giftName: data.giftName,
+        diamondCount, repeatCount, coinValue, screenId: data.screenId,
+      }));
 
-    // COIN_CALCULATED stage
-    const prevAmount = useCoinJarStore.getState().currentAmount || 0;
-    console.log(`[COIN-JAR-LIVE][${cid}] COIN_CALCULATED`, JSON.stringify({
-      correlationId: cid, source, giftId, giftName: data.giftName,
-      diamondCount, repeatCount, calculatedCoinValue: coinValue,
-      previousAmount: prevAmount, newAmount: prevAmount + coinValue,
-    }));
+      // COIN_CALCULATED stage
+      const prevAmount = useCoinJarStore.getState().currentAmount || 0;
+      console.log(`[COIN-JAR-LIVE][${cid}] COIN_CALCULATED`, JSON.stringify({
+        correlationId: cid, source, giftId, giftName: data.giftName,
+        diamondCount, repeatCount, calculatedCoinValue: coinValue,
+        previousAmount: prevAmount, newAmount: prevAmount + coinValue,
+      }));
 
-    // ── Delta calculation for coin counter ──
-    // TikTok's repeatCount is CUMULATIVE (total seen), not per-event delta.
-    // Only charge coins for NEW gifts (delta), not the full cumulative count.
-    const giftTrackKey = `${giftId}:${userId}`;
-    const prevRepeatCountForCoins = lastGiftRepeatCount.get(giftTrackKey) || 0;
-    const deltaRepeatCount = Math.max(0, repeatCount - prevRepeatCountForCoins);
-    lastGiftRepeatCount.set(giftTrackKey, repeatCount);
+      // ── Delta calculation for coin counter ──
+      // TikTok's repeatCount is CUMULATIVE (total seen), not per-event delta.
+      // Only charge coins for NEW gifts (delta), not the full cumulative count.
+      const giftTrackKey = getGiftTrackKey(data);
+      const prevRepeatCountForCoins = data.repeatCountCumulative === true
+        ? lastGiftRepeatCount.get(giftTrackKey)
+        : undefined;
+      const deltaRepeatCount = data.repeatCountCumulative === true ? getGiftDelta(data) : 1;
 
-    // Evict stale entries
-    if (lastGiftRepeatCount.size > 200) {
-      const keys = Array.from(lastGiftRepeatCount.keys());
-      for (let i = 0; i < keys.length - 100; i++) {
-        lastGiftRepeatCount.delete(keys[i]);
+      // Evict stale entries
+      if (lastGiftRepeatCount.size > 200) {
+        const keys = Array.from(lastGiftRepeatCount.keys());
+        for (let i = 0; i < keys.length - 100; i++) {
+          lastGiftRepeatCount.delete(keys[i]);
+        }
+      }
+
+      // Normalized TikTok gifts use cumulative repeatCount; duplicate counts add nothing.
+      const effectiveDelta = data.repeatCountCumulative === true ? deltaRepeatCount : 1;
+
+      data.normalizedGiftDelta = effectiveDelta;
+      data.normalizedComboCount = repeatCount;
+
+      // Coin value uses the normalized cumulative delta.
+      const deltaCoinValue = diamondCount * effectiveDelta;
+
+      // Combo safety
+      const isDuplicate = isDuplicateGift(giftId, userId, repeatCount, timestamp);
+      if (repeatCount > 1) {
+        console.log(`[COIN-JAR-LIVE][${cid}] COMBO_RESULT`, JSON.stringify({
+          correlationId: cid, source, giftId, giftName: data.giftName,
+          diamondCount, repeatCount, prevRepeatCountForCoins, deltaRepeatCount,
+          calculatedCoinValue: coinValue,
+          deltaCoinValue,
+          visibleCascadeCount: Math.min(deltaRepeatCount, 5),
+          duplicateRejected: isDuplicate,
+        }));
+      }
+
+      if (deltaCoinValue > 0 && !isDuplicate) {
+        // STORE_UPDATED + SSE_BROADCAST — use delta, not cumulative
+        useCoinJarStore.getState().addGiftAmount(deltaCoinValue, data.giftName, giftId, rawImageUrl);
+        console.log(`[COIN-JAR-LIVE][${cid}] STORE_UPDATED`, JSON.stringify({
+          correlationId: cid, source, giftId, giftName: data.giftName,
+          coinValue: deltaCoinValue, deltaRepeatCount, prevRepeatCountForCoins,
+        }));
+      } else {
+        console.log(`[COIN-JAR-LIVE][${cid}] SKIPPED`, JSON.stringify({
+          correlationId: cid, source, reason: isDuplicate ? 'duplicate' : 'zero-value',
+        }));
+      }
+    } else {
+      // Non-debug path: still compute delta and update coin jar
+      const giftTrackKey = getGiftTrackKey(data);
+      const prevRepeatCountForCoins = data.repeatCountCumulative === true
+        ? lastGiftRepeatCount.get(giftTrackKey)
+        : undefined;
+      const deltaRepeatCount = data.repeatCountCumulative === true ? getGiftDelta(data) : 1;
+
+      // Evict stale entries
+      if (lastGiftRepeatCount.size > 200) {
+        const keys = Array.from(lastGiftRepeatCount.keys());
+        for (let i = 0; i < keys.length - 100; i++) {
+          lastGiftRepeatCount.delete(keys[i]);
+        }
+      }
+
+      const effectiveDelta = data.repeatCountCumulative === true ? deltaRepeatCount : 1;
+
+      data.normalizedGiftDelta = effectiveDelta;
+      data.normalizedComboCount = repeatCount;
+
+      const deltaCoinValue = diamondCount * effectiveDelta;
+
+      // Combo safety
+      const isDuplicate = isDuplicateGift(giftId, userId, repeatCount, timestamp);
+      if (deltaCoinValue > 0 && !isDuplicate) {
+        // STORE_UPDATED + SSE_BROADCAST — use delta, not cumulative
+        useCoinJarStore.getState().addGiftAmount(deltaCoinValue, data.giftName, giftId, rawImageUrl);
+      }
+
+      // ── Points: award per-gift using the same effectiveDelta ──
+      if (effectiveDelta > 0 && !isDuplicate) {
+        useAppStore.getState().awardPoints("gift", data.user, data.nickname, effectiveDelta);
       }
     }
-
-    // If delta=0 but this is a valid gift event, use at least 1 (handles per-event repeatCount)
-    const effectiveDelta = deltaRepeatCount > 0 ? deltaRepeatCount : 1;
-
-    // Coin value uses effectiveDelta (at least 1 per event)
-    const deltaCoinValue = diamondCount * effectiveDelta;
-
-    // Combo safety
-    const isDuplicate = isDuplicateGift(giftId, userId, repeatCount, timestamp);
-    if (repeatCount > 1) {
-      console.log(`[COIN-JAR-LIVE][${cid}] COMBO_RESULT`, JSON.stringify({
-        correlationId: cid, source, giftId, giftName: data.giftName,
-        diamondCount, repeatCount, prevRepeatCountForCoins, deltaRepeatCount,
-        calculatedCoinValue: coinValue,
-        deltaCoinValue,
-        visibleCascadeCount: Math.min(deltaRepeatCount, 5),
-        duplicateRejected: isDuplicate,
-      }));
-    }
-
-    if (deltaCoinValue > 0 && !isDuplicate) {
-      // STORE_UPDATED + SSE_BROADCAST — use delta, not cumulative
-      useCoinJarStore.getState().addGiftAmount(deltaCoinValue, data.giftName, giftId, rawImageUrl);
-      console.log(`[COIN-JAR-LIVE][${cid}] STORE_UPDATED`, JSON.stringify({
-        correlationId: cid, source, giftId, giftName: data.giftName,
-        coinValue: deltaCoinValue, deltaRepeatCount, prevRepeatCountForCoins,
-      }));
-    } else {
-      console.log(`[COIN-JAR-LIVE][${cid}] SKIPPED`, JSON.stringify({
-        correlationId: cid, source, reason: isDuplicate ? 'duplicate' : 'zero-value',
-      }));
-    }
-
-    // ── Points: award per-gift using the same effectiveDelta ──
-    useAppStore.getState().awardPoints("gift", data.user, data.nickname, effectiveDelta);
   }
 
   // ── Goal tracking (independent from Screen 1-8) ──
@@ -179,7 +231,10 @@ export function dispatchTikTokEvent(data: any) {
   // ── Handle disconnect cleanup ──
   if (data.type === "disconnected") {
     const screenId: ScreenId = data.screenId || "screen-0";
-    console.log('[DISPATCH-CLEANUP] TikTok disconnected, clearing state for screen', screenId);
+    for (const key of lastGiftRepeatCount.keys()) {
+      if (key.startsWith(`${screenId}:`)) lastGiftRepeatCount.delete(key);
+    }
+    if (overlayDebugEnabled()) console.log('[DISPATCH-CLEANUP] TikTok disconnected, clearing state for screen', screenId);
     // Clear action queue
     clearQueue(screenId);
     // Clear event pipeline cooldowns and queue
@@ -188,7 +243,7 @@ export function dispatchTikTokEvent(data: any) {
     tiktokEngine.clearPipelineQueue();
     // Clear comment engine state
     tiktokEngine.clearCommentEngine();
-    console.log('[DISPATCH-CLEANUP] Cleared queue, pipeline, and comment engine for screen', screenId);
+    if (overlayDebugEnabled()) console.log('[DISPATCH-CLEANUP] Cleared queue, pipeline, and comment engine for screen', screenId);
   }
 
   cleanupStaleCooldowns();
@@ -223,7 +278,10 @@ export function dispatchTikTokEvent(data: any) {
 
   // Update per-screen stats
   switch (data.type) {
-    case "gift": store.incrementScreenStat(screenId, "gifts"); break;
+    case "gift": {
+      if (!data.combo || Number(data.normalizedGiftDelta) > 0) store.incrementScreenStat(screenId, "gifts");
+      break;
+    }
     case "like": store.incrementScreenStat(screenId, "likes"); break;
     case "follow": store.incrementScreenStat(screenId, "follows"); break;
     case "subscribe": store.incrementScreenStat(screenId, "follows"); break;
@@ -245,33 +303,37 @@ export function dispatchTikTokEvent(data: any) {
   }
 
   // Find matching events and execute actions
-  console.log('[EVENT-MATCHING]', {
-    incomingType: data.type,
-    incomingGiftName: data.giftName,
-    incomingGiftId: data.giftId,
-    incomingDiamondCount: data.diamondCount,
-    incomingUser: data.user,
-    enabledEventCount: events.filter(e => e.enabled).length,
-    totalEventCount: events.length,
-  });
+  if (overlayDebugEnabled()) {
+    console.log('[EVENT-MATCHING]', {
+      incomingType: data.type,
+      incomingGiftName: data.giftName,
+      incomingGiftId: data.giftId,
+      incomingDiamondCount: data.diamondCount,
+      incomingUser: data.user,
+      enabledEventCount: events.filter(e => e.enabled).length,
+      totalEventCount: events.length,
+    });
+  }
 
   // STEP 6 DIAGNOSTIC: Log every enabled event's config for comparison
   const enabledEvents = events.filter(e => e.enabled);
-  console.log('[EVENT-CONFIG-CHECK]', JSON.stringify({
-    incomingGiftName: data.giftName,
-    incomingGiftId: data.giftId,
-    incomingDiamondCount: data.diamondCount,
-    totalEvents: events.length,
-    enabledEvents: enabledEvents.length,
-    events: enabledEvents.map(e => ({
-      id: e.id,
-      actionName: e.actionName,
-      triggerType: e.triggerType,
-      giftName: e.giftName,
-      minCoins: e.minCoins,
-      keyword: e.keyword,
-    })),
-  }));
+  if (overlayDebugEnabled()) {
+    console.log('[EVENT-CONFIG-CHECK]', JSON.stringify({
+      incomingGiftName: data.giftName,
+      incomingGiftId: data.giftId,
+      incomingDiamondCount: data.diamondCount,
+      totalEvents: events.length,
+      enabledEvents: enabledEvents.length,
+      events: enabledEvents.map(e => ({
+        id: e.id,
+        actionName: e.actionName,
+        triggerType: e.triggerType,
+        giftName: e.giftName,
+        minCoins: e.minCoins,
+        keyword: e.keyword,
+      })),
+    }));
+  }
 
   const matchingEvents = events.filter(e => e.enabled && matchesTrigger(e, data));
 
@@ -317,29 +379,33 @@ export function dispatchTikTokEvent(data: any) {
       default:
         reason = `triggerType="${evt.triggerType}"`;
     }
-    console.log('[EVENT-MATCH-DETAIL]', JSON.stringify({
-      eventId: evt.id,
-      eventName: evt.actionName,
-      triggerType: evt.triggerType,
-      matched,
-      reason,
-      expectedGiftName: evt.giftName,
-      receivedGiftName: data.giftName,
-      expectedGiftId: evt.giftId,
-      receivedGiftId: data.giftId,
-    }));
+    if (overlayDebugEnabled()) {
+      console.log('[EVENT-MATCH-DETAIL]', JSON.stringify({
+        eventId: evt.id,
+        eventName: evt.actionName,
+        triggerType: evt.triggerType,
+        matched,
+        reason,
+        expectedGiftName: evt.giftName,
+        receivedGiftName: data.giftName,
+        expectedGiftId: evt.giftId,
+        receivedGiftId: data.giftId,
+      }));
+    }
   }
 
-  console.log('[EVENT-MATCH-RESULT]', {
-    matchedCount: matchingEvents.length,
-    matchedEvents: matchingEvents.map(e => ({
-      eventId: e.id,
-      eventName: e.actionName,
-      triggerType: e.triggerType,
-      giftName: e.giftName,
-      linkedActionId: actions.find(a => a.name === e.actionName)?.id,
-    })),
-  });
+  if (overlayDebugEnabled()) {
+    console.log('[EVENT-MATCH-RESULT]', {
+      matchedCount: matchingEvents.length,
+      matchedEvents: matchingEvents.map(e => ({
+        eventId: e.id,
+        eventName: e.actionName,
+        triggerType: e.triggerType,
+        giftName: e.giftName,
+        linkedActionId: actions.find(a => a.name === e.actionName)?.id,
+      })),
+    });
+  }
   for (const evt of matchingEvents) {
     // Determine which action(s) to execute
     let selectedActionName = evt.actionName;
@@ -348,47 +414,57 @@ export function dispatchTikTokEvent(data: any) {
     if (evt.actionNames && evt.actionNames.length > 1) {
       const randomIndex = Math.floor(Math.random() * evt.actionNames.length);
       selectedActionName = evt.actionNames[randomIndex];
-      console.log('[EVENT-RANDOM-SELECT]', {
-        eventId: evt.id,
-        totalActions: evt.actionNames.length,
-        selectedIndex: randomIndex,
-        selectedAction: selectedActionName,
-      });
+      if (overlayDebugEnabled()) {
+        console.log('[EVENT-RANDOM-SELECT]', {
+          eventId: evt.id,
+          totalActions: evt.actionNames.length,
+          selectedIndex: randomIndex,
+          selectedAction: selectedActionName,
+        });
+      }
     }
 
-    console.log('[EVENT-MATCH-DEBUG] All enabled actions in store ' + JSON.stringify({
-      actionCount: actions.filter(a => a.enabled).length,
-      actionNames: actions.filter(a => a.enabled).map(a => a.name),
-      allActions: actions.map(a => ({ name: a.name, enabled: a.enabled })),
-    }));
+    if (overlayDebugEnabled()) {
+      console.log('[EVENT-MATCH-DEBUG] All enabled actions in store ' + JSON.stringify({
+        actionCount: actions.filter(a => a.enabled).length,
+        actionNames: actions.filter(a => a.enabled).map(a => a.name),
+        allActions: actions.map(a => ({ name: a.name, enabled: a.enabled })),
+      }));
+    }
     const action = actions.find(a => a.name === selectedActionName && a.enabled);
     if (!action) {
-      console.log('[EVENT-MATCH-DEBUG] No matching enabled action found ' + JSON.stringify({
-        eventActionName: selectedActionName,
-        availableActions: actions.filter(a => a.enabled).map(a => ({ name: a.name, sound: a.sound, video: a.video, image: a.image, keystroke: a.keystroke, minecraft: a.minecraft })),
-      }));
+      if (overlayDebugEnabled()) {
+        console.log('[EVENT-MATCH-DEBUG] No matching enabled action found ' + JSON.stringify({
+          eventActionName: selectedActionName,
+          availableActions: actions.filter(a => a.enabled).map(a => ({ name: a.name, sound: a.sound, video: a.video, image: a.image, keystroke: a.keystroke, minecraft: a.minecraft })),
+        }));
+      }
       continue;
     }
-    console.log('[EVENT-MATCH-DEBUG] Action found for event ' + JSON.stringify({
-      eventId: evt.id,
-      eventActionName: selectedActionName,
-      actionId: action.id,
-      actionName: action.name,
-      actionSound: action.sound,
-      actionVideo: action.video,
-      actionImage: action.image,
-      actionKeystroke: action.keystroke,
-      actionMinecraft: action.minecraft,
-    }));
+    if (overlayDebugEnabled()) {
+      console.log('[EVENT-MATCH-DEBUG] Action found for event ' + JSON.stringify({
+        eventId: evt.id,
+        eventActionName: selectedActionName,
+        actionId: action.id,
+        actionName: action.name,
+        actionSound: action.sound,
+        actionVideo: action.video,
+        actionImage: action.image,
+        actionKeystroke: action.keystroke,
+        actionMinecraft: action.minecraft,
+      }));
+    }
 
     if (action.globalCooldown && action.globalCooldown > 0) {
       const lastGlobal = globalCooldowns.get(action.id) || 0;
       if (Date.now() - lastGlobal < action.globalCooldown * 1000) {
-        console.log('[EVENT-COOLDOWN-SKIP]', {
-          eventId: evt.id,
-          eventName: evt.actionName,
-          cooldown: 'global',
-        });
+        if (overlayDebugEnabled()) {
+          console.log('[EVENT-COOLDOWN-SKIP]', {
+            eventId: evt.id,
+            eventName: evt.actionName,
+            cooldown: 'global',
+          });
+        }
         continue;
       }
     }
@@ -396,11 +472,13 @@ export function dispatchTikTokEvent(data: any) {
       const userMap = userCooldowns.get(action.id) || new Map();
       const lastUser = userMap.get(data.user) || 0;
       if (Date.now() - lastUser < action.userCooldown * 1000) {
-        console.log('[EVENT-COOLDOWN-SKIP]', {
-          eventId: evt.id,
-          eventName: evt.actionName,
-          cooldown: 'user',
-        });
+        if (overlayDebugEnabled()) {
+          console.log('[EVENT-COOLDOWN-SKIP]', {
+            eventId: evt.id,
+            eventName: evt.actionName,
+            cooldown: 'user',
+          });
+        }
         continue;
       }
     }
@@ -411,16 +489,30 @@ export function dispatchTikTokEvent(data: any) {
       userCooldowns.get(action.id)!.set(data.user, Date.now());
     }
 
-    console.log('[ACTION-EXECUTING]', {
-      eventId: evt.id,
-      eventName: evt.actionName,
-      actionId: action.id,
-      actionName: action.name,
-      actionType: action.sound ? 'sound' : action.video ? 'video' : action.image ? 'image' : action.keystroke ? 'keystroke' : action.minecraft ? 'minecraft' : 'other',
-    });
+    if (overlayDebugEnabled()) {
+      console.log('[ACTION-EXECUTING]', {
+        eventId: evt.id,
+        eventName: evt.actionName,
+        actionId: action.id,
+        actionName: action.name,
+        actionType: action.sound ? 'sound' : action.video ? 'video' : action.image ? 'image' : action.keystroke ? 'keystroke' : action.minecraft ? 'minecraft' : 'other',
+      });
+    }
 
-    // All actions go through executeAction which handles Repeat Combo media-only queueing
-    executeAction(action, data);
+    const isCombo = data.combo === true || data.gift?.combo === true;
+    const incrementCount = isCombo ? (Number(data.normalizedGiftDelta) || 0) : 1;
+    if (incrementCount <= 0) continue;
+    const executions = incrementCount;
+    for (let increment = 0; increment < executions; increment += 1) {
+      const executionId = executions > 1
+        ? `exec-combo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+        : undefined;
+      void executeAction(action, executionId ? { ...data, repeatCount: 1, _comboExecutionId: executionId } : data, executionId ? {
+        actionExecutionIdOverride: executionId,
+        comboDeferredAdmission: true,
+        source: 'gift-combo',
+      } : undefined);
+    }
   }
 }
 
@@ -470,7 +562,17 @@ function hasRepeatableMedia(action: Action): boolean {
  * Uses the provided actionExecutionId for tracking.
  * This function dispatches media to overlay and tracks completion.
  */
-async function executeActionNow(action: Action, eventData: any, actionExecutionId: string, executionMode: 'all' | 'non-media-only' | 'media-only' = 'all') {
+export function dispatchActionKeystroke(action: Action, opts: { rfKeyId: string; eventData: unknown }): void {
+  if (!action.keystroke || !action.keystrokeKeys) return;
+  api()?.sendKeystrokes(action.keystrokeKeys, { holdMs: action.keystrokeHoldMs || 100, eventData: opts.eventData, rfKeyId: opts.rfKeyId });
+}
+
+export function executeDeferredTestKeystroke(action: Action, eventData: unknown, rfKeyId?: string): void {
+  if (!action.keystroke || !action.keystrokeKeys) return;
+  dispatchActionKeystroke(action, { rfKeyId: rfKeyId || `RF-KEY-${Date.now()}`, eventData });
+}
+
+async function executeActionNow(action: Action, eventData: any, actionExecutionId: string, executionMode: 'all' | 'non-media-only' | 'media-only' | 'test-bypass' = 'all') {
   const electronAPI = api();
   try {
   const vol = (action.soundVolume ?? action.mediaVolume ?? 80) / 100;
@@ -488,8 +590,36 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
     if (media) videoFile = media.file;
   }
   if (action.image && !imageFile) {
-    const media = await getActionMedia(action.id, "image").catch(() => null) as { file: string } | null;
-    if (media) imageFile = media.file;
+    const lifecycleRows = await db.mediaFiles.where('actionId').equals(action.id).toArray();
+    const lifecycleRow = lifecycleRows.find((row) => row.type === 'image') ?? null;
+    console.log('[IMAGE-MEDIA-LIFECYCLE-DIAG]', JSON.stringify({
+      operation: 'getActionMedia',
+      stage: 'before-lookup',
+      actionId: action.id,
+      actionExecutionId,
+      currentProfileId: useAppStore.getState().currentProfileId,
+      matchingMediaRow: Boolean(lifecycleRow),
+      rowId: lifecycleRow?.id ?? null,
+      rowType: lifecycleRow?.type ?? null,
+      hasFile: typeof lifecycleRow?.file === 'string' && lifecycleRow.file.length > 0,
+      fileLength: typeof lifecycleRow?.file === 'string' ? lifecycleRow.file.length : 0,
+      mediaRef: lifecycleRow?.mediaRef ?? null,
+      relevantActionIds: useAppStore.getState().actions.map((currentAction) => currentAction.id),
+    }));
+    console.log('[IMAGE-EXEC-LOOKUP]', JSON.stringify({ actionId: action.id, actionExecutionId }));
+    const media = await getActionMedia(action.id, "image").catch(() => null) as { file?: string; id?: string; actionId?: string; type?: string; mediaRef?: string } | null;
+    console.log('[IMAGE-EXEC-RESULT]', JSON.stringify({
+      actionId: action.id,
+      actionExecutionId,
+      found: Boolean(media),
+      hasFile: Boolean(media?.file),
+      fileLength: typeof media?.file === 'string' ? media.file.length : 0,
+      id: media?.id ?? null,
+      mediaActionId: media?.actionId ?? null,
+      type: media?.type ?? null,
+      mediaRef: media?.mediaRef ?? null,
+    }));
+    if (media?.file) imageFile = media.file;
   }
 
   // Normalize screen for overlay routing
@@ -526,6 +656,7 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
       soundFadeIn: action.soundFadeIn || 0,
       soundFadeOut: action.soundFadeOut || 0,
       soundLoop: action.soundLoop || false,
+      duration: action.displayDuration || action.duration || 5,
       timestamp: Date.now(),
     };
 
@@ -534,9 +665,19 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
   }
 
   // ── Send visual to overlay ──
+  // For test-bypass (manual Test Actions), only send overlay events for effects that
+  // produce visible/audible output. Skip generic "action" type which renders a purple
+  // "ACTION @someone" card. Live events and queued executions continue to use "action"
+  // type for alert-card display when no specific media is configured.
+  const hasVisualMedia = action.video || action.image;
+  const hasKeystrokeVisual = action.keystroke && action.keystrokeKeys;
+  const shouldSendOverlay = executionMode !== 'test-bypass' || hasVisualMedia || hasKeystrokeVisual;
+
+  const overlayType = action.video ? "video" : action.image ? "image" : (hasKeystrokeVisual ? "keystroke" : "action");
+
   const screen = action.overlayScreen || "1";
   const overlayData: Record<string, unknown> = {
-    type: action.video ? "video" : action.image ? "image" : "action",
+    type: overlayType,
     actionName: action.name,
     screen,
     videoFile,
@@ -576,7 +717,15 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
   overlayData.screen = normalizedScreen;
 
   // In non-media-only mode, skip media overlay dispatch (keystroke/minecraft handled separately)
-  if (executionMode !== 'non-media-only') {
+  // For test-bypass, only send if there's actual visual media or keystroke to display
+  if (executionMode !== 'non-media-only' && shouldSendOverlay) {
+    console.log('[IMAGE-EXEC-PAYLOAD]', JSON.stringify({
+      type: overlayData.type,
+      actionExecutionId,
+      screen: overlayData.screen,
+      hasImageFile: Boolean(overlayData.imageFile),
+      imageFileLength: typeof overlayData.imageFile === 'string' ? overlayData.imageFile.length : 0,
+    }));
     sendToOverlay(overlayData);
 
     // Preload next queued video to eliminate gap between sequential playbacks.
@@ -686,9 +835,9 @@ async function executeActionNow(action: Action, eventData: any, actionExecutionI
  * Public executeAction - entry point for all action execution.
  * Handles Repeat Combo queue logic with media eligibility checking.
  */
-export async function executeAction(action: Action, eventData: any, options?: { bypassQueue?: boolean }) {
+export async function executeAction(action: Action, eventData: any, options?: { bypassQueue?: boolean; actionExecutionIdOverride?: string; comboDeferredAdmission?: boolean; source?: 'gift-combo' }) {
   const normalizedScreen = getNormalizedActionScreen(action);
-  const actionExecutionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const actionExecutionId = options?.actionExecutionIdOverride || `exec-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
   console.log('[REPEAT-COMBO-QUEUE] trigger-received', JSON.stringify({
     actionExecutionId,
@@ -706,7 +855,10 @@ export async function executeAction(action: Action, eventData: any, options?: { 
       screen: normalizedScreen,
       timestamp: Date.now(),
     }));
-    await executeActionNow(action, eventData, actionExecutionId);
+    // For manual Test Actions, only dispatch overlay events for effects that produce
+    // visible/audible output. Skip the generic "action" type which renders a purple
+    // "ACTION @someone" card in the overlay widget.
+    await executeActionNow(action, eventData, actionExecutionId, 'test-bypass');
     return;
   }
 
@@ -754,7 +906,7 @@ export async function executeAction(action: Action, eventData: any, options?: { 
       timestamp: Date.now(),
     }));
 
-    const enqueued = enqueueAction(normalizedScreen, action, eventData, actionExecutionId);
+    const enqueued = enqueueAction(normalizedScreen, action, eventData, actionExecutionId, options?.comboDeferredAdmission === true, options?.source);
     if (!enqueued) {
       console.warn('[ACTION-ENQUEUE-FULL]', JSON.stringify({
         actionId: action.id,
@@ -775,6 +927,45 @@ export async function executeAction(action: Action, eventData: any, options?: { 
 //   window.__coinJarProInjectGift({ giftName: 'Rose', giftId: '5784', diamondCount: 1 })
 //   window.__coinJarProInjectGift({ giftName: 'Lion', giftId: '5785', diamondCount: 20, repeatCount: 3 })
 if (typeof window !== 'undefined') {
+  (window as any).__inspectImageMedia = async (actionId = 'act_jdot52a2') => {
+    const actionRows = await db.mediaFiles.where('actionId').equals(actionId).toArray();
+    const imageRows = await db.mediaFiles.where('type').equals('image').toArray();
+    const actionRowIds = new Set(actionRows.map((row) => row.id));
+    const mediaRefs = new Set(actionRows.map((row) => row.mediaRef).filter((ref): ref is string => Boolean(ref)));
+    const relevantImageRows = imageRows.filter((row) =>
+      row.actionId === actionId || actionRowIds.has(row.id) || mediaRefs.has(row.id)
+    );
+    const toMetadata = (row: typeof imageRows[number]) => ({
+      id: row.id,
+      actionId: row.actionId,
+      type: row.type,
+      hasFile: typeof row.file === 'string' && row.file.length > 0,
+      fileLength: typeof row.file === 'string' ? row.file.length : 0,
+      mediaRef: row.mediaRef ?? null,
+    });
+    const result = {
+      actionId,
+      actionRows: actionRows.map(toMetadata),
+      relevantImageRows: relevantImageRows.map(toMetadata),
+      expectedImageRowPresent: actionRows.some(
+        (row) => row.id === `${actionId}_image` && row.type === 'image'
+      ),
+      lookup: null as Record<string, unknown> | null,
+    };
+    const lookup = await getActionMedia(actionId, 'image');
+    result.lookup = lookup ? {
+      found: true,
+      hasFile: typeof lookup.file === 'string' && lookup.file.length > 0,
+      fileLength: typeof lookup.file === 'string' ? lookup.file.length : 0,
+      id: lookup.id ?? null,
+      actionId: lookup.actionId ?? null,
+      type: lookup.type ?? null,
+      mediaRef: lookup.mediaRef ?? null,
+    } : { found: false, hasFile: false, fileLength: 0, id: null, actionId: null, type: null, mediaRef: null };
+    console.log('[IMAGE-MEDIA-INSPECT]', JSON.stringify(result));
+    return result;
+  };
+
   (window as any).__coinJarProInjectGift = (params: {
     giftName: string;
     giftId?: string;

@@ -136,6 +136,13 @@ export interface Event {
 }
 
 // ===== Sounds =====
+export interface MyInstantsSound {
+  id: string;
+  name: string;
+  url: string;
+  source: 'myinstants';
+}
+
 export interface CustomSound {
   id: string;
   name: string;
@@ -261,6 +268,7 @@ export interface SetupConfig {
   overlayPermanent: boolean;
   halvingPercent: number;
   screenTikTokNames: Record<ScreenId, string>;
+  overlayScreensMaxQueue: Record<ScreenId, number>;
 }
 
 // ===== License =====
@@ -337,6 +345,7 @@ export interface StreamProfile {
   events: Event[];
   customSounds: CustomSound[]; // Profile-specific custom sounds
   locked?: boolean; // ACCESS state only — true when profile exceeds current plan's maxProfiles. Never causes deletion.
+  isDefault?: boolean; // Distinguishes default placeholder profiles from custom profiles. Defaults are placeholders that can be replaced by custom profiles.
   createdAt: string;
   updatedAt: string;
   /** TTS Chat settings (optional for backward compatibility) */

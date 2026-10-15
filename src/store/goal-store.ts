@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import { db } from '../lib/db';
 import { sendToOverlay } from '../lib/overlay-bus';
+import { restoreLikeBaseline } from '../goals/goal-session';
 import type { Goal, GoalRuntime, GoalType, GoalReachedBehavior } from '../goals/types';
 
 /** Get the current authenticated userId (or undefined if not logged in). */
@@ -33,7 +34,10 @@ interface GoalStore {
   // Runtime progress
   setGoalCurrent: (id: string, current: number) => void;
   markGoalReached: (id: string) => void;
+  /** increase mode: newTarget = target + initialTarget; progress PRESERVED. */
   increaseGoalTarget: (id: string) => void;
+  /** double mode: newTarget = target × 2; progress PRESERVED. */
+  doubleGoalTarget: (id: string) => void;
   resetGoalCurrent: (id: string) => void;
   getGoalCurrent: (id: string) => number;
   updateRuntime: (id: string, updates: Partial<GoalRuntime>) => void;
@@ -150,6 +154,8 @@ export const useGoalStore = create<GoalStore>()((set, get) => ({
       title: params.title,
       reachedBehavior: params.reachedBehavior,
       increaseAmount: params.increaseAmount,
+      // Spec: increase mode steps by the ORIGINAL configured target
+      initialTarget: params.target,
       actionId: params.actionId,
       enabled: true,
       createdAt: now,
@@ -161,7 +167,7 @@ export const useGoalStore = create<GoalStore>()((set, get) => ({
       goals: [...s.goals, goal],
       runtime: {
         ...s.runtime,
-        [goal.id]: { goalId: goal.id, current: 0, reached: false, lastCompletedTarget: 0 },
+        [goal.id]: { goalId: goal.id, current: 0, reached: false, lastCompletedTarget: 0, sessionId: null, lastLikeTotal: 0 },
       },
     }));
 
@@ -179,9 +185,17 @@ export const useGoalStore = create<GoalStore>()((set, get) => ({
         return;
       }
     }
+    // User-facing target edits redefine the step for increase mode.
+    // System-driven increase/double use increaseGoalTarget/doubleGoalTarget
+    // (direct set) and must NOT touch initialTarget.
+    const existing = get().goals.find((g) => g.id === id);
+    const patch: Partial<Goal> = { ...updates };
+    if (typeof updates.target === 'number' && updates.target > 0 && existing && updates.target !== existing.target) {
+      patch.initialTarget = updates.target;
+    }
     set((s) => ({
       goals: s.goals.map((g) =>
-        g.id === id ? { ...g, ...updates, updatedAt: Date.now() } : g
+        g.id === id ? { ...g, ...patch, updatedAt: Date.now() } : g
       ),
     }));
     const updated = get().goals.find((g) => g.id === id);
@@ -244,19 +258,50 @@ export const useGoalStore = create<GoalStore>()((set, get) => ({
     const rt = get().runtime[id];
     if (!goal || !rt) return;
 
-    const overshoot = Math.max(0, rt.current - goal.target);
-    // Target increases by the original target amount: 7k → 14k → 21k → ...
-    const newTarget = goal.target + goal.target;
+    // FINAL SPEC: newTarget = oldTarget + initialTarget (constant step).
+    // Progress is PRESERVED (cumulative) — NOT reset to overshoot.
+    // Example: 0/2000 → 2000/2000 → 2000/4000 → 4000/4000 → 4000/6000
+    const step = goal.initialTarget && goal.initialTarget > 0 ? goal.initialTarget : goal.target;
+    const newTarget = goal.target + step;
 
-    get().updateGoal(id, { target: newTarget });
+    // Direct set — must NOT route through updateGoal (which rewrites initialTarget)
     set((s) => ({
+      goals: s.goals.map((g) =>
+        g.id === id ? { ...g, target: newTarget, updatedAt: Date.now() } : g
+      ),
       runtime: {
         ...s.runtime,
-        [id]: { goalId: id, current: overshoot, reached: false, lastCompletedTarget: 0 },
+        [id]: { ...rt, goalId: id, current: rt.current, reached: false, lastCompletedTarget: goal.target },
       },
     }));
+    const updated = get().goals.find((g) => g.id === id);
+    if (updated) get().persistGoal(updated);
     persistToLocalStorage(get().runtime);
-    broadcastProgress(id, overshoot, newTarget, goal.type, goal.title, goal.barColor, undefined, goalColors(goal));
+    broadcastProgress(id, rt.current, newTarget, goal.type, goal.title, goal.barColor, undefined, goalColors(goal));
+  },
+
+  doubleGoalTarget: (id) => {
+    const goal = get().goals.find((g) => g.id === id);
+    const rt = get().runtime[id];
+    if (!goal || !rt) return;
+
+    // FINAL SPEC: newTarget = oldTarget × 2. Progress PRESERVED.
+    // Example: 0/2000 → 2000/2000 → 2000/4000 → 4000/4000 → 4000/8000
+    const newTarget = goal.target * 2;
+
+    set((s) => ({
+      goals: s.goals.map((g) =>
+        g.id === id ? { ...g, target: newTarget, updatedAt: Date.now() } : g
+      ),
+      runtime: {
+        ...s.runtime,
+        [id]: { ...rt, goalId: id, current: rt.current, reached: false, lastCompletedTarget: goal.target },
+      },
+    }));
+    const updated = get().goals.find((g) => g.id === id);
+    if (updated) get().persistGoal(updated);
+    persistToLocalStorage(get().runtime);
+    broadcastProgress(id, rt.current, newTarget, goal.type, goal.title, goal.barColor, undefined, goalColors(goal));
   },
 
   resetGoalCurrent: (id) => {
@@ -323,7 +368,12 @@ export const useGoalStore = create<GoalStore>()((set, get) => ({
           current: saved?.current ?? 0,
           reached: saved?.reached ?? false,
           lastCompletedTarget: saved?.lastCompletedTarget ?? 0,
+          // Session continuity across renderer reloads — progress and like
+          // baselines must survive reload without resetting.
+          sessionId: saved?.sessionId ?? null,
+          lastLikeTotal: saved?.lastLikeTotal ?? 0,
         };
+        restoreLikeBaseline(g.id, saved?.lastLikeTotal);
       }
       set({ goals, runtime, loaded: true });
     } catch (err) {

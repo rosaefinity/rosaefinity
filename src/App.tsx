@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, Suspense, lazy } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
 import { KeystrokeOverlay } from "./overlays/keystroke/KeystrokeOverlay";
-import { TestNotification } from "./components/TestNotification";
 import { ToastContainer } from "./components/Toast";
 import { UpdateNotification } from "./components/UpdateNotification";
 import { ModalProvider } from "./components/ui/modal";
@@ -98,7 +97,6 @@ function App() {
             <AnimationProvider>
           <ErrorBoundary pageName="App">
             <KeystrokeOverlay screen="1" opacity={85} scale={100} animation="fade" duration={5} />
-            <TestNotification />
             <ToastContainer />
             <HashRouter>
               <UpdateNotification />

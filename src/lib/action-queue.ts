@@ -5,6 +5,9 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import type { Action } from '../types';
+import { useAppStore } from '../store/app-store';
+import { SCREEN_IDS } from '../types';
+import { overlayDebugEnabled } from './overlay-debug';
 
 export interface QueuedAction {
   id: string;
@@ -48,11 +51,70 @@ interface ActiveExecution {
 
 interface ScreenQueue {
   queue: QueuedAction[];
+  deferred: QueuedAction[];
   activeExecution: ActiveExecution | null;
 }
 
+const MAX_DEFERRED_PER_SCREEN = 100; // bounded combo backlog; raise only with explicit persistence/backpressure design.
+
 const screenQueues: Map<string, ScreenQueue> = new Map();
-const MAX_QUEUE_LENGTH = 100; // configurable limit
+const DEFAULT_MAX_QUEUE_LENGTH = 5;
+
+// Per-screen max queue length cache - populated from app-store
+const maxQueueLengthByScreen: Map<string, number> = new Map();
+
+/**
+ * Get the max queue length for a specific screen.
+ * Reads from app-store setupConfig.overlayScreensMaxQueue with fallback to default.
+ */
+export function getMaxQueueLength(screen: string): number {
+  // Check cache first
+  if (maxQueueLengthByScreen.has(screen)) {
+    return maxQueueLengthByScreen.get(screen)!;
+  }
+
+  // Read from app-store (may be undefined during SSR/initialization)
+  let maxQueue = DEFAULT_MAX_QUEUE_LENGTH;
+  try {
+    const setupConfig = useAppStore.getState().setupConfig;
+    if (setupConfig?.overlayScreensMaxQueue?.[screen] !== undefined) {
+      maxQueue = setupConfig.overlayScreensMaxQueue[screen];
+    }
+  } catch {
+    // Store not available (e.g., during tests or SSR)
+  }
+
+  // Cache the value
+  maxQueueLengthByScreen.set(screen, maxQueue);
+  return maxQueue;
+}
+
+/**
+ * Update max queue length for a screen (called when config changes).
+ */
+export function updateMaxQueueLength(screen: string, maxQueue: number): void {
+  const validated = Math.max(1, Math.min(100, maxQueue || DEFAULT_MAX_QUEUE_LENGTH));
+  maxQueueLengthByScreen.set(screen, validated);
+}
+
+/**
+ * Clear the max queue length cache for a specific screen or all screens.
+ * Useful for testing.
+ */
+export function clearMaxQueueCache(screen?: string): void {
+  if (screen) {
+    maxQueueLengthByScreen.delete(screen);
+  } else {
+    maxQueueLengthByScreen.clear();
+  }
+}
+
+/**
+ * Check if an action is a video action (will go to overlay video queue).
+ */
+function isVideoAction(action: Action): boolean {
+  return action.video && (action.videoFile || action.videoFileName);
+}
 
 // Executor function that will be set by event-dispatch.ts
 let actionExecutor: ((action: Action, eventData: any, actionExecutionId: string) => Promise<void>) | null = null;
@@ -69,6 +131,7 @@ function getScreenQueue(screen: string): ScreenQueue {
   if (!screenQueues.has(screen)) {
     screenQueues.set(screen, {
       queue: [],
+      deferred: [],
       activeExecution: null,
     });
   }
@@ -83,6 +146,26 @@ function generateActionExecutionId(): string {
  * Determine which media outputs an action will produce.
  * Used to track pending completions.
  */
+interface ActionCompletionPolicy {
+  waitForMedia: {
+    video: boolean;
+    sound: boolean;
+    image: boolean;
+  };
+}
+
+function getActionCompletionPolicy(action: Action): ActionCompletionPolicy {
+  return {
+    // Only overlay media has a reliable existing completion signal. Other
+    // effects remain non-blocking because their APIs expose no completion event.
+    waitForMedia: {
+      video: action.video && !!(action.videoFile || action.videoFileName),
+      sound: action.sound && !!(action.soundFile || action.soundFileName),
+      image: action.image && !!(action.imageFile || action.imageFileName),
+    },
+  };
+}
+
 function getActionMediaOutputs(action: Action): {
   hasVideo: boolean;
   hasSound: boolean;
@@ -92,31 +175,92 @@ function getActionMediaOutputs(action: Action): {
   hasStreamerbot: boolean;
   hasObs: boolean;
 } {
+  const policy = getActionCompletionPolicy(action);
   return {
-    hasVideo: action.video && !!(action.videoFile || action.videoFileName),
-    hasSound: action.sound && !!(action.soundFile || action.soundFileName),
-    hasImage: action.image && !!(action.imageFile || action.imageFileName),
+    hasVideo: policy.waitForMedia.video,
+    hasSound: policy.waitForMedia.sound,
+    hasImage: policy.waitForMedia.image,
     hasKeystroke: action.keystroke && !!action.keystrokeKeys,
     hasMinecraft: action.minecraft && !!action.minecraftCommand,
-    hasStreamerbot: false, // streamerbot doesn't produce overlay media
-    hasObs: false, // OBS scene switch doesn't produce overlay media
+    hasStreamerbot: false,
+    hasObs: false,
   };
 }
+
+export { getActionCompletionPolicy };
 
 /**
  * Enqueue an action for execution on a specific screen.
  * Returns true if enqueued, false if queue is full.
+ * Optimization: when queue is idle (empty + no active execution), execute FIRST item immediately
+ * to eliminate microtask delay for the initial video (matching bypassQueue behavior).
  */
-export function enqueueAction(screen: string, action: Action, eventData: any, actionExecutionId?: string): boolean {
+export function enqueueAction(
+  screen: string,
+  action: Action,
+  eventData: any,
+  actionExecutionId?: string,
+  deferIfFull = false,
+  source?: 'gift-combo' | 'spam10',
+): boolean {
   const queue = getScreenQueue(screen);
+  const correlationId = `corr-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-  if (queue.queue.length >= MAX_QUEUE_LENGTH) {
-    console.warn('[REPEAT-COMBO-QUEUE] queue full, dropping action', JSON.stringify({
+  // Use per-screen max queue length
+  const maxQueueForScreen = getMaxQueueLength(screen);
+
+  // Check if this is a video action (will go to overlay video queue)
+  const incomingIsVideo = action.video && (action.videoFile || action.videoFileName);
+
+  // For video actions, count active execution as occupying 1 slot in overlay video queue
+  // This ensures action queue capacity matches overlay video queue capacity
+  const activeVideoCount = queue.activeExecution && isVideoAction(queue.activeExecution.queuedAction.action) ? 1 : 0;
+  const activeVideoSlot = (incomingIsVideo && activeVideoCount > 0) ? 1 : 0;
+  const pendingVideoCount = queue.queue.filter(q => isVideoAction(q.action)).length;
+  const deferredVideoCount = queue.deferred.filter(q => isVideoAction(q.action)).length;
+  const totalVideoInFlight = pendingVideoCount + activeVideoSlot;
+  const admissionMode = deferIfFull ? 'deferred' : 'normal';
+
+  if (totalVideoInFlight >= maxQueueForScreen) {
+    if (deferIfFull && incomingIsVideo && queue.deferred.length < MAX_DEFERRED_PER_SCREEN) {
+      const executionId = actionExecutionId || generateActionExecutionId();
+      queue.deferred.push({
+        id: generateActionExecutionId(),
+        action,
+        eventData,
+        enqueueTime: Date.now(),
+        actionExecutionId: executionId,
+      });
+      if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-QUEUE] deferred action', JSON.stringify({
+        admissionMode,
+        source,
+        actionExecutionId: executionId,
+        screen,
+        actionId: action.id,
+        activeVideoCount,
+        pendingVideoCount,
+        deferredVideoCount,
+        totalVideoInFlight,
+        maxQueueLength: maxQueueForScreen,
+        deferredLength: queue.deferred.length,
+        deferredAt: Date.now(),
+      }));
+      return true;
+    }
+    if (overlayDebugEnabled()) console.warn('[REPEAT-COMBO-QUEUE] queue full, dropping action', JSON.stringify({
+      admissionMode,
+      source,
+      actionExecutionId: actionExecutionId || null,
+      screen,
       actionId: action.id,
       actionName: action.name,
-      screen,
+      activeVideoCount,
+      pendingVideoCount,
+      deferredVideoCount,
+      totalVideoInFlight,
+      maxQueueLength: maxQueueForScreen,
       queueLength: queue.queue.length,
-      maxQueueLength: MAX_QUEUE_LENGTH,
+      activeExecution: !!queue.activeExecution,
       timestamp: Date.now(),
     }));
     return false;
@@ -132,48 +276,196 @@ export function enqueueAction(screen: string, action: Action, eventData: any, ac
     actionExecutionId: executionId,
   };
 
+  // OPTIMIZATION: If queue is idle (no active execution, empty queue), execute immediately
+  // to match bypassQueue latency for the FIRST video. Subsequent videos queue FIFO.
+  const isQueueIdle = !queue.activeExecution && queue.queue.length === 0;
+
+  if (isQueueIdle) {
+    if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+      correlationId,
+      stage: 'enqueueAction-immediate-execute',
+      executionId,
+      actionId: action.id,
+      actionName: action.name,
+      screen,
+      timestamp: Date.now(),
+    }));
+
+    // Execute immediately without queueing - replicates bypassQueue path for first video
+    queue.activeExecution = {
+      queuedAction,
+      actionExecutionId: executionId,
+      actionId: action.id,
+      actionName: action.name,
+      screen,
+      pendingMedia: {},
+      mediaOutputs: getActionMediaOutputs(action),
+      startTime: Date.now(),
+      completionResolvers: [],
+      isCompleting: false,
+    };
+
+    // Initialize pending media tracking for repeatable media only
+    const mediaOutputs = getActionMediaOutputs(action);
+    const pendingMedia: PendingMedia = {};
+    if (mediaOutputs.hasVideo) pendingMedia.video = true;
+    if (mediaOutputs.hasSound) pendingMedia.sound = true;
+    if (mediaOutputs.hasImage) pendingMedia.image = true;
+    queue.activeExecution.pendingMedia = pendingMedia;
+
+    // Fire-and-forget execution (same as processQueue does)
+    processQueue(screen);
+    return true;
+  }
+
+  // Normal path: queue the action
   queue.queue.push(queuedAction);
 
-  console.log('[ACTION-ENQUEUED]', JSON.stringify({
-    executionId: executionId,
+  if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+    correlationId,
+    stage: 'enqueueAction',
+    executionId,
     actionId: action.id,
     actionName: action.name,
     screen,
     queueLength: queue.queue.length,
     hasActivePlayback: !!queue.activeExecution,
+    isVideo: incomingIsVideo,
     timestamp: Date.now(),
   }));
 
   // Try to process if not already processing
+  if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+    correlationId,
+    stage: 'processQueue-call',
+    executionId,
+    screen,
+    timestamp: Date.now(),
+  }));
   processQueue(screen);
 
   return true;
 }
 
+function promoteDeferred(screen: string): void {
+  const queue = getScreenQueue(screen);
+  while (queue.deferred.length > 0) {
+    const next = queue.deferred[0];
+    if (!enqueueAction(screen, next.action, next.eventData, next.actionExecutionId)) return;
+    if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({ stage: 'deferred-promoted', screen, actionExecutionId: next.actionExecutionId, deferredWaitMs: Date.now() - next.enqueueTime, timestamp: Date.now() }));
+    queue.deferred.shift();
+  }
+}
+
+/**
+ * Enqueue combo work while retaining valid overflow until capacity is available.
+ */
+export function enqueueDeferredAction(screen: string, action: Action, eventData: any, actionExecutionId?: string): boolean {
+  return enqueueAction(screen, action, eventData, actionExecutionId, true);
+}
+
 /**
  * Process the queue for a screen. Only runs if not currently processing.
+ * If activeExecution is already set (from immediate execute path), skip dequeue and execute it.
  */
 async function processQueue(screen: string): Promise<void> {
   const queue = getScreenQueue(screen);
+  const correlationId = `corr-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
+  if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+    correlationId,
+    stage: 'processQueue-entry',
+    screen,
+    hasActiveExecution: !!queue.activeExecution,
+    queueLength: queue.queue.length,
+    timestamp: Date.now(),
+  }));
+
+  // If already executing (set by immediate path), don't block - just continue
   if (queue.activeExecution) {
-    console.log('[REPEAT-COMBO-QUEUE] EXECUTION BLOCKED', JSON.stringify({
-      incomingExecutionId: queue.queue[0]?.actionExecutionId || null,
-      activeExecutionId: queue.activeExecution?.actionExecutionId || null,
-      queueLength: queue.queue.length,
-      isProcessing: !!queue.activeExecution,
-      timestamp: Date.now(),
-    }));
+    // If there's nothing in queue, we may be the immediate execution path
+    // Check if activeExecution already has pendingMedia initialized
+    if (queue.queue.length === 0 && Object.keys(queue.activeExecution.pendingMedia).length > 0) {
+      // Already set up - just execute the action
+      const active = queue.activeExecution;
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'processQueue-execute-immediate',
+        actionExecutionId: active.actionExecutionId,
+        actionId: active.actionId,
+        actionName: active.actionName,
+        screen,
+        timestamp: Date.now(),
+      }));
+
+      try {
+        const completion = waitForCompletion(screen, active.actionExecutionId, {
+          video: active.mediaOutputs.hasVideo,
+          sound: active.mediaOutputs.hasSound,
+          image: active.mediaOutputs.hasImage,
+        });
+        if (actionExecutor) {
+          await actionExecutor(active.queuedAction.action, active.queuedAction.eventData, active.actionExecutionId);
+          await completion;
+        }
+      } catch (error) {
+        console.error('[REPEAT-COMBO-QUEUE] immediate action failed', JSON.stringify({
+          actionId: active.actionId,
+          actionName: active.actionName,
+          actionExecutionId: active.actionExecutionId,
+          screen,
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: Date.now(),
+        }));
+      } finally {
+        queue.activeExecution = null;
+        // Process next item in queue if any
+        promoteDeferred(screen);
+        if (queue.queue.length > 0) {
+          await processQueue(screen);
+        }
+      }
+    } else if (queue.queue.length > 0) {
+      // Blocked by another execution
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'processQueue-blocked',
+        incomingExecutionId: queue.queue[0]?.actionExecutionId || null,
+        activeExecutionId: queue.activeExecution?.actionExecutionId || null,
+        queueLength: queue.queue.length,
+        timestamp: Date.now(),
+      }));
+    }
     return;
   }
 
   if (queue.queue.length === 0) {
+    if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+      correlationId,
+      stage: 'processQueue-empty',
+      screen,
+      timestamp: Date.now(),
+    }));
     return;
   }
 
   const nextAction = queue.queue.shift()!;
   const actionExecutionId = nextAction.actionExecutionId;
   const mediaOutputs = getActionMediaOutputs(nextAction.action);
+
+  if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+    correlationId,
+    stage: 'processQueue-dequeue',
+    actionExecutionId,
+    actionId: nextAction.action.id,
+    actionName: nextAction.action.name,
+    screen,
+    enqueueTime: nextAction.enqueueTime,
+    waitTimeMs: Date.now() - nextAction.enqueueTime,
+    queueWaitMs: Date.now() - nextAction.enqueueTime,
+    pendingMedia: { video: mediaOutputs.hasVideo, sound: mediaOutputs.hasSound, image: mediaOutputs.hasImage },
+    timestamp: Date.now(),
+  }));
 
   // Initialize pending media tracking for repeatable media only
   const pendingMedia: PendingMedia = {};
@@ -204,44 +496,49 @@ async function processQueue(screen: string): Promise<void> {
 
   queue.activeExecution = activeExecution;
 
-  console.log('[ACTION-STARTED]', JSON.stringify({
-    executionId: actionExecutionId,
+  if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+    correlationId,
+    stage: 'processQueue-executor-call',
+    actionExecutionId,
     actionId: nextAction.action.id,
     actionName: nextAction.action.name,
     screen,
-    queueLength: queue.queue.length,
     timestamp: Date.now(),
   }));
 
   try {
     // Execute the action using registered executor
     if (actionExecutor) {
-      console.log('[REPEAT-COMBO-QUEUE] WAITING FOR COMPLETION', JSON.stringify({
-        executionId: actionExecutionId,
-        pendingMedia,
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'actionExecutor-await-start',
+        actionExecutionId,
         timestamp: Date.now(),
       }));
-      await actionExecutor(nextAction.action, nextAction.eventData, actionExecutionId);
-
-      // Wait for actual completion via completion signal
-      await waitForCompletion(screen, actionExecutionId, {
+      const completion = waitForCompletion(screen, actionExecutionId, {
         video: mediaOutputs.hasVideo,
         sound: mediaOutputs.hasSound,
         image: mediaOutputs.hasImage,
       });
+      await actionExecutor(nextAction.action, nextAction.eventData, actionExecutionId);
+
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'actionExecutor-await-done',
+        actionExecutionId,
+        timestamp: Date.now(),
+      }));
+
+      // Wait for actual completion via completion signal
+      await completion;
     } else {
-      console.error('[REPEAT-COMBO-QUEUE] no executor registered');
+      if (overlayDebugEnabled()) console.error('[REPEAT-COMBO-QUEUE] no executor registered');
     }
 
-    console.log('[REPEAT-COMBO-QUEUE] COMPLETION RECEIVED', JSON.stringify({
-      completionExecutionId: actionExecutionId,
-      activeExecutionId: queue.activeExecution?.actionExecutionId || null,
-      matched: true,
-      timestamp: Date.now(),
-    }));
-
-    console.log('[ACTION-FINISHED]', JSON.stringify({
-      executionId: actionExecutionId,
+    if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+      correlationId,
+      stage: 'processQueue-completion',
+      actionExecutionId,
       actionId: nextAction.action.id,
       actionName: nextAction.action.name,
       screen,
@@ -249,7 +546,7 @@ async function processQueue(screen: string): Promise<void> {
       timestamp: Date.now(),
     }));
   } catch (error) {
-    console.error('[REPEAT-COMBO-QUEUE] action failed', JSON.stringify({
+    if (overlayDebugEnabled()) console.error('[REPEAT-COMBO-QUEUE] action failed', JSON.stringify({
       actionId: nextAction.action.id,
       actionName: nextAction.action.name,
       actionExecutionId: nextAction.actionExecutionId,
@@ -260,10 +557,16 @@ async function processQueue(screen: string): Promise<void> {
   } finally {
     queue.activeExecution = null;
 
+    // Promote deferred combo work before processing the next item.
+    promoteDeferred(screen);
+    const completedAt = Date.now();
     // Process next item in queue
     if (queue.queue.length > 0) {
-      console.log('[NEXT-DEQUEUED]', JSON.stringify({
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'processQueue-next',
         completedExecutionId: actionExecutionId,
+        completionToNextStartMs: Date.now() - completedAt,
         nextExecutionId: queue.queue[0].actionExecutionId,
         nextActionId: queue.queue[0].action.id,
         screen,
@@ -272,7 +575,9 @@ async function processQueue(screen: string): Promise<void> {
       }));
       await processQueue(screen);
     } else {
-      console.log('[QUEUE-IDLE]', JSON.stringify({
+      if (overlayDebugEnabled()) console.log('[TIMING-TRACE]', JSON.stringify({
+        correlationId,
+        stage: 'processQueue-idle',
         screen,
         timestamp: Date.now(),
       }));
@@ -295,7 +600,7 @@ function waitForCompletion(screen: string, actionExecutionId: string, expectedMe
   return new Promise((resolve, reject) => {
     const timeoutMs = 60000; // 60 second max wait — resolve (not reject) so queue advances
     const timeout = setTimeout(() => {
-      console.warn('[REPEAT-COMBO-QUEUE] completion timeout — resolving to advance queue', JSON.stringify({
+      if (overlayDebugEnabled()) console.warn('[REPEAT-COMBO-QUEUE] completion timeout — resolving to advance queue', JSON.stringify({
         actionExecutionId,
         screen,
         timestamp: Date.now(),
@@ -323,7 +628,7 @@ function waitForCompletion(screen: string, actionExecutionId: string, expectedMe
         const mediaType = data.mediaType;
         if (waitingFor[mediaType] !== undefined) {
           waitingFor[mediaType] = true;
-          console.log('[REPEAT-COMBO-QUEUE] media complete received', JSON.stringify({
+          if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-QUEUE] media complete received', JSON.stringify({
             actionExecutionId,
             mediaType,
             waitingFor,
@@ -376,7 +681,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   const activeExecution = queue.activeExecution;
 
   if (!activeExecution) {
-    console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
       actionExecutionId,
       mediaType,
       reason: 'no active execution',
@@ -387,7 +692,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   }
 
   if (activeExecution.actionExecutionId !== actionExecutionId) {
-    console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
       actionExecutionId,
       mediaType,
       reason: 'execution ID mismatch',
@@ -399,7 +704,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   }
 
   if (activeExecution.isCompleting) {
-    console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
       actionExecutionId,
       mediaType,
       reason: 'already completing',
@@ -414,7 +719,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   const wasPending = pendingMedia[mediaType] === true;
 
   if (!wasPending) {
-    console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-COMPLETION-IGNORED]', JSON.stringify({
       actionExecutionId,
       mediaType,
       reason: 'not pending',
@@ -427,7 +732,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   // Mark as complete
   delete pendingMedia[mediaType];
 
-  console.log('[REPEAT-COMBO-COMPLETION]', JSON.stringify({
+  if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-COMPLETION]', JSON.stringify({
     actionExecutionId,
     mediaType,
     completedMedia: mediaType,
@@ -440,7 +745,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
   const remainingMedia = Object.keys(pendingMedia).length;
   if (remainingMedia === 0) {
     activeExecution.isCompleting = true;
-    console.log('[REPEAT-COMBO-QUEUE] ALL MEDIA COMPLETE - releasing queue', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-QUEUE] ALL MEDIA COMPLETE - releasing queue', JSON.stringify({
       actionExecutionId,
       actionId: activeExecution.actionId,
       actionName: activeExecution.actionName,
@@ -459,7 +764,7 @@ export function notifyMediaComplete(screen: string, actionExecutionId: string, m
  * This is kept for backward compatibility but media-aware completion is preferred.
  */
 export function notifyActionComplete(screen: string, actionExecutionId: string, actionId: string, actionName: string): void {
-  console.log('[REPEAT-COMBO-QUEUE] completion received (legacy)', JSON.stringify({
+  if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-QUEUE] completion received (legacy)', JSON.stringify({
     actionId,
     actionName,
     actionExecutionId,
@@ -514,12 +819,13 @@ export function getQueueStatus(screen: string): {
  */
 export function clearQueue(screen: string): void {
   const queue = getScreenQueue(screen);
-  const droppedCount = queue.queue.length;
+  const droppedCount = queue.queue.length + queue.deferred.length;
   queue.queue = [];
+  queue.deferred = [];
   queue.activeExecution = null;
 
   if (droppedCount > 0) {
-    console.log('[REPEAT-COMBO-QUEUE] cleared', JSON.stringify({
+    if (overlayDebugEnabled()) console.log('[REPEAT-COMBO-QUEUE] cleared', JSON.stringify({
       screen,
       droppedCount,
       timestamp: Date.now(),

@@ -67,7 +67,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const listener = (_, d) => {
       // STEP 4 DIAGNOSTIC: Log preload event delivery
       if (d?.type === "gift") {
-        console.log(`[TIKTOK-PRELOAD-EVENT]`, JSON.stringify({ type: d.type, screenId: d.screenId, giftName: d.giftName, giftId: d.giftId, user: d.user, diamondCount: d.diamondCount }));
+        console.log(`[TIKTOK-PRELOAD-EVENT]`, JSON.stringify({
+          type: d.type,
+          screenId: d.screenId,
+          giftName: d.giftName,
+          giftId: d.giftId,
+          user: d.user,
+          diamondCount: d.diamondCount,
+          repeatCount: d.repeatCount,
+          combo: d.combo,
+          repeatEnd: d.repeatEnd,
+          isComboTick: d.isComboTick === true,
+        }));
       }
       cb(d);
     };
@@ -112,6 +123,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openOverlay: () => ipcRenderer.send("overlay:open"),
   closeOverlay: () => ipcRenderer.send("overlay:close"),
   sendToOverlay: (data) => ipcRenderer.send("overlay:send", data),
+  // ── FIX 1+2: Register Dexie media for local /media/{id} serving ──
+  mediaRegister: (payload) => ipcRenderer.invoke("media:register", payload),
   pushGoalConfig: (config) => ipcRenderer.send("goal:config", config),
   overlayGenerateToken: (userId) => ipcRenderer.invoke("overlay:generate-token", userId),
   overlayPushState: (token, goals) => ipcRenderer.invoke("overlay:push-state", { token, goals }),
@@ -141,12 +154,38 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // ── Keystroke ──
   sendKeystroke: (keys, holdMs, eventData) => ipcRenderer.invoke("send-keystroke", keys, holdMs, eventData),
-  sendKeystrokes: (keys, opts = {}) => ipcRenderer.invoke("send-keystroke", keys, opts.holdMs || 100, opts.eventData || null),
+  sendKeystrokes: (keys, opts = {}) => {
+    const rfKeyId = opts && opts.rfKeyId;
+    console.log("[RF-KEY-TRACE]", JSON.stringify({
+      stage: "preload-invoke",
+      id: rfKeyId || null,
+      channel: "send-keystroke",
+      keys,
+      holdMs: opts.holdMs || 100,
+    }));
+    return ipcRenderer.invoke(
+      "send-keystroke",
+      keys,
+      opts.holdMs || 100,
+      opts.eventData || null,
+      rfKeyId || null,
+    );
+  },
   onKeystrokeEvent: (cb) => {
     const listener = (_, d) => cb(d);
     ipcRenderer.on("keystroke-event", listener);
     return () => ipcRenderer.removeListener("keystroke-event", listener);
   },
+
+  // Packaged runtime diagnostic
+  diagnosticPackagedRuntime: () => ipcRenderer.invoke("diagnostic:packaged-runtime"),
+  diagnosticTestPackagedKeystroke: (keys, holdMs) => ipcRenderer.invoke("diagnostic:test-packaged-keystroke", keys, holdMs),
+
+  // ── Diagnostic: Direct native keystroke test ──
+  // Tests nativeSendInput directly from Electron main process
+  // Used to distinguish native SendInput bugs from Action execution bugs
+  diagnosticNativeKeystrokeTest: (keys, holdMs) =>
+    ipcRenderer.invoke("diagnostic:native-keystroke-test", { keys, holdMs: holdMs || 100 }),
 
   // ── Global Input Hook ──
   startGlobalHook: (screen) => ipcRenderer.invoke("global-hook:start", screen),
@@ -199,6 +238,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   obsSwitchScene: (opts) => ipcRenderer.invoke("obs:switchScene", opts),
   obsGetScenes: () => ipcRenderer.invoke("obs:getScenes"),
   obsToggleSource: (opts) => ipcRenderer.invoke("obs:toggleSource", opts),
+  onObsStatusChanged: (cb) => {
+    const listener = (_, d) => cb(d);
+    ipcRenderer.on("obs:status-changed", listener);
+    return () => ipcRenderer.removeListener("obs:status-changed", listener);
+  },
 
   // ── Streamer.bot ──
   sbSetConfig: (config) => ipcRenderer.send("sb:setConfig", config),
@@ -292,6 +336,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateSkipVersion: (version) => ipcRenderer.invoke("update:skip-version", version),
   updateUnskipVersion: (version) => ipcRenderer.invoke("update:unskip-version", version),
   updateGetIgnored: () => ipcRenderer.invoke("update:get-ignored"),
+  // Dev-only mock inject (main rejects outside development; no GitHub contact)
+  updateDebugInject: (payload) => ipcRenderer.invoke("update:debug-inject", payload),
 
   // ── Auto Update Events ──
   onUpdateStatus: (cb) => {

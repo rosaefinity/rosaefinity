@@ -402,10 +402,13 @@ export function AlertsPage() {
                         <label className="block text-xs font-medium text-white/50 mb-2">Minimum Coins</label>
                         <input
                           type="number"
-                          min="1"
+                          min="0"
                           max="100000"
                           value={formData.minCoins}
-                          onChange={(e) => setFormData({ ...formData, minCoins: parseInt(e.target.value) || 1 })}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            setFormData({ ...formData, minCoins: Number.isNaN(v) || v < 0 ? 1 : v });
+                          }}
                           className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
                         />
                       </div>

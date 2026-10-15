@@ -6,7 +6,16 @@ import Dexie from "dexie";
 
 class RosaeFinityDB extends Dexie {
   sounds!: Dexie.Table<{ id: string; name: string; file: string; fileName: string; profileId: string }, string>;
-  mediaFiles!: Dexie.Table<{ id: string; actionId: string; type: "sound" | "video" | "image"; file: string; fileName: string }, string>;
+  mediaFiles!: Dexie.Table<{
+    id: string;
+    actionId: string;
+    type: "sound" | "video" | "image";
+    file?: string;
+    fileName: string;
+    contentHash?: string;
+    /** Pointer to canonical media row when this row is a per-action link */
+    mediaRef?: string;
+  }, string>;
   overlays!: Dexie.Table<{
     id: string;
     name: string;
@@ -109,15 +118,76 @@ export async function saveActionMedia(id: string, actionId: string, type: "sound
   await db.mediaFiles.put({ id, actionId, type, file, fileName });
 }
 
+/**
+ * Persist a media row for portable Action packs.
+ * Supports full blobs and mediaRef pointer rows (shared contentHash assets).
+ * Extra fields (contentHash, mediaRef) are stored without a schema version bump.
+ */
+export async function saveMediaRow(row: {
+  id: string;
+  actionId: string;
+  type: "sound" | "video" | "image";
+  file?: string;
+  fileName: string;
+  contentHash?: string;
+  mediaRef?: string;
+}): Promise<void> {
+  await db.mediaFiles.put(row);
+}
+
 export async function getActionMedia(actionId: string, type?: "sound" | "video" | "image") {
   if (type) {
-    return await db.mediaFiles.where({ actionId, type }).first();
+    const row = await db.mediaFiles.where({ actionId, type }).first();
+    if (!row) return null;
+    // Pointer row: follow mediaRef to canonical blob (shared media import)
+    if (!row.file && row.mediaRef) {
+      const parent = await db.mediaFiles.get(row.mediaRef);
+      if (parent?.file) {
+        return { ...parent, actionId: row.actionId, id: row.id, mediaRef: row.mediaRef };
+      }
+    }
+    return row;
   }
   return await db.mediaFiles.where({ actionId }).toArray();
 }
 
+/** Find a media row by content hash + type (portable pack reuse). */
+export async function findMediaByContentHash(
+  contentHash: string,
+  type: "sound" | "video" | "image",
+): Promise<{ id: string; actionId: string; type: "sound" | "video" | "image"; file?: string; fileName: string; contentHash?: string; mediaRef?: string } | null> {
+  const rows = await db.mediaFiles.where({ type }).toArray();
+  return rows.find((r) => r.contentHash === contentHash && r.file) ?? null;
+}
+
+export async function getMediaRowById(id: string) {
+  return await db.mediaFiles.get(id) ?? null;
+}
+
 export async function getActionMediaArray(actionId: string) {
   return await db.mediaFiles.where({ actionId }).toArray();
+}
+
+export async function getAllMediaFiles() {
+  return await db.mediaFiles.toArray();
+}
+
+export async function importMediaLibrary(rows: {
+  sounds?: Array<{ id: string; name: string; file: string; fileName: string; profileId: string }>;
+  mediaFiles?: Array<{
+    id: string;
+    actionId: string;
+    type: "sound" | "video" | "image";
+    file?: string;
+    fileName: string;
+    contentHash?: string;
+    mediaRef?: string;
+  }>;
+}): Promise<void> {
+  await db.transaction("rw", db.sounds, db.mediaFiles, async () => {
+    if (rows.sounds?.length) await db.sounds.bulkPut(rows.sounds);
+    if (rows.mediaFiles?.length) await db.mediaFiles.bulkPut(rows.mediaFiles);
+  });
 }
 
 export async function deleteActionMedia(actionId: string) {

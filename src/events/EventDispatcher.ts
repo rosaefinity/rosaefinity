@@ -42,6 +42,12 @@ export function toOverlayEvent(data: Record<string, unknown>): OverlayEvent | nu
       eventData.giftName = data.giftName ?? 'Unknown Gift';
       eventData.diamonds = data.diamondCount ?? 0;
       eventData.repeatCount = data.repeatCount ?? 1;
+      // normalizedGiftDelta: already computed by the store dispatcher
+      // in dispatchTikTokEvent (line 155: data.normalizedGiftDelta = effectiveDelta)
+      // — pass through the store-computed delta directly.
+      if (typeof data.normalizedGiftDelta === 'number') {
+        eventData.normalizedGiftDelta = data.normalizedGiftDelta;
+      }
       break;
     case 'like':
       eventData.count = data.likeCount ?? 1;
@@ -67,6 +73,16 @@ export function toOverlayEvent(data: Record<string, unknown>): OverlayEvent | nu
     priority: rawType === 'gift' ? 1 : 0,
     timestamp: (data.timestamp as number) ?? Date.now(),
     data: eventData,
+    ...(rawType === 'gift' ? {
+      username: eventData.username as string,
+      giftName: eventData.giftName as string,
+      diamonds: eventData.diamonds as number,
+      repeatCount: eventData.repeatCount as number,
+      normalizedGiftDelta: data.normalizedGiftDelta as number | undefined,
+      giftId: data.giftId as string | undefined,
+      roomId: data.roomId as string | undefined,
+      screenId: data.screenId as string | undefined,
+    } : {}),
     screenId: (data.screenId as string) ?? undefined,
     cancelable: false,
   };

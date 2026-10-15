@@ -15,6 +15,9 @@ const MIN_RATE_LIMIT_COOLDOWN_MS = 5_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000;
 const MAX_RATE_LIMIT_COOLDOWN_MS = 60_000;
 
+// Debug flag for high-frequency forensic logs
+const TIKTOK_SERVICE_DEBUG = process.env.RF_DEBUG === "1" || process.env.NODE_ENV === "development";
+
 // Monotonically increasing connection attempt ID for lifecycle tracking
 let _nextAttemptId = 1;
 
@@ -58,7 +61,7 @@ class TikTokService extends EventEmitter {
       this.WebcastEvent = mod.WebcastEvent;
       this.ControlEvent = mod.ControlEvent;
       this._moduleLoaded = true;
-      console.log("[TIKTOK-CONNECT] package loaded", { name: "tiktok-live-connector", version: mod.VERSION || "unknown" });
+      if (TIKTOK_SERVICE_DEBUG) console.log("[TIKTOK-CONNECT] package loaded", { name: "tiktok-live-connector", version: mod.VERSION || "unknown" });
       console.log("[TIKTOK-CONNECT] module path", { path: require.resolve("tiktok-live-connector").replace(/\\/g, "/") });
     } catch (e) {
       console.error("[TIKTOK-CONNECT] Failed to load tiktok-live-connector:", e.message);
@@ -515,39 +518,32 @@ class TikTokService extends EventEmitter {
           const errorClassification = this._classifyError(err, screenState);
           const isRateLimit = errorClassification === 'rate-limit';
 
-          // ── Signing response tracing ──
-          const responseHeaders = err?.response?.headers || {};
-          const rawResponseBody = err?.response?.data;
-          let responseBody = null;
-          if (rawResponseBody) {
-            try {
-              const str = typeof rawResponseBody === 'string' ? rawResponseBody : JSON.stringify(rawResponseBody);
-              responseBody = str.substring(0, 1000);
-            } catch (_) {
-              responseBody = '[unparseable]';
+          if (TIKTOK_SERVICE_DEBUG) {
+            const responseHeaders = err?.response?.headers || {};
+            const rawResponseBody = err?.response?.data;
+            let responseBody = null;
+            if (rawResponseBody) {
+              try {
+                const str = typeof rawResponseBody === 'string' ? rawResponseBody : JSON.stringify(rawResponseBody);
+                responseBody = str.substring(0, 100);
+              } catch (_) {
+                responseBody = '[unparseable]';
+              }
             }
+            console.log(`[TIKTOK-SIGN-RESPONSE]`, JSON.stringify({
+              signingRequestId,
+              attemptId,
+              screenId,
+              username: cleanUsername,
+              status: err?.response?.status || err?.status || null,
+              headers: {
+                'retry-after': responseHeaders['retry-after'] || responseHeaders['Retry-After'] || null,
+                'x-ratelimit-reset': responseHeaders['x-ratelimit-reset'] || null,
+              },
+              body: responseBody,
+              errorMessage: (err?.message || '').substring(0, 100),
+            }));
           }
-          console.log(`[TIKTOK-SIGN-RESPONSE]`, JSON.stringify({
-            signingRequestId,
-            attemptId,
-            screenId,
-            username: cleanUsername,
-            status: err?.response?.status || err?.status || null,
-            headers: {
-              'retry-after': responseHeaders['retry-after'] || responseHeaders['Retry-After'] || null,
-              'x-ratelimit-reset': responseHeaders['x-ratelimit-reset'] || null,
-              'x-log-id': responseHeaders['x-log-id'] || null,
-              'x-agent-id': responseHeaders['x-agent-id'] || null,
-              'content-type': responseHeaders['content-type'] || null,
-            },
-            body: responseBody,
-            retryAfter: err?.retryAfter ?? null,
-            resetTime: err?.resetTime ?? null,
-            errorName: err?.constructor?.name || null,
-            errorMessage: (err?.message || '').substring(0, 300),
-            timestamp: Date.now(),
-            timestampIso: new Date().toISOString(),
-          }));
 
           console.log(`[TIKTOK-CONNECT-TRACE] connection FAILED`, JSON.stringify({
             attemptId,
@@ -690,168 +686,66 @@ class TikTokService extends EventEmitter {
 
         // ── Event Handlers ──
         // Catch-all: log EVERY decoded protobuf message type (proves connector receives gifts)
-        connection.on("decodedData", (method, decoded, raw) => {
-          console.log(`[TIKTOK-DECODED]`, JSON.stringify({
-            screenId,
-            method,
-            hasData: !!decoded,
-            dataKeys: decoded ? Object.keys(decoded).slice(0, 8) : null,
-          }));
-        });
+        // Gated behind debug flag - extremely high frequency
+        if (TIKTOK_SERVICE_DEBUG) {
+          connection.on("decodedData", (method, decoded, raw) => {
+            console.log(`[TIKTOK-DECODED]`, JSON.stringify({
+              screenId,
+              method,
+              hasData: !!decoded,
+              dataKeys: decoded ? Object.keys(decoded).slice(0, 8) : null,
+            }));
+          });
+        }
 
-        // GIFT — log exact event name for diagnostic
-        const giftEventName = this.WebcastEvent.GIFT;
-        console.log(`[TIKTOK-GIFT-LISTENER-REG]`, JSON.stringify({
-          screenId,
-          giftEventName,
-          webcastEventKeys: this.WebcastEvent ? Object.keys(this.WebcastEvent) : null,
-          webcastEventType: typeof this.WebcastEvent,
-        }));
+        // GIFT — log exact event name for diagnostic (debug only)
+        const giftEventName = this.WebcastEvent.GIFT; // Declare outside debug block
+        if (TIKTOK_SERVICE_DEBUG) {
+          console.log(`[TIKTOK-GIFT-LISTENER-REG]`, JSON.stringify({
+            screenId,
+            giftEventName,
+            webcastEventKeys: this.WebcastEvent ? Object.keys(this.WebcastEvent) : null,
+            webcastEventType: typeof this.WebcastEvent,
+          }));
+        }
 
         connection.on(giftEventName, (data) => {
-          // [REAL-GIFT-DEBUG][NATIVE-RECEIVED] First point of contact for real TikTok gift
-          console.log('[REAL-GIFT-DEBUG][NATIVE-RECEIVED]', JSON.stringify({
-            screenId,
-            eventType: 'gift',
-            giftId: data.giftId || data.gift?.id || '(empty)',
-            giftName: data.gift?.name || data.giftName || data.giftDetails?.giftName || '(empty)',
-            repeatCount: data.repeatCount || 1,
-            repeatEnd: data.repeatEnd,
-            diamondCount: data.gift?.diamondCount || data.diamondCount || 0,
-            giftObjectKeys: data.gift ? Object.keys(data.gift).slice(0, 15) : [],
-            topLevelKeys: Object.keys(data).slice(0, 15),
-            hasGift: !!data.gift,
-            hasUser: !!data.user,
-            combo: data.gift?.combo,
-            rawGiftName: data.gift?.name,
-            rawGiftImageUrls: data.gift?.image?.urlList || [],
-          }));
+          // FIX (LIVE Action parity): Do NOT drop combo ticks before emit.
+          // Combo ticks are emitted with isComboTick=true so ACTION dispatch
+          // can fire immediately (same as Test Action). Accounting (coins /
+          // goals / stats) continues to use only final/non-tick gifts.
+          const { classifyGiftActionTick } = require("./gift-action-tick.cjs");
+          const giftClass = classifyGiftActionTick(data);
+          const isComboGift = giftClass.isComboGift;
+          const isRepeatNotEnded = giftClass.isRepeatNotEnded;
+          const isComboTick = giftClass.isComboTick;
 
-          console.log(`[TIKTOK-GIFT-LISTENER-FIRED]`, JSON.stringify({
-            screenId,
-            eventName: giftEventName,
-            argsCount: arguments.length,
-            dataType: typeof data,
-            dataKeys: data ? Object.keys(data) : null,
-            hasGift: !!data?.gift,
-            hasUser: !!data?.user,
-            giftId: data?.giftId,
-            repeatEnd: data?.repeatEnd,
-          }));
-          // STEP 1 DIAGNOSTIC: Log raw gift arrival with actual protobuf field shapes
-          const rawGiftType = data.giftType;
-          const giftTypeFromGift = data.gift?.type;
-          const giftComboFromGift = data.gift?.combo;
-          const giftNameFromGift = data.gift?.name;
-          const diamondCountFromGift = data.gift?.diamondCount;
-          const userIdFromUser = data.user?.id;
-          const nicknameFromUser = data.user?.nickname;
-
-          console.log(`[TIKTOK-RAW-GIFT]`, JSON.stringify({
-            screenId,
-            giftId: data.giftId,
-            repeatCount: data.repeatCount,
-            repeatEnd: data.repeatEnd,
-            repeatEndType: typeof data.repeatEnd,
-            giftType: rawGiftType,
-            giftTypeType: typeof rawGiftType,
-            giftName: data.giftName,
-            giftDetailsGiftName: data.giftDetails?.giftName,
-            giftNameFromGiftObj: giftNameFromGift,
-            diamondCount: data.diamondCount,
-            giftDetailsDiamondCount: data.giftDetails?.diamondCount,
-            diamondCountFromGiftObj: diamondCountFromGift,
-            userId: data.user?.uniqueId,
-            userIdFromUserObj: userIdFromUser,
-            nickname: data.user?.nickname,
-            nicknameFromUserObj: nicknameFromUser,
-            giftTypeFromGiftObj: giftTypeFromGift,
-            giftComboFromGiftObj: giftComboFromGift,
-            dataKeys: Object.keys(data),
-            giftKeys: data.gift ? Object.keys(data.gift) : null,
-            extendedGiftInfo: data.extendedGiftInfo ? { name: data.extendedGiftInfo.name, id: data.extendedGiftInfo.id } : null,
-          }));
-
-          // Combo filter: only emit on final repeat for combo gifts (gift.combo=true)
-          // OLD: if (data.giftType === 1 && !data.repeatEnd) return; // WRONG — giftType doesn't exist top-level
-          // NEW: use data.gift?.combo and repeatEnd (number: 0 = not ended, 1 = ended)
-          const isComboGift = data.gift?.combo === true;
-          const isRepeatNotEnded = data.repeatEnd === 0 || data.repeatEnd === false;
-
-          // [COIN-JAR-DUPLICATE-TRACE] RAW_EVENT — log BEFORE any filtering
-          console.log('[COIN-JAR-DUPLICATE-TRACE] RAW_EVENT', JSON.stringify({
-            giftName: data.gift?.name || data.giftName || data.giftDetails?.giftName || '(empty)',
-            giftId: data.giftId || data.gift?.id || '(empty)',
-            repeatCount: data.repeatCount,
-            repeatCountType: typeof data.repeatCount,
-            repeat: data.repeat,
-            comboCount: data.comboCount,
-            repeatEnd: data.repeatEnd,
-            repeatEndType: typeof data.repeatEnd,
-            combo: data.gift?.combo,
-            comboType: typeof data.gift?.combo,
-            eventId: `${data.giftId || 'none'}-${data.user?.id || 'anon'}-${data.repeatCount}`,
-            timestamp: Date.now(),
-            isComboGift,
-            isRepeatNotEnded,
-            wouldBeFiltered: isComboGift && isRepeatNotEnded,
-          }));
-
-          if (isComboGift && isRepeatNotEnded) {
-            console.log(`[TIKTOK-GIFT-FILTER] skip combo update`, { screenId, giftId: data.giftId, repeatEnd: data.repeatEnd, combo: data.gift?.combo });
-            return;
+          if (TIKTOK_SERVICE_DEBUG) {
+            if (isComboTick) {
+              console.log(`[TIKTOK-GIFT-COMBO-TICK] emit for ACTION only (no accounting)`, {
+                screenId,
+                giftId: data.giftId,
+                repeatEnd: data.repeatEnd,
+                combo: data.gift?.combo,
+                repeatCount: data.repeatCount,
+              });
+            } else {
+              console.log(`[TIKTOK-GIFT-PASS] gift passes for accounting+actions`, {
+                screenId,
+                giftId: data.giftId,
+                isComboGift,
+                repeatEnd: data.repeatEnd,
+              });
+            }
           }
-          console.log(`[TIKTOK-GIFT-PASS] gift passes filter`, { screenId, giftId: data.giftId, isComboGift, repeatEnd: data.repeatEnd });
 
           const normalized = this._normalizeGiftEvent(screenId, cleanUsername, data);
-
-          // [COIN-JAR-DUPLICATE-TRACE] NORMALIZED_EVENT
-          console.log('[COIN-JAR-DUPLICATE-TRACE] NORMALIZED_EVENT', JSON.stringify({
-            giftName: normalized.giftName,
-            giftId: normalized.giftId,
-            repeatCount: normalized.repeatCount,
-            repeatCountType: typeof normalized.repeatCount,
-            eventId: `${normalized.giftId || 'none'}-${normalized.user}-${normalized.timestamp}`,
-            timestamp: normalized.timestamp,
-          }));
-
-          // [REAL-GIFT-DEBUG][NORMALIZED-EVENT] After normalization, before emit
-          console.log('[REAL-GIFT-DEBUG][NORMALIZED-EVENT]', JSON.stringify({
-            type: normalized.type,
-            screenId,
-            giftName: normalized.giftName,
-            giftId: normalized.giftId,
-            repeatCount: normalized.repeatCount,
-            diamondCount: normalized.diamondCount,
-            giftImageUrl: normalized.giftImageUrl || '(empty)',
-            user: normalized.user,
-          }));
-
-          // [COIN-JAR-LIVE] Real TikTok gift — compact structured trace
-          const cid = `${normalized.giftId || 'none'}-${data.user?.id || 'anon'}-${normalized.timestamp}`;
-          console.log(`[COIN-JAR-LIVE][${cid}] RAW_GIFT`, JSON.stringify({
-            source: 'real-tiktok-live',
-            giftId: normalized.giftId,
-            giftName: normalized.giftName,
-            diamondCount: normalized.diamondCount,
-            repeatCount: normalized.repeatCount,
-            repeatEnd: data.repeatEnd,
-            userId: data.user?.id,
-            nickname: data.user?.nickname,
-            timestamp: normalized.timestamp,
-            nativeImageUrl: data.gift?.image?.urlList?.[0] ?? null,
-            nativeIconUrl: data.gift?.icon?.urlList?.[0] ?? null,
-          }));
-
           this._emitEvent(normalized);
         });
 
-        // LIKE — diagnostic for comparison with gift listener
+        // LIKE
         const likeEventName = this.WebcastEvent.LIKE;
         connection.on(likeEventName, (data) => {
-          console.log(`[TIKTOK-LIKE-LISTENER-FIRED]`, JSON.stringify({
-            screenId, eventName: likeEventName, dataType: typeof data, dataKeys: data ? Object.keys(data).slice(0, 10) : null,
-          }));
           this._emitEvent(this._normalizeLikeEvent(screenId, cleanUsername, data));
         });
 
@@ -1197,70 +1091,65 @@ class TikTokService extends EventEmitter {
         const isRateLimit = errorClassification === 'rate-limit';
         console.error(`[TIKTOK] screen=${screenId} init ERROR: ${msg}`);
 
-        // ── Signing response tracing (outer catch) ──
-        const outerResponseHeaders = err?.response?.headers || {};
-        const outerRawBody = err?.response?.data;
-        let outerBody = null;
-        if (outerRawBody) {
-          try {
-            const str = typeof outerRawBody === 'string' ? outerRawBody : JSON.stringify(outerRawBody);
-            outerBody = str.substring(0, 1000);
-          } catch (_) { outerBody = '[unparseable]'; }
+          if (TIKTOK_SERVICE_DEBUG) {
+            const outerResponseHeaders = err?.response?.headers || {};
+            const outerRawBody = err?.response?.data;
+            let outerBody = null;
+            if (outerRawBody) {
+              try {
+                const str = typeof outerRawBody === 'string' ? outerRawBody : JSON.stringify(outerRawBody);
+                outerBody = str.substring(0, 100);
+              } catch (_) { outerBody = '[unparseable]'; }
+            }
+            console.log(`[TIKTOK-SIGN-RESPONSE]`, JSON.stringify({
+              signingRequestId: typeof signingRequestId !== 'undefined' ? signingRequestId : null,
+              attemptId,
+              screenId,
+              username: cleanUsername,
+              path: 'outer-catch',
+              status: err?.response?.status || err?.status || null,
+              headers: {
+                'retry-after': outerResponseHeaders['retry-after'] || outerResponseHeaders['Retry-After'] || null,
+                'x-ratelimit-reset': outerResponseHeaders['x-ratelimit-reset'] || null,
+              },
+              body: outerBody,
+              errorMessage: (err?.message || '').substring(0, 100),
+            }));
+          }
+
+        if (TIKTOK_SERVICE_DEBUG) {
+          // Detailed error shape logging for outer catch
+          console.log(`[TIKTOK-RATE-LIMIT-TRACE] ERROR SHAPE (outer catch)`, JSON.stringify({
+            attemptId,
+            screenId,
+            constructorName: err?.constructor?.name,
+            name: err?.name,
+            message: err?.message?.substring(0, 100),
+            info: err?.info?.substring(0, 100),
+            code: err?.code,
+            status: err?.status,
+            statusCode: err?.statusCode,
+            retryAfter: err?.retryAfter,
+            retryAfterType: typeof err?.retryAfter,
+            resetTime: err?.resetTime,
+            resetTimeType: typeof err?.resetTime,
+            hasResponse: !!err?.response,
+            responseStatus: err?.response?.status,
+            responseHeaders: err?.response?.headers,
+            ownKeys: err ? Object.keys(err) : [],
+            responseOwnKeys: err?.response ? Object.keys(err.response) : [],
+            stack: err?.stack?.substring(0, 300),
+          }));
+
+          console.log(`[TIKTOK-RECONNECT-AUDIT] error received (catch)`, {
+            screenId,
+            errorName: err?.constructor?.name,
+            errorMessage: (err?.message || "").substring(0, 150),
+            friendlyMessage: msg,
+            isRateLimit,
+            errorClassification,
+          });
         }
-        console.log(`[TIKTOK-SIGN-RESPONSE]`, JSON.stringify({
-          signingRequestId,
-          attemptId,
-          screenId,
-          username: cleanUsername,
-          path: 'outer-catch',
-          status: err?.response?.status || err?.status || null,
-          headers: {
-            'retry-after': outerResponseHeaders['retry-after'] || outerResponseHeaders['Retry-After'] || null,
-            'x-ratelimit-reset': outerResponseHeaders['x-ratelimit-reset'] || null,
-            'x-log-id': outerResponseHeaders['x-log-id'] || null,
-            'x-agent-id': outerResponseHeaders['x-agent-id'] || null,
-            'content-type': outerResponseHeaders['content-type'] || null,
-          },
-          body: outerBody,
-          retryAfter: err?.retryAfter ?? null,
-          resetTime: err?.resetTime ?? null,
-          errorName: err?.constructor?.name || null,
-          errorMessage: (err?.message || '').substring(0, 300),
-          timestamp: Date.now(),
-          timestampIso: new Date().toISOString(),
-        }));
-
-        // Detailed error shape logging for outer catch
-        console.log(`[TIKTOK-RATE-LIMIT-TRACE] ERROR SHAPE (outer catch)`, JSON.stringify({
-          attemptId,
-          screenId,
-          constructorName: err?.constructor?.name,
-          name: err?.name,
-          message: err?.message?.substring(0, 300),
-          info: err?.info?.substring(0, 300),
-          code: err?.code,
-          status: err?.status,
-          statusCode: err?.statusCode,
-          retryAfter: err?.retryAfter,
-          retryAfterType: typeof err?.retryAfter,
-          resetTime: err?.resetTime,
-          resetTimeType: typeof err?.resetTime,
-          hasResponse: !!err?.response,
-          responseStatus: err?.response?.status,
-          responseHeaders: err?.response?.headers,
-          ownKeys: err ? Object.keys(err) : [],
-          responseOwnKeys: err?.response ? Object.keys(err.response) : [],
-          stack: err?.stack?.substring(0, 300),
-        }));
-
-        console.log(`[TIKTOK-RECONNECT-AUDIT] error received (catch)`, {
-          screenId,
-          errorName: err?.constructor?.name,
-          errorMessage: (err?.message || "").substring(0, 150),
-          friendlyMessage: msg,
-          isRateLimit,
-          errorClassification,
-        });
 
         this._emitEvent({
           type: "error",
@@ -1330,35 +1219,39 @@ class TikTokService extends EventEmitter {
     const screenState = this._getScreenState(screenId);
     screenState.isManualDisconnect = true;
 
-    console.log(`[TIKTOK-LIFECYCLE-TRACE] service disconnect called`, JSON.stringify({
-      source: "backend-disconnect-manual",
-      screenId,
-      attemptId: screenState.lastAttemptId,
-      timestamp: Date.now(),
-      currentStatus: screenState.state,
-      username: screenState.username,
-      roomId: screenState.roomId,
-      isConnected: screenState.state === "connected",
-      isConnecting: screenState.state === "connecting",
-      rateLimited: screenState.rateLimited,
-      serverRetryUntil: screenState.serverRetryUntil,
-      reconnectAttempts: screenState.reconnectAttempts,
-      reconnectScheduled: !!screenState.reconnectTimer,
-      reason: "manual disconnect requested",
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-LIFECYCLE-TRACE] service disconnect called`, JSON.stringify({
+        source: "backend-disconnect-manual",
+        screenId,
+        attemptId: screenState.lastAttemptId,
+        timestamp: Date.now(),
+        currentStatus: screenState.state,
+        username: screenState.username,
+        roomId: screenState.roomId,
+        isConnected: screenState.state === "connected",
+        isConnecting: screenState.state === "connecting",
+        rateLimited: screenState.rateLimited,
+        serverRetryUntil: screenState.serverRetryUntil,
+        reconnectAttempts: screenState.reconnectAttempts,
+        reconnectScheduled: !!screenState.reconnectTimer,
+        reason: "manual disconnect requested",
+      }));
+    }
 
     this._clearReconnectTimer(screenState);
     this._clearHeartbeatTimer(screenState);
     this._clearCooldownTimer(screenState);
-    console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
-      source: "backend-disconnect",
-      screenId,
-      now: Date.now(),
-      serverRetryUntilBeforeClear: screenState.serverRetryUntil,
-      remainingMs: screenState.serverRetryUntil ? Math.max(0, screenState.serverRetryUntil - Date.now()) : null,
-      isRateLimitedBeforeClear: screenState.rateLimited,
-      reason: "manual disconnect requested",
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-RATE-LIMIT-CLEAR-TRACE]`, JSON.stringify({
+        source: "backend-disconnect",
+        screenId,
+        now: Date.now(),
+        serverRetryUntilBeforeClear: screenState.serverRetryUntil,
+        remainingMs: screenState.serverRetryUntil ? Math.max(0, screenState.serverRetryUntil - Date.now()) : null,
+        isRateLimitedBeforeClear: screenState.rateLimited,
+        reason: "manual disconnect requested",
+      }));
+    }
     screenState.rateLimited = false;
     screenState.serverRetryUntil = null;
 
@@ -1377,14 +1270,16 @@ class TikTokService extends EventEmitter {
     screenState.reconnectAttempts = 0;
 
     // [TIKTOK-DISCONNECT-TRACE][SERVICE] Always emit disconnected so the renderer store updates
-    console.log(`[TIKTOK-DISCONNECT-TRACE][SERVICE]`, JSON.stringify({
-      screenId,
-      wasConnected,
-      wasConnecting,
-      afterState: screenState.state,
-      emittingEvent: true,
-      timestamp: Date.now(),
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-DISCONNECT-TRACE][SERVICE]`, JSON.stringify({
+        screenId,
+        wasConnected,
+        wasConnecting,
+        afterState: screenState.state,
+        emittingEvent: true,
+        timestamp: Date.now(),
+      }));
+    }
     this._emitEvent({
       type: "disconnected",
       screenId,
@@ -1430,10 +1325,7 @@ class TikTokService extends EventEmitter {
 
     // DEFENSE-IN-DEPTH: Never schedule reconnect if rate-limited
     if (screenState.rateLimited) {
-      console.log(`[TIKTOK-RATE-LIMIT] reconnect blocked`, {
-        screenId,
-        reason: "cooldown is active, skipping _scheduleReconnect",
-      });
+      if (TIKTOK_SERVICE_DEBUG) console.log(`[TIKTOK-RATE-LIMIT] reconnect blocked`, { screenId });
       return;
     }
 
@@ -1461,7 +1353,7 @@ class TikTokService extends EventEmitter {
     );
     const jitter = delay * 0.1 * Math.random();
 
-    console.log(`[TIKTOK] screen=${screenId} reconnecting in ${Math.round(delay + jitter)}ms (attempt ${screenState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+    if (TIKTOK_SERVICE_DEBUG) console.log(`[TIKTOK] screen=${screenId} reconnecting in ${Math.round(delay + jitter)}ms (attempt ${screenState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 
     this._emitEvent({
       type: "reconnecting",
@@ -1474,10 +1366,7 @@ class TikTokService extends EventEmitter {
       // Re-check rate-limit before actually connecting
       const currentState = this._getScreenState(screenId);
       if (currentState.rateLimited) {
-        console.log(`[TIKTOK-RATE-LIMIT] reconnect blocked`, {
-          screenId,
-          reason: "cooldown became active before reconnect timer fired",
-        });
+        if (TIKTOK_SERVICE_DEBUG) console.log(`[TIKTOK-RATE-LIMIT] reconnect blocked`, { screenId });
         return;
       }
       this.connect(screenId, username).catch((err) => {
@@ -1491,22 +1380,24 @@ class TikTokService extends EventEmitter {
     const screenState = this._getScreenState(screenId);
     const wasConnected = screenState.state === "connected";
 
-    console.log(`[TIKTOK-LIFECYCLE-TRACE] service disconnect called`, JSON.stringify({
-      source: "service-handleDisconnect",
-      screenId,
-      attemptId: screenState.lastAttemptId,
-      timestamp: Date.now(),
-      currentStatus: screenState.state,
-      username: screenState.username,
-      roomId: screenState.roomId,
-      isConnected: wasConnected,
-      isConnecting: screenState.state === "connecting",
-      rateLimited: screenState.rateLimited,
-      serverRetryUntil: screenState.serverRetryUntil,
-      reconnectAttempts: screenState.reconnectAttempts,
-      reconnectScheduled: !!screenState.reconnectTimer,
-      reason,
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-LIFECYCLE-TRACE] service disconnect called`, JSON.stringify({
+        source: "service-handleDisconnect",
+        screenId,
+        attemptId: screenState.lastAttemptId,
+        timestamp: Date.now(),
+        currentStatus: screenState.state,
+        username: screenState.username,
+        roomId: screenState.roomId,
+        isConnected: wasConnected,
+        isConnecting: screenState.state === "connecting",
+        rateLimited: screenState.rateLimited,
+        serverRetryUntil: screenState.serverRetryUntil,
+        reconnectAttempts: screenState.reconnectAttempts,
+        reconnectScheduled: !!screenState.reconnectTimer,
+        reason,
+      }));
+    }
 
     this._clearHeartbeatTimer(screenState);
     this._clearReconnectTimer(screenState);
@@ -1524,15 +1415,17 @@ class TikTokService extends EventEmitter {
 
     // Schedule reconnect if not manual and not rate-limited
     if (!screenState.isManualDisconnect && !screenState.rateLimited && screenState.username) {
-      console.log(`[TIKTOK-LIFECYCLE-TRACE] reconnect scheduled`, JSON.stringify({
-        source: "service-handleDisconnect-scheduleReconnect",
-        screenId,
-        timestamp: Date.now(),
-        reason: "auto-reconnect after disconnect",
-        username: screenState.username,
-      }));
+      if (TIKTOK_SERVICE_DEBUG) {
+        console.log(`[TIKTOK-LIFECYCLE-TRACE] reconnect scheduled`, JSON.stringify({
+          source: "service-handleDisconnect-scheduleReconnect",
+          screenId,
+          timestamp: Date.now(),
+          reason: "auto-reconnect after disconnect",
+          username: screenState.username,
+        }));
+      }
       this._scheduleReconnect(screenId, screenState.username);
-    } else {
+    } else if (TIKTOK_SERVICE_DEBUG) {
       console.log(`[TIKTOK-LIFECYCLE-TRACE] reconnect NOT scheduled`, JSON.stringify({
         source: "service-handleDisconnect-scheduleReconnect",
         screenId,
@@ -1720,18 +1613,20 @@ class TikTokService extends EventEmitter {
     let headers = null;
     const now = Date.now();
 
-    console.log(`[TIKTOK-RATE-LIMIT-TRACE] error properties`, JSON.stringify({
-      constructorName: err?.constructor?.name,
-      retryAfter: err?.retryAfter,
-      retryAfterType: typeof err?.retryAfter,
-      resetTime: err?.resetTime,
-      resetTimeType: typeof err?.resetTime,
-      hasResponse: !!err?.response,
-      responseStatus: err?.response?.status,
-      responseHeaders: err?.response?.headers,
-      now,
-      nowIso: new Date(now).toISOString(),
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-RATE-LIMIT-TRACE] error properties`, JSON.stringify({
+        constructorName: err?.constructor?.name,
+        retryAfter: err?.retryAfter,
+        retryAfterType: typeof err?.retryAfter,
+        resetTime: err?.resetTime,
+        resetTimeType: typeof err?.resetTime,
+        hasResponse: !!err?.response,
+        responseStatus: err?.response?.status,
+        responseHeaders: err?.response?.headers,
+        now,
+        nowIso: new Date(now).toISOString(),
+      }));
+    }
 
     // 1. PREFER err.resetTime (absolute epoch timestamp in ms from SignatureRateLimitError)
     // The library sets resetTime = parseInt(headers["x-ratelimit-reset"]) * 1e3
@@ -1741,16 +1636,18 @@ class TikTokService extends EventEmitter {
       if (err.resetTime > now && err.resetTime < now + 86400000 * 365) { // within 1 year
         rawServerRetryAfterMs = err.resetTime - now;
         source = "resetTime-property";
-        console.log(`[TIKTOK-RATE-LIMIT-TRACE] resetTime used`, JSON.stringify({
-          inputValue: err.resetTime,
-          inputType: typeof err.resetTime,
-          source: "err.resetTime (absolute epoch ms from library)",
-          unit: "converted to relative ms: resetTime - now",
-          outputValue: rawServerRetryAfterMs,
-          outputSec: Math.ceil(rawServerRetryAfterMs / 1000),
-          serverRetryUntilIso: new Date(err.resetTime).toISOString(),
-        }));
-      } else {
+        if (TIKTOK_SERVICE_DEBUG) {
+          console.log(`[TIKTOK-RATE-LIMIT-TRACE] resetTime used`, JSON.stringify({
+            inputValue: err.resetTime,
+            inputType: typeof err.resetTime,
+            source: "err.resetTime (absolute epoch ms from library)",
+            unit: "converted to relative ms: resetTime - now",
+            outputValue: rawServerRetryAfterMs,
+            outputSec: Math.ceil(rawServerRetryAfterMs / 1000),
+            serverRetryUntilIso: new Date(err.resetTime).toISOString(),
+          }));
+        }
+      } else if (TIKTOK_SERVICE_DEBUG) {
         console.log(`[TIKTOK-RATE-LIMIT-TRACE] resetTime invalid/ignored`, JSON.stringify({
           resetTime: err.resetTime,
           now,
@@ -1765,15 +1662,17 @@ class TikTokService extends EventEmitter {
     if (rawServerRetryAfterMs === null && typeof err?.retryAfter === "number" && err.retryAfter > 0) {
       rawServerRetryAfterMs = err.retryAfter;
       source = "retryAfter-property";
-      console.log(`[TIKTOK-RATE-LIMIT-TRACE] retry-after raw`, JSON.stringify({
-        inputValue: err.retryAfter,
-        inputType: typeof err.retryAfter,
-        source: "err.retryAfter (already * 1000 by library)",
-        interpretation_if_relative_sec: `${err.retryAfter / 1000} seconds from now → ${new Date(now + err.retryAfter).toISOString()}`,
-        interpretation_if_absolute_epoch_ms: `${err.retryAfter} ms → ${new Date(err.retryAfter).toISOString()} (if absolute timestamp in ms)`,
-        interpretation_if_absolute_epoch_sec_times1000: `${err.retryAfter / 1000} seconds since epoch → ${new Date(err.retryAfter / 1000 * 1000).toISOString()} (if server sent epoch sec, library multiplied by 1000)`,
-        note: "Library did: parseInt(retry-after-header) * 1e3. If header was a Unix epoch in seconds, library incorrectly treated it as relative duration.",
-      }));
+      if (TIKTOK_SERVICE_DEBUG) {
+        console.log(`[TIKTOK-RATE-LIMIT-TRACE] retry-after raw`, JSON.stringify({
+          inputValue: err.retryAfter,
+          inputType: typeof err.retryAfter,
+          source: "err.retryAfter (already * 1000 by library)",
+          interpretation_if_relative_sec: `${err.retryAfter / 1000} seconds from now → ${new Date(now + err.retryAfter).toISOString()}`,
+          interpretation_if_absolute_epoch_ms: `${err.retryAfter} ms → ${new Date(err.retryAfter).toISOString()} (if absolute timestamp in ms)`,
+          interpretation_if_absolute_epoch_sec_times1000: `${err.retryAfter / 1000} seconds since epoch → ${new Date(err.retryAfter / 1000 * 1000).toISOString()} (if server sent epoch sec, library multiplied by 1000)`,
+          note: "Library did: parseInt(retry-after-header) * 1e3. If header was a Unix epoch in seconds, library incorrectly treated it as relative duration.",
+        }));
+      }
     }
 
     // 3. Try response headers (FALLBACK — only if err.retryAfter not present)
@@ -1786,27 +1685,31 @@ class TikTokService extends EventEmitter {
           "x-log-id": hdrs["x-log-id"],
           "x-agent-id": hdrs["x-agent-id"],
         };
-        console.log(`[TIKTOK-RATE-LIMIT-TRACE] raw HTTP headers`, JSON.stringify({
-          "retry-after": hdrs["retry-after"] || hdrs["Retry-After"],
-          "x-ratelimit-reset": hdrs["x-ratelimit-reset"],
-          "x-log-id": hdrs["x-log-id"],
-          "x-agent-id": hdrs["x-agent-id"],
-        }));
+        if (TIKTOK_SERVICE_DEBUG) {
+          console.log(`[TIKTOK-RATE-LIMIT-TRACE] raw HTTP headers`, JSON.stringify({
+            "retry-after": hdrs["retry-after"] || hdrs["Retry-After"],
+            "x-ratelimit-reset": hdrs["x-ratelimit-reset"],
+            "x-log-id": hdrs["x-log-id"],
+            "x-agent-id": hdrs["x-agent-id"],
+          }));
+        }
 
         const retryAfterRaw = hdrs["retry-after"] || hdrs["Retry-After"];
         const retryAfter = parseInt(retryAfterRaw || "0", 10);
-        console.log(`[TIKTOK-RATE-LIMIT-TRACE] retry-after header parsed`, JSON.stringify({
-          rawHeaderValue: retryAfterRaw,
-          parsedInt: retryAfter,
-          inputValue: retryAfter,
-          inputType: "number (parsed from string)",
-          source: "retry-after-header",
-          unit: "treated as seconds, multiplied by 1000",
-          outputValue: retryAfter * 1000,
-          isReasonableRelativeDuration: retryAfter > 0 && retryAfter < 86400,
-          isLikelyUnixEpoch: retryAfter > 1000000000,
-          warning: retryAfter > 86400 ? "retry-after > 86400 (24h) — likely NOT a relative duration. Possible Unix epoch in seconds." : null,
-        }));
+        if (TIKTOK_SERVICE_DEBUG) {
+          console.log(`[TIKTOK-RATE-LIMIT-TRACE] retry-after header parsed`, JSON.stringify({
+            rawHeaderValue: retryAfterRaw,
+            parsedInt: retryAfter,
+            inputValue: retryAfter,
+            inputType: "number (parsed from string)",
+            source: "retry-after-header",
+            unit: "treated as seconds, multiplied by 1000",
+            outputValue: retryAfter * 1000,
+            isReasonableRelativeDuration: retryAfter > 0 && retryAfter < 86400,
+            isLikelyUnixEpoch: retryAfter > 1000000000,
+            warning: retryAfter > 86400 ? "retry-after > 86400 (24h) — likely NOT a relative duration. Possible Unix epoch in seconds." : null,
+          }));
+        }
 
         if (retryAfter > 0) {
           rawServerRetryAfterMs = retryAfter * 1000;
@@ -1814,18 +1717,20 @@ class TikTokService extends EventEmitter {
         } else {
           const resetTimeRaw = hdrs["x-ratelimit-reset"];
           const resetTime = parseInt(resetTimeRaw || "0", 10);
-          console.log(`[TIKTOK-RATE-LIMIT-TRACE] x-ratelimit-reset header parsed`, JSON.stringify({
-            rawHeaderValue: resetTimeRaw,
-            parsedInt: resetTime,
-            inputValue: resetTime,
-            inputType: "number (parsed from string)",
-            source: "x-ratelimit-reset-header",
-            unit: "treated as seconds, multiplied by 1000",
-            outputValue: resetTime * 1000,
-            isLikelyUnixEpoch: resetTime > 1000000000,
-            isReasonableRelativeDuration: resetTime > 0 && resetTime < 86400,
-            warning: resetTime > 86400 ? "x-ratelimit-reset > 86400 — likely a Unix epoch, NOT a relative duration." : null,
-          }));
+          if (TIKTOK_SERVICE_DEBUG) {
+            console.log(`[TIKTOK-RATE-LIMIT-TRACE] x-ratelimit-reset header parsed`, JSON.stringify({
+              rawHeaderValue: resetTimeRaw,
+              parsedInt: resetTime,
+              inputValue: resetTime,
+              inputType: "number (parsed from string)",
+              source: "x-ratelimit-reset-header",
+              unit: "treated as seconds, multiplied by 1000",
+              outputValue: resetTime * 1000,
+              isLikelyUnixEpoch: resetTime > 1000000000,
+              isReasonableRelativeDuration: resetTime > 0 && resetTime < 86400,
+              warning: resetTime > 86400 ? "x-ratelimit-reset > 86400 — likely a Unix epoch, NOT a relative duration." : null,
+            }));
+          }
           if (resetTime > 0) {
             rawServerRetryAfterMs = resetTime * 1000;
             source = "x-ratelimit-reset-header";
@@ -1834,14 +1739,16 @@ class TikTokService extends EventEmitter {
       }
     }
 
-    console.log(`[TIKTOK-RATE-LIMIT-TRACE] extracted raw info`, JSON.stringify({
-      rawServerRetryAfterMs,
-      rawServerRetryAfterSec: rawServerRetryAfterMs ? Math.ceil(rawServerRetryAfterMs / 1000) : null,
-      source,
-      headers,
-      derived_serverRetryUntil: rawServerRetryAfterMs ? new Date(now + rawServerRetryAfterMs).toISOString() : null,
-      derived_remainingReadable: rawServerRetryAfterMs ? `${Math.ceil(rawServerRetryAfterMs / 1000)}s` : null,
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log(`[TIKTOK-RATE-LIMIT-TRACE] extracted raw info`, JSON.stringify({
+        rawServerRetryAfterMs,
+        rawServerRetryAfterSec: rawServerRetryAfterMs ? Math.ceil(rawServerRetryAfterMs / 1000) : null,
+        source,
+        headers,
+        derived_serverRetryUntil: rawServerRetryAfterMs ? new Date(now + rawServerRetryAfterMs).toISOString() : null,
+        derived_remainingReadable: rawServerRetryAfterMs ? `${Math.ceil(rawServerRetryAfterMs / 1000)}s` : null,
+      }));
+    }
 
     return { rawServerRetryAfterMs, source, headers };
   }
@@ -1975,6 +1882,39 @@ class TikTokService extends EventEmitter {
     return rawServerDelayMs;
   }
 
+  /**
+   * Resolve session/dedup identity for a normalized TikTok event.
+   *
+   * roomId precedence (authoritative connection state, never invented):
+   *   1. data.common.roomId — per-message identity from TikTok protobuf
+   *   2. screenState.roomId — the REAL connection roomId captured at
+   *      connect() success (viewerState.roomId). This is the same value
+   *      Settings displays as tikTokRoomId (e.g. "7691962768422079252").
+   *      Used when decoded events omit/empty common.roomId (runtime-observed).
+   *
+   * msgId: data.common.msgId when present. Never invented — Goal dedup
+   * falls back to deterministic keys when msgId is null.
+   *
+   * Logs [GOAL-ROOM-PROPAGATION] so runtime can prove the connection
+   * roomId reaches the normalized event consumed by Goal Tracker.
+   */
+  _resolveEventIdentity(screenId, data, eventType) {
+    const connectionRoomId = this._getScreenState(screenId)?.roomId || null;
+    const eventRoomId = data?.common?.roomId || null;
+    const roomId = eventRoomId || connectionRoomId || null;
+    const msgId = data?.common?.msgId || null;
+    const source = eventRoomId
+      ? 'event-common'
+      : (connectionRoomId ? 'connection-state' : 'none');
+    console.log('[GOAL-ROOM-PROPAGATION]', JSON.stringify({
+      eventType,
+      roomId,
+      source,
+      screenId,
+    }));
+    return { roomId, msgId };
+  }
+
   /** Event normalization methods
    *  Field mapping for tiktok-live-connector@2.4.0 protobuf data:
    *    data.giftId          → string  (top-level)
@@ -1991,74 +1931,112 @@ class TikTokService extends EventEmitter {
     // Extract real image URL from raw TikTok protobuf: data.gift.image.urlList[0]
     const rawImageUrl = data.gift?.image?.urlList?.[0] || data.gift?.icon?.urlList?.[0] || '';
 
-    // [COIN-JAR-GIFT-TRACE][NATIVE] Log the raw native gift event fields
-    console.log('[COIN-JAR-GIFT-TRACE][NATIVE]', JSON.stringify({
-      screenId,
-      giftId: data.giftId || data.gift?.id || '(empty)',
-      giftName: data.gift?.name || data.giftDetails?.giftName || data.giftName || 'Gift',
-      diamondCount: data.gift?.diamondCount || data.giftDetails?.diamondCount || data.diamondCount || 0,
-      repeatCount: data.repeatCount || 1,
-      nativeImageUrl: rawImageUrl || '(empty)',
-      rawGiftImageUrl: data.gift?.image?.urlList?.[0] || '(empty)',
-      rawIconImageUrl: data.gift?.icon?.urlList?.[0] || '(empty)',
-      hasGiftObject: !!data.gift,
-      giftKeys: data.gift ? Object.keys(data.gift).slice(0, 15) : [],
-    }));
+    const identity = this._resolveEventIdentity(screenId, data, 'gift');
+
+    // Classify combo tick at normalization time so all downstream consumers get it
+    const isComboGift = data.gift?.combo === true || data.combo === true;
+    const repeatEnd = data.repeatEnd;
+    const isRepeatNotEnded = repeatEnd === 0 || repeatEnd === false || repeatEnd === '0';
+    const isComboTick = isComboGift && isRepeatNotEnded;
 
     const normalized = {
       type: "gift",
       screenId,
-      user: data.user?.id || data.user?.uniqueId || "someone",
+      // Session + dedup identity (protobuf common.* with connection fallback)
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || "",
       giftName: data.gift?.name || data.giftDetails?.giftName || data.giftName || "Gift",
       giftId: data.giftId || data.gift?.id,
       repeatCount: data.repeatCount || 1,
-      diamondCount: data.gift?.diamondCount || data.giftDetails?.diamondCount || data.diamondCount || 0,
+      repeatCountCumulative: isComboGift,
+      repeatEnd: repeatEnd,
+      combo: isComboGift,
+      isComboTick: isComboTick,
+      diamondCount: data.gift?.diamondCount ?? data.giftDetails?.diamondCount ?? data.diamondCount ?? 0,
       giftImageUrl: rawImageUrl,
       timestamp: Date.now(),
     };
 
-    // [COIN-JAR-GIFT-TRACE][NORMALIZED] Log after normalization
-    console.log('[COIN-JAR-GIFT-TRACE][NORMALIZED]', JSON.stringify({
-      screenId,
-      type: normalized.type,
-      giftId: normalized.giftId,
-      giftName: normalized.giftName,
-      diamondCount: normalized.diamondCount,
-      repeatCount: normalized.repeatCount,
-      giftImageUrl: normalized.giftImageUrl || '(empty)',
-    }));
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log('[COIN-JAR-GIFT-TRACE][NORMALIZED]', JSON.stringify({
+        screenId,
+        type: normalized.type,
+        giftId: normalized.giftId,
+        giftName: normalized.giftName,
+        diamondCount: normalized.diamondCount,
+        repeatCount: normalized.repeatCount,
+        repeatEnd: normalized.repeatEnd,
+        combo: normalized.combo,
+        isComboTick: normalized.isComboTick,
+        giftImageUrl: normalized.giftImageUrl || '(empty)',
+        roomId: normalized.roomId,
+        msgId: normalized.msgId,
+      }));
+    }
 
     return normalized;
   }
 
   _normalizeLikeEvent(screenId, username, data) {
-    return {
+    // AUDITED tiktok-live-proto v3 WebcastLikeMessage semantics:
+    //   data.count → incremental batch size (likes in THIS message)
+    //   data.total → cumulative room likes (string-typed in proto)
+    //   data.user  → raw User proto (displayId / idStr / nickname; NO uniqueId)
+    //   data.common.msgId / data.common.roomId → dedup + session identity
+    // Previous code read data.likeCount/data.totalLikeCount which DO NOT EXIST
+    // on raw protobuf — every like normalized as likeCount=1, totalLikeCount=0.
+    const likeCount = Number(data.count) || 1;
+    const totalLikeCount = Number(data.total) || 0;
+    const identity = this._resolveEventIdentity(screenId, data, 'like');
+    const normalized = {
       type: "like",
       screenId,
-      user: data.user?.uniqueId || data.uniqueId || "someone",
-      nickname: data.user?.nickname || data.nickname || "",
-      likeCount: data.likeCount || 1,
-      totalLikeCount: data.totalLikeCount || 0,
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
+      nickname: data.user?.nickname || "",
+      likeCount,
+      totalLikeCount,
       timestamp: Date.now(),
     };
+    if (TIKTOK_SERVICE_DEBUG) {
+      console.log('[GOAL-LIKE-NORMALIZED]', JSON.stringify({
+        roomId: normalized.roomId,
+        count: likeCount,
+        total: totalLikeCount,
+        user: normalized.user,
+        msgId: normalized.msgId,
+        screenId,
+        rawCount: data.count,
+        rawTotal: data.total,
+      }));
+    }
+    return normalized;
   }
 
   _normalizeSubscribeEvent(screenId, username, data) {
+    const identity = this._resolveEventIdentity(screenId, data, 'subscribe');
     return {
       type: "subscribe",
       screenId,
-      user: data.user?.uniqueId || "someone",
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || "",
       timestamp: Date.now(),
     };
   }
 
   _normalizeCommentEvent(screenId, username, data) {
+    const identity = this._resolveEventIdentity(screenId, data, 'comment');
     return {
       type: "comment",
       screenId,
-      user: data.user?.id || data.uniqueId || "someone",
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || data.nickname || "",
       comment: data.content || "",
       timestamp: Date.now(),
@@ -2066,30 +2044,42 @@ class TikTokService extends EventEmitter {
   }
 
   _normalizeFollowEvent(screenId, username, data) {
+    // AUDITED: follow arrives as WebcastSocialMessage (raw protobuf).
+    // User proto has displayId/idStr — NOT uniqueId (uniqueId only exists
+    // after legacy simplifyObject). roomId falls back to connection state.
+    const identity = this._resolveEventIdentity(screenId, data, 'follow');
     return {
       type: "follow",
       screenId,
-      user: data.user?.uniqueId || "someone",
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || "",
       timestamp: Date.now(),
     };
   }
 
   _normalizeShareEvent(screenId, username, data) {
+    const identity = this._resolveEventIdentity(screenId, data, 'share');
     return {
       type: "share",
       screenId,
-      user: data.user?.uniqueId || "someone",
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || "",
       timestamp: Date.now(),
     };
   }
 
   _normalizeMemberEvent(screenId, username, data) {
+    const identity = this._resolveEventIdentity(screenId, data, 'member');
     return {
       type: "member",
       screenId,
-      user: data.user?.uniqueId || "someone",
+      roomId: identity.roomId,
+      msgId: identity.msgId,
+      user: data.user?.displayId || data.user?.idStr || data.user?.uniqueId || "someone",
       nickname: data.user?.nickname || "",
       timestamp: Date.now(),
     };
@@ -2115,5 +2105,6 @@ function getTikTokService() {
   }
   return _service;
 }
+
 
 module.exports = { TikTokService, getTikTokService };

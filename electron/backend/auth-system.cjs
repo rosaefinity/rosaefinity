@@ -8,11 +8,166 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const { app } = require("electron");
 const { apiUrl } = require("./api-config.cjs");
 
-const DATA_DIR = path.join(__dirname, "data");
-const SESSION_FILE = path.join(DATA_DIR, "session.json");
-const STREAM_PROFILES_FILE = path.join(DATA_DIR, "stream-profiles.json");
+const LEGACY_DATA_DIR = path.join(__dirname, "data");
+const LEGACY_SESSION_FILE = path.join(LEGACY_DATA_DIR, "session.json");
+const LEGACY_STREAM_PROFILES_FILE = path.join(LEGACY_DATA_DIR, "stream-profiles.json");
+
+function getDataDir() {
+  return path.join(app.getPath("userData"), "rosaefinity");
+}
+
+function getDataFile(name) {
+  return path.join(getDataDir(), name);
+}
+
+function isValidJsonFile(file, validator) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    return validator(value);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isValidSession(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const knownFields = ["accessToken", "refreshToken", "token", "userId", "expiresAt", "rememberMe"];
+  if (!knownFields.some((field) => Object.prototype.hasOwnProperty.call(value, field))) return false;
+  return (
+    (value.accessToken === undefined || value.accessToken === null || typeof value.accessToken === "string") &&
+    (value.refreshToken === undefined || value.refreshToken === null || typeof value.refreshToken === "string") &&
+    (value.token === undefined || value.token === null || typeof value.token === "string") &&
+    (value.userId === undefined || value.userId === null || typeof value.userId === "string") &&
+    (value.expiresAt === undefined || value.expiresAt === null || typeof value.expiresAt === "number") &&
+    (value.rememberMe === undefined || typeof value.rememberMe === "boolean")
+  );
+}
+
+function isValidProfile(profile) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return false;
+  if (typeof profile.id !== "string" || profile.id.length === 0) return false;
+  return (
+    (profile.name === undefined || typeof profile.name === "string") &&
+    (profile.tiktokUsername === undefined || typeof profile.tiktokUsername === "string") &&
+    (profile.overlaySettings === undefined || (profile.overlaySettings && typeof profile.overlaySettings === "object" && !Array.isArray(profile.overlaySettings))) &&
+    (profile.alertsSettings === undefined || (profile.alertsSettings && typeof profile.alertsSettings === "object" && !Array.isArray(profile.alertsSettings))) &&
+    (profile.actions === undefined || Array.isArray(profile.actions)) &&
+    (profile.events === undefined || Array.isArray(profile.events)) &&
+    (profile.createdAt === undefined || typeof profile.createdAt === "number") &&
+    (profile.updatedAt === undefined || typeof profile.updatedAt === "number")
+  );
+}
+
+function isValidStreamProfiles(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every((profiles) => (
+    Array.isArray(profiles) && profiles.every(isValidProfile)
+  ));
+}
+
+function copyFileIfDestinationMissing(sourceFile, destinationFile, label) {
+  const tempFile = `${destinationFile}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.copyFileSync(sourceFile, tempFile, fs.constants.COPYFILE_EXCL);
+    // A hard link is an exclusive create in the same directory. Unlike rename,
+    // it cannot replace a destination created after the existence check.
+    fs.linkSync(tempFile, destinationFile);
+    fs.rmSync(tempFile, { force: true });
+    console.log(`[AUTH] Migrated legacy ${label} storage`);
+  } catch (error) {
+    try { fs.rmSync(tempFile, { force: true }); } catch (_) {}
+    console.warn(`[AUTH] Failed to migrate ${label} storage: ${error.code || "filesystem error"}`);
+  }
+}
+
+function copyLegacyFileIfNeeded(legacyFile, destinationFile, validator, label) {
+  try {
+    if (!fs.existsSync(legacyFile)) return;
+    if (fs.existsSync(destinationFile)) {
+      console.warn(`[AUTH] Storage conflict for ${label}; keeping existing userData file`);
+      return;
+    }
+    if (!isValidJsonFile(legacyFile, validator)) {
+      console.warn(`[AUTH] Ignoring malformed legacy ${label} file`);
+      return;
+    }
+    copyFileIfDestinationMissing(legacyFile, destinationFile, label);
+  } catch (error) {
+    console.warn(`[AUTH] Failed to inspect legacy ${label} storage: ${error.code || "filesystem error"}`);
+  }
+}
+
+function replaceJsonFile(file, value, label) {
+  const tempFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const backupFile = `${file}.${process.pid}.${Date.now()}.bak`;
+  let backupCreated = false;
+  let installed = false;
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(value, null, 2), "utf8");
+    if (fs.existsSync(file)) {
+      fs.renameSync(file, backupFile);
+      backupCreated = true;
+    }
+    // Exclusive link creation avoids replacing a file created after the check.
+    fs.linkSync(tempFile, file);
+    installed = true;
+  } catch (error) {
+    if (!installed && backupCreated && !fs.existsSync(file)) {
+      try {
+        fs.renameSync(backupFile, file);
+        backupCreated = false;
+      } catch (_) {
+        // Keep the backup when Windows locks or otherwise rejects restoration.
+      }
+    }
+    try { fs.rmSync(tempFile, { force: true }); } catch (_) {}
+    console.error(`[AUTH] Error saving ${label}:`, error.code || "storage error");
+    return;
+  }
+
+  // Installation succeeded; cleanup failures must not roll back the new file.
+  try {
+    fs.rmSync(tempFile, { force: true });
+  } catch (cleanupError) {
+    console.warn(`[AUTH] Failed to clean up ${label} temporary file: ${cleanupError.code || "filesystem error"}`);
+  }
+  if (backupCreated) {
+    try {
+      fs.rmSync(backupFile, { force: true });
+    } catch (cleanupError) {
+      console.warn(`[AUTH] Failed to clean up ${label} backup: ${cleanupError.code || "filesystem error"}`);
+    }
+  }
+}
+
+function ensureDataDir() {
+  const dataDir = getDataDir();
+  fs.mkdirSync(dataDir, { recursive: true });
+  copyLegacyFileIfNeeded(
+    LEGACY_SESSION_FILE,
+    getDataFile("session.json"),
+    isValidSession,
+    "session",
+  );
+  copyLegacyFileIfNeeded(
+    LEGACY_STREAM_PROFILES_FILE,
+    getDataFile("stream-profiles.json"),
+    isValidStreamProfiles,
+    "stream profiles",
+  );
+  return dataDir;
+}
+
+function sessionFilePath() {
+  return getDataFile("session.json");
+}
+
+function streamProfilesFilePath() {
+  return getDataFile("stream-profiles.json");
+}
 
 // ══ Stream Profile Limits ════════════════════════
 const PROFILE_LIMITS = {
@@ -36,12 +191,6 @@ let streamProfiles = {};
 let currentStreamProfileId = null;
 
 // ══ Helpers ══════════════════════════════════════════
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
 function generateId() {
   const crypto = require("crypto");
   return crypto.randomBytes(12).toString("hex");
@@ -109,8 +258,10 @@ function apiRequest(method, endpoint, body, accessToken) {
 function loadSession() {
   try {
     ensureDataDir();
-    if (fs.existsSync(SESSION_FILE)) {
-      const loaded = JSON.parse(fs.readFileSync(SESSION_FILE, "utf-8"));
+    const sessionFile = sessionFilePath();
+    const streamProfilesFile = streamProfilesFilePath();
+    if (fs.existsSync(sessionFile)) {
+      const loaded = JSON.parse(fs.readFileSync(sessionFile, "utf-8"));
       sessionData = {
         accessToken: loaded.accessToken || null,
         refreshToken: loaded.refreshToken || loaded.token || null, // fallback for old format
@@ -119,30 +270,30 @@ function loadSession() {
         rememberMe: loaded.rememberMe || false,
       };
     }
-    if (fs.existsSync(STREAM_PROFILES_FILE)) {
-      streamProfiles = JSON.parse(fs.readFileSync(STREAM_PROFILES_FILE, "utf-8"));
+    if (fs.existsSync(streamProfilesFile)) {
+      streamProfiles = JSON.parse(fs.readFileSync(streamProfilesFile, "utf-8"));
     }
     console.log("[AUTH] Session data loaded");
   } catch (e) {
-    console.error("[AUTH] Error loading session:", e.message);
+    console.error("[AUTH] Error loading session:", e.code || "storage error");
   }
 }
 
 function saveSession() {
   try {
     ensureDataDir();
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData, null, 2), "utf-8");
+    replaceJsonFile(sessionFilePath(), sessionData, "session");
   } catch (e) {
-    console.error("[AUTH] Error saving session:", e.message);
+    console.error("[AUTH] Error saving session:", e.code || "storage error");
   }
 }
 
 function saveStreamProfiles() {
   try {
     ensureDataDir();
-    fs.writeFileSync(STREAM_PROFILES_FILE, JSON.stringify(streamProfiles, null, 2), "utf-8");
+    replaceJsonFile(streamProfilesFilePath(), streamProfiles, "stream profiles");
   } catch (e) {
-    console.error("[AUTH] Error saving stream profiles:", e.message);
+    console.error("[AUTH] Error saving stream profiles:", e.code || "storage error");
   }
 }
 
@@ -595,7 +746,7 @@ function initAuth() {
 
   const session = validateLocalSession();
   if (session.valid) {
-    console.log("[AUTH] ✅ Valid session restored for user:", session.userId);
+    console.log("[AUTH] Valid session restored");
   } else {
     console.log("[AUTH] No valid session, user needs to login");
   }

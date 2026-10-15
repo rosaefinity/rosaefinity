@@ -2,26 +2,23 @@
 // RosaeFinity Browser Source — Root Application
 // v3.1 Architecture Spec (Frozen)
 //
-// This is the root React component for ALL browser sources.
-// It reads URL params, loads the overlay module, connects
-// to SSE, and renders the overlay component.
+// ONE EventSource per Browser Source mount.
+// Parent re-renders must not recreate SSE connections.
 // ─────────────────────────────────────────────────────
 
 import React, { useEffect, useState, useCallback, useMemo, useRef, Suspense } from 'react';
 import type { AnyOverlayModule, BaseOverlayConfig, OverlayEvent, OverlayEventSource } from '../overlays/types';
 import { loadModule } from '../overlays/registry';
-import { BrowserEventSource } from './EventSource';
 import { getSSEBaseUrl } from '../lib/browser-source-url';
 import { createOverlayConfig } from '../overlays/createConfig';
-import { BrowserSourceContext, type BrowserSourceRuntimeContext, type ConnectionStatus } from './BrowserSourceContext';
+import { BrowserSourceContext, type BrowserSourceRuntimeContext } from './BrowserSourceContext';
 import { useSSEConnection } from './useSSEConnection';
 import { useFPSMonitor } from './useFPSMonitor';
 import { DebugPanel } from './DebugPanel';
-import { LoadingUI, ErrorUI, MissingOverlayUI, ConnectionStatusUI, StatusDot } from './FallbackUI';
+import { LoadingUI, ErrorUI, MissingOverlayUI } from './FallbackUI';
+import { overlayDebugLog } from '../lib/overlay-debug';
 
 // ─── URL Parameter + Global Injection Parsing ───
-// Browser sources are loaded via /overlay/<browserSourceId> which injects
-// globals via script tags. We read those first, then fall back to URL params.
 
 interface URLParams {
   overlayId: string | null;
@@ -45,11 +42,8 @@ declare global {
 function parseURLParams(): URLParams {
   const params = new URLSearchParams(window.location.search);
 
-  // PRIMARY: Extract from URL pathname (process-isolated, never overwritten by other pages)
   const pathMatch = window.location.pathname.match(/^\/overlay\/([a-f0-9-]+)(?:\.html)?$/);
   const pathBrowserSourceId = pathMatch ? pathMatch[1] : null;
-
-  // FALLBACK: window global injected by server (vulnerable to overwrite in shared browsing contexts)
   const injectedBrowserSourceId = window.__ROSAEFINITY_BROWSER_SOURCE_ID__ || null;
 
   return {
@@ -122,7 +116,7 @@ function useOverlayModule(overlayId: string | null): UseOverlayModuleResult {
     loadModule(overlayId).then(mod => {
       if (cancelled) return;
       if (mod) {
-        console.log('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp loaded module:', overlayId, '→', mod.name);
+        overlayDebugLog('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp loaded module:', overlayId, '→', mod.name);
         setState({ module: mod, loading: false, error: null });
       } else {
         console.error('[OVERLAY-RUNTIME-DIAG] BrowserSourceApp FAILED to load module:', overlayId, '→ NOT FOUND');
@@ -140,31 +134,35 @@ function useOverlayModule(overlayId: string | null): UseOverlayModuleResult {
   return state;
 }
 
-// ─── Fallback Instance Config ───
-
 function getDefaultConfig(mod: AnyOverlayModule): BaseOverlayConfig {
   return createOverlayConfig(mod);
 }
 
+interface DebugDiagnostics {
+  lastEventTime: number;
+  lastEventType: string;
+  eventLatency: number;
+}
+
+const EMPTY_DIAGNOSTICS: DebugDiagnostics = {
+  lastEventTime: 0,
+  lastEventType: '',
+  eventLatency: 0,
+};
+
 // ─── Main App ───
 
 export function BrowserSourceApp(): React.ReactElement {
-  // ── Parse URL params (stable, never changes) ──
   const urlParams = useMemo(() => parseURLParams(), []);
 
-  // ── Config from SSE server (when loaded via /overlay/<browserSourceId>) ──
-  const [serverConfig, setServerConfig] = useState<{ moduleId: string; config: BaseOverlayConfig } | null>(null);
+  const [serverConfig, setServerConfig] = useState<{ moduleId: string; config: BaseOverlayConfig; instanceId?: string } | null>(null);
   const [configLoading, setConfigLoading] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
 
-  // Determine the effective overlay ID: URL param > server config moduleId > null
   const effectiveOverlayId = urlParams.overlayId || serverConfig?.moduleId || null;
-
-  // ── Load overlay module ──
   const { module: overlayModule, loading: moduleLoading, error: moduleError } = useOverlayModule(effectiveOverlayId);
 
-  // ── Fetch config from SSE server when browserSourceId is present ──
-  // Retry until moduleId is found (cache may be empty on app startup)
+  // ── Config fetch (retries until moduleId available) ──
   useEffect(() => {
     if (!urlParams.browserSourceId) return;
 
@@ -194,21 +192,36 @@ export function BrowserSourceApp(): React.ReactElement {
         })
         .then(data => {
           if (cancelled) return;
-
-          // If moduleId is null, the cache hasn't been populated yet — retry
           if (!data.moduleId) {
             retryCount++;
             setTimeout(fetchConfig, RETRY_DELAY_MS);
             return;
           }
-
           setServerConfig({
             moduleId: data.moduleId,
             config: data.config || {},
+            // Overlay instance identity (from main-process instance map) —
+            // lets shared renderers (GoalProgressRenderer) filter SSE events
+            // by goalId without any URL/?instance= changes.
+            instanceId: data.instanceId,
           });
+          // [GOAL-INSTANCE-MAP-FORENSIC] Temporary diagnostics — Task 1.
+          // instanceId null ⇒ old main.cjs (config endpoint lacks it) ⇒
+          // renderer filter stays inactive ⇒ SSE contamination.
+          if (urlParams.debugMode) {
+            const cfgAny = (data.config ?? {}) as any;
+            console.log('[GOAL-INSTANCE-MAP-FORENSIC]', JSON.stringify({
+              browserSourceId: urlParams.browserSourceId,
+              instanceId: data.instanceId ?? null,
+              moduleId: data.moduleId ?? null,
+              configCurrent: cfgAny?.current ?? null,
+              configTarget: cfgAny?.target ?? null,
+              configGoalType: cfgAny?.goalType ?? null,
+            }));
+          }
           setConfigLoading(false);
         })
-        .catch(err => {
+        .catch(() => {
           if (cancelled) return;
           retryCount++;
           setTimeout(fetchConfig, RETRY_DELAY_MS);
@@ -216,82 +229,98 @@ export function BrowserSourceApp(): React.ReactElement {
     }
 
     fetchConfig();
-
     return () => { cancelled = true; };
   }, [urlParams.browserSourceId]);
 
-  // ── State ──
   const [instanceConfig, setInstanceConfig] = useState<BaseOverlayConfig | null>(null);
-  const [renderTime, setRenderTime] = useState(0);
 
-  // ── Event handling ──
-  const lastEventRef = useRef<OverlayEvent | null>(null);
-  const [eventState, setEventState] = useState<{ lastEventTime: number; lastEventType: string; eventLatency: number }>({
-    lastEventTime: 0,
-    lastEventType: '',
-    eventLatency: 0,
-  });
+  // ── Debug-only diagnostics (refs + state only when ?debug=true) ──
+  const diagnosticsRef = useRef<DebugDiagnostics>(EMPTY_DIAGNOSTICS);
+  const [debugDiagnostics, setDebugDiagnostics] = useState<DebugDiagnostics>(EMPTY_DIAGNOSTICS);
 
-  const handleEvent = useCallback((event: OverlayEvent) => {
-    lastEventRef.current = event;
+  const updateDebugDiagnostics = useCallback((event: OverlayEvent) => {
+    if (!urlParams.debugMode) return;
     const now = Date.now();
-    const latency = 'timestamp' in event && typeof event.timestamp === 'number' ? now - event.timestamp : 0;
-    setEventState({ lastEventTime: now, lastEventType: event.type, eventLatency: latency });
+    const latency = 'timestamp' in event && typeof event.timestamp === 'number'
+      ? now - (event.timestamp as number)
+      : 0;
+    const next: DebugDiagnostics = {
+      lastEventTime: now,
+      lastEventType: event.type,
+      eventLatency: latency,
+    };
+    diagnosticsRef.current = next;
+    setDebugDiagnostics(next);
+  }, [urlParams.debugMode]);
 
-    // Handle overlay config change notification — re-fetch /config
+  // ── Stable renderer event bus (no second EventSource) ──
+  // Renderers (CoinJar, GoalProgress, …) subscribe here.
+  // Events fan out from the single useSSEConnection.
+  const rendererSubscribersRef = useRef(new Set<(event: OverlayEvent) => void>());
+  const rendererEventSource: OverlayEventSource = useMemo(() => ({
+    subscribe: (callback: (event: OverlayEvent) => void) => {
+      rendererSubscribersRef.current.add(callback);
+      return () => {
+        rendererSubscribersRef.current.delete(callback);
+      };
+    },
+  }), []);
+
+  const fetchOwnConfig = useCallback(() => {
+    const browserSourceId = urlParams.browserSourceId;
+    if (!browserSourceId) return;
+    const configUrl = window.__ROSAEFINITY_CONFIG_URL__
+      || `${getSSEBaseUrl()}/overlay/${browserSourceId}/config`;
+    fetch(configUrl)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data?.moduleId) {
+          setServerConfig({ moduleId: data.moduleId, config: data.config || {}, instanceId: data.instanceId });
+        }
+      })
+      .catch(() => {});
+  }, [urlParams.browserSourceId]);
+
+  // ── Single SSE event handler ──
+  // Fan-out to overlay subscribers always.
+  // Config refetch ONLY when this browserSourceId changed.
+  // Parent eventState updates ONLY in debug mode.
+  const handleEvent = useCallback((event: OverlayEvent) => {
+    for (const cb of rendererSubscribersRef.current) {
+      try {
+        cb(event);
+      } catch (error) {
+        console.error('[BrowserSource] renderer subscriber error:', error);
+      }
+    }
+
     const data = event as unknown as Record<string, unknown>;
     if (data?.type === 'overlay-config-changed' && urlParams.browserSourceId) {
       const changedBrowserSourceId = data.browserSourceId as string;
       if (changedBrowserSourceId === urlParams.browserSourceId) {
-        const configUrl = window.__ROSAEFINITY_CONFIG_URL__
-          || `${getSSEBaseUrl()}/overlay/${urlParams.browserSourceId}/config`;
-        fetch(configUrl)
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data?.moduleId) {
-              setServerConfig({ moduleId: data.moduleId, config: data.config || {} });
-            }
-          })
-          .catch(() => {});
+        fetchOwnConfig();
       }
+      // Unrelated overlay config changes: ignore — do not re-render this source
+      return;
     }
-  }, [urlParams.browserSourceId]);
 
-  // ── SSE connection (use browserSourceId or instanceId) ──
+    if (urlParams.debugMode) {
+      updateDebugDiagnostics(event);
+    }
+  }, [urlParams.browserSourceId, urlParams.debugMode, fetchOwnConfig, updateDebugDiagnostics]);
+
+  // ── ONE EventSource per Browser Source identity ──
   const sseInstanceId = urlParams.instanceId || urlParams.browserSourceId;
-  const sse = useSSEConnection(sseInstanceId, handleEvent);
+  const sse = useSSEConnection(sseInstanceId, handleEvent, urlParams.debugMode);
 
-  // ── Event source for renderer (OverlayEventSource interface) ──
-  const eventSourceRef = useRef<BrowserEventSource | null>(null);
-  const rendererEventSource: OverlayEventSource = useMemo(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.destroy();
-    }
-    const eventSourceId = urlParams.instanceId || urlParams.browserSourceId;
-    if (eventSourceId) {
-      eventSourceRef.current = new BrowserEventSource(eventSourceId, getSSEBaseUrl());
-      return eventSourceRef.current;
-    }
-    // Fallback: no-op event source — NO events will be received
-    return { subscribe: () => () => {} };
-  }, [urlParams.instanceId]);
+  // ── FPS: ref in production; rare performanceMode flips only ──
+  const { fpsRef, performanceMode } = useFPSMonitor(urlParams.debugMode);
 
-  // ── FPS monitor ──
-  const { fps, performanceMode } = useFPSMonitor(true);
-
-  // ── Cleanup event source on unmount ──
-  useEffect(() => {
-    return () => {
-      eventSourceRef.current?.destroy();
-    };
-  }, []);
-
-  // ── Set config: prefer server config, fall back to module defaults ──
+  // ── Config merge ──
   useEffect(() => {
     if (!overlayModule) return;
 
     if (serverConfig?.config && Object.keys(serverConfig.config).length > 0) {
-      // Merge server config with module defaults to fill missing fields
       const defaults = getDefaultConfig(overlayModule);
       setInstanceConfig({ ...defaults, ...serverConfig.config } as BaseOverlayConfig);
     } else if (!instanceConfig) {
@@ -299,15 +328,19 @@ export function BrowserSourceApp(): React.ReactElement {
     }
   }, [overlayModule, serverConfig, instanceConfig]);
 
-  // ── Render timing ──
+  // ── Render timing: debug only ──
+  const [renderTime, setRenderTime] = useState(0);
   useEffect(() => {
+    if (!urlParams.debugMode) return;
     const start = performance.now();
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       setRenderTime(performance.now() - start);
     });
+    return () => cancelAnimationFrame(frame);
   });
 
   // ── Runtime context ──
+  // Production path stays stable: only connectionStatus/reconnectCount may change.
   const contextValue: BrowserSourceRuntimeContext = useMemo(() => ({
     overlayId: urlParams.overlayId,
     instanceId: urlParams.instanceId,
@@ -318,19 +351,24 @@ export function BrowserSourceApp(): React.ReactElement {
     theme: urlParams.theme,
     connectionStatus: sse.connectionStatus,
     reconnectCount: sse.reconnectCount,
-    lastEventTime: eventState.lastEventTime,
-    lastEventType: eventState.lastEventType,
-    fps,
-    renderTime,
-    eventLatency: eventState.eventLatency,
-    performanceMode,
+    lastEventTime: urlParams.debugMode ? debugDiagnostics.lastEventTime : 0,
+    lastEventType: urlParams.debugMode ? debugDiagnostics.lastEventType : '',
+    fps: urlParams.debugMode ? fpsRef.current : 0,
+    fpsRef,
+    renderTime: urlParams.debugMode ? renderTime : 0,
+    eventLatency: urlParams.debugMode ? debugDiagnostics.eventLatency : 0,
+    performanceMode: urlParams.debugMode ? performanceMode : false,
     runtimeVersion: '1.0.0',
   }), [
-    urlParams, sse.connectionStatus, sse.reconnectCount,
-    eventState, fps, renderTime, performanceMode,
+    urlParams,
+    sse.connectionStatus,
+    sse.reconnectCount,
+    debugDiagnostics,
+    fpsRef,
+    renderTime,
+    performanceMode,
   ]);
 
-  // ── Loading state ──
   if (moduleLoading || configLoading) {
     return (
       <BrowserSourceContext.Provider value={contextValue}>
@@ -339,7 +377,6 @@ export function BrowserSourceApp(): React.ReactElement {
     );
   }
 
-  // ── Error: config fetch failed ──
   if (configError && !overlayModule) {
     return (
       <BrowserSourceContext.Provider value={contextValue}>
@@ -349,7 +386,6 @@ export function BrowserSourceApp(): React.ReactElement {
     );
   }
 
-  // ── Error: module not found ──
   if (moduleError || !overlayModule) {
     return (
       <BrowserSourceContext.Provider value={contextValue}>
@@ -359,7 +395,6 @@ export function BrowserSourceApp(): React.ReactElement {
     );
   }
 
-  // ── Error: no config ──
   if (!instanceConfig) {
     return (
       <BrowserSourceContext.Provider value={contextValue}>
@@ -368,8 +403,13 @@ export function BrowserSourceApp(): React.ReactElement {
     );
   }
 
-  // ── Render overlay ──
   const Renderer = overlayModule.renderer;
+
+  // Instance identity for shared per-instance renderers (GoalProgressRenderer).
+  // Resolution order: explicit ?instance= param (optional, unchanged) →
+  // overlay instance id from the existing /overlay/{bsid}/config fetch.
+  // URLs stay `/overlay/{browserSourceId}` — no URL architecture change.
+  const rendererInstanceId = urlParams.instanceId ?? serverConfig?.instanceId ?? null;
 
   return (
     <BrowserSourceContext.Provider value={contextValue}>
@@ -387,13 +427,11 @@ export function BrowserSourceApp(): React.ReactElement {
               config={instanceConfig}
               mode="browser-source"
               events={rendererEventSource}
-              instanceId={urlParams.instanceId}
+              instanceId={rendererInstanceId}
             />
           </Suspense>
         </OverlayErrorBoundary>
       </div>
-
-      {/* Debug panel (only when ?debug=true) */}
       {urlParams.debugMode && <DebugPanel />}
     </BrowserSourceContext.Provider>
   );

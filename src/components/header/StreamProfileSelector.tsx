@@ -114,7 +114,7 @@ export function StreamProfileSelector(): React.JSX.Element {
               <div className="p-1.5 max-h-80 overflow-y-auto">
                 {allProfiles.map((profile, index) => {
                   const isActive = profile.id === currentProfileId;
-                  const isLocked = profile.locked || index >= maxProfiles;
+                  const isLocked = profile.locked;
                   return (
                     <button
                       key={profile.id}

@@ -5,6 +5,8 @@ import { BaseOverlay } from '../../base/BaseOverlay';
 
 interface GiftComboProps { config: GiftComboConfig; mode: 'preview' | 'browser-source'; events?: OverlayEventSource; }
 
+type GiftComboDeltaMap = Map<string, number>;
+
 function GiftComboInner({ config, mode, events }: GiftComboProps): React.ReactElement {
   const [count, setCount] = useState(0);
   const [username, setUsername] = useState('');
@@ -13,6 +15,24 @@ function GiftComboInner({ config, mode, events }: GiftComboProps): React.ReactEl
   const [active, setActive] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const comboTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const comboIdentityRef = useRef<string | null>(null);
+  const deltaRef = useRef<GiftComboDeltaMap>(new Map());
+
+  // Per-browser-source delta identity so cumulative counts produce deltas
+  // (1,2,3,5,5 → 1,1,1,2,0). Zero-delta duplicates never increment the counter.
+  const computeDelta = (identity: string, repeatCount: number, data: Record<string, unknown>): number => {
+    // Prefer normalizedGiftDelta from store dispatch (most accurate — tracks
+    // per-gift cumulative across all sources)
+    const normalizedDelta = Number(data.normalizedGiftDelta);
+    if (Number.isFinite(normalizedDelta)) return normalizedDelta;
+
+    // Fallback: local per-identity delta tracking
+    // Cumulative repeatCount (1,2,3,5,5) → deltas (1,1,1,2,0)
+    const prev = deltaRef.current.get(identity) ?? 0;
+    const delta = Math.max(0, repeatCount - prev);
+    deltaRef.current.set(identity, repeatCount);
+    return delta;
+  };
 
   const resetCombo = useCallback(() => {
     setActive(false);
@@ -23,16 +43,33 @@ function GiftComboInner({ config, mode, events }: GiftComboProps): React.ReactEl
   }, []);
 
   const handleEvent = useCallback((event: OverlayEvent) => {
-    if (event.type === 'gift' && 'giftName' in event) {
-      const data = event as { type: 'gift'; username: string; giftName: string; diamonds: number; timestamp: number };
-      setUsername(data.username);
-      setGiftName(data.giftName);
-      setCount(prev => prev + 1);
-      setActive(true);
-      setTimeLeft(config.comboTimeout);
+    if (event.type === 'gift') {
+      const data = event.data as Record<string, unknown>;
+      const roomId = String(data.roomId || data.screenId || 'room');
+      const user = String(data.user || data.username || '');
+      const giftId = String(data.giftId || data.giftName || '');
+      // roomId is the session identifier: stable during a LIVE, changes on new LIVE/reconnect
+      const identity = `${roomId}:${user}:${giftId}`;
+      if (comboIdentityRef.current && comboIdentityRef.current !== identity) {
+        deltaRef.current.delete(identity);
+        resetCombo();
+      }
+      comboIdentityRef.current = identity;
 
-      if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
-      comboTimerRef.current = setTimeout(resetCombo, config.comboTimeout * 1000);
+      const repeatCount = Number(data.repeatCount) || 1;
+      // Prefer the store-computed normalizedGiftDelta (already accounts for
+      // cumulative dedup); fall back to local delta tracking for events
+      // arriving without it (e.g. raw test events, SSE relay).
+      const delta = computeDelta(identity, repeatCount, data);
+      if (delta > 0) {
+        setUsername(user);
+        setGiftName(String(data.giftName || ''));
+        setCount(prev => prev + delta);
+        setActive(true);
+        setTimeLeft(config.comboTimeout);
+        if (comboTimerRef.current) clearTimeout(comboTimerRef.current);
+        comboTimerRef.current = setTimeout(resetCombo, config.comboTimeout * 1000);
+      }
     }
   }, [config.comboTimeout, resetCombo]);
 

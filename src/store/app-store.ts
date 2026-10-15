@@ -2,13 +2,32 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Action, Event, CustomSound, Stats, LiveEvent, TikTokGift, SetupConfig, LicenseInfo, StreamProfile, ScreenId, ScreenConnectionState, TikTokConnectionState } from "../types";
 import { SCREEN_IDS } from "../types";
-import { getActionMedia, getActionMediaArray, deleteActionMedia } from "../lib/db";
+import { db, getActionMedia, getActionMediaArray, deleteActionMedia } from "../lib/db";
 import { useLicenseStore } from "./license-store";
 
 interface AppStore {
   // Actions
   actions: Action[];
   addAction: (action: Omit<Action, "id" | "createdAt" | "updatedAt">) => Promise<void>;
+  /**
+   * Action Pack import only: dual-write imported Actions into an explicit
+   * target profile (captured at import start). Never creates, switches, or
+   * replaces Stream Profiles. Never calls cloud profile sync.
+   *
+   * @param importedActions - Actions returned by importActionPack (IDs already remapped)
+   * @param explicitTargetProfileId - currentProfileId captured when the import
+   *   started (before async media restore). Falls back to live currentProfileId.
+   */
+  importActionsToCurrentProfile: (
+    actions: Action[],
+    explicitTargetProfileId?: string | null,
+  ) => Promise<{
+    targetProfileId: string | null;
+    finalCurrentProfileId: string | null;
+    importedActionCount: number;
+    profileCountBefore: number;
+    profileCountAfter: number;
+  }>;
   updateAction: (id: string, action: Partial<Action>) => Promise<void>;
   deleteAction: (id: string) => void;
   duplicateAction: (id: string) => void;
@@ -22,6 +41,7 @@ interface AppStore {
   // Sounds
   customSounds: CustomSound[];
   addSound: (sound: Omit<CustomSound, "id" | "createdAt">) => void;
+  addImportedSound: (sound: CustomSound) => void;
   updateSound: (id: string, updates: Partial<CustomSound>) => void;
   deleteSound: (id: string) => void;
 
@@ -132,6 +152,7 @@ interface AppStore {
 }
 
 import type { SpotifyTrack } from "../types";
+import { normalizeObsEndpointOnRehydrate } from "../lib/obs-local";
 
 const DEFAULT_SETUP: SetupConfig = {
   tikTokName: "",
@@ -139,7 +160,7 @@ const DEFAULT_SETUP: SetupConfig = {
   currencyName: "Points",
   pointsGift: 3, pointsLike: 1, pointsFollow: 5, pointsComment: 1, pointsShare: 2, pointsSubscribe: 10,
   subBonus: 0, levelPoints: 50, levelMultiplier: 1.03,
-  obsIp: "127.0.0.1", obsPort: 4567, obsPassword: "",
+  obsIp: "127.0.0.1", obsPort: 4455, obsPassword: "",
   sbAddress: "127.0.0.1", sbPort: 8080, sbEndpoint: "/",
   mcIp: "127.0.0.1", mcPort: 4567, mcPassword: "change_me",
   mcMode: "servertap", mcPlayer: "",
@@ -150,6 +171,16 @@ const DEFAULT_SETUP: SetupConfig = {
   explicitEnabled: false, maxQueueOverall: 5, maxQueuePerUser: 2,
   overlayPermanent: false,
   halvingPercent: 50,
+  overlayScreensMaxQueue: {
+    "screen-0": 5,
+    "screen-1": 5,
+    "screen-2": 5,
+    "screen-3": 5,
+    "screen-4": 5,
+    "screen-5": 5,
+    "screen-6": 5,
+    "screen-7": 5,
+  },
 };
 
 const DEFAULT_LICENSE: LicenseInfo = {
@@ -167,16 +198,16 @@ const DEFAULT_ALERTS: Record<string, { enabled: boolean; minDiamond?: number; mi
 };
 
 const DEFAULT_STREAM_PROFILES: StreamProfile[] = [
-  { id: "profile-1", name: "Stream Profile 1", icon: "🌹", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-2", name: "Stream Profile 2", icon: "🔥", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-3", name: "Stream Profile 3", icon: "🎮", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-4", name: "Stream Profile 4", icon: "❤️", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-5", name: "Stream Profile 5", icon: "💬", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-6", name: "Stream Profile 6", icon: "🎁", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-7", name: "Stream Profile 7", icon: "🙂", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-8", name: "Stream Profile 8", icon: "👍", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-9", name: "Stream Profile 9", icon: "📞", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
-  { id: "profile-10", name: "Stream Profile 10", icon: "☑️", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-1", name: "Stream Profile 1", icon: "🌹", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-2", name: "Stream Profile 2", icon: "🔥", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-3", name: "Stream Profile 3", icon: "🎮", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-4", name: "Stream Profile 4", icon: "❤️", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-5", name: "Stream Profile 5", icon: "💬", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-6", name: "Stream Profile 6", icon: "🎁", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-7", name: "Stream Profile 7", icon: "🙂", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-8", name: "Stream Profile 8", icon: "👍", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-9", name: "Stream Profile 9", icon: "📞", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: "profile-10", name: "Stream Profile 10", icon: "☑️", tiktokUsername: "", overlaySettings: {}, alertsSettings: DEFAULT_ALERTS, alertsMasterEnabled: true, actions: [], events: [], customSounds: [], isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
 ];
 
 const DEFAULT_POINTS_CONFIG = {
@@ -255,6 +286,11 @@ export const useAppStore = create<AppStore>()(
       screenTikTokNames: { ...DEFAULT_SCREEN_NAMES },
 
       // ══ Actions CRUD ══════════════════════════════
+      // Actions are dual-written: top-level `actions` (UI runtime) AND
+      // streamProfiles[currentProfileId].actions (persisted profile snapshot).
+      // Zustand persist saves both; cloud pull / profile switch read profile.actions.
+      // Without profile sync, create→refresh wipes actions when pullCloudProfiles
+      // reloads profile.actions (still []) over top-level state.
       addAction: async (action) => {
         const now = new Date().toISOString();
         const newAction: Action = {
@@ -263,24 +299,261 @@ export const useAppStore = create<AppStore>()(
           createdAt: now,
           updatedAt: now,
         };
-        set((s) => ({ actions: [...s.actions, newAction] }));
+        set((s) => {
+          const actions = [...s.actions, newAction];
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId
+                  ? { ...p, actions, updatedAt: now }
+                  : p
+              )
+            : s.streamProfiles;
+          const profile = streamProfiles.find((p) => p.id === s.currentProfileId);
+          console.log("[RUNTIME-ACTION-1]", JSON.stringify({
+            actionId: newAction.id,
+            actionName: newAction.name,
+            currentProfileId: s.currentProfileId,
+            zustandActionsCount: actions.length,
+            currentProfileActionsLength: profile?.actions?.length ?? 0,
+            streamProfilesCount: streamProfiles.length,
+          }));
+          return { actions, streamProfiles };
+        });
+        // Queue cloud profile update so refresh/restart does not lose the action
+        if (!get()._isRehydrating) {
+          const { currentProfileId, actions } = get();
+          const profile = get().streamProfiles.find((p) => p.id === currentProfileId);
+          if (profile) {
+            import("./auth-store").then(({ useAuthStore }) => {
+              const authUserId = useAuthStore.getState().currentUser?.id;
+              if (!authUserId) return;
+              import("../services/profile-sync-queue").then(({ profileSyncQueue }) => {
+                profileSyncQueue.enqueue(authUserId, "update", profile.id, profile.serverId, {
+                  actions: actions as any,
+                });
+                import("../services/profile-sync-processor").then(({ profileSyncProcessor }) => {
+                  profileSyncProcessor.trigger(authUserId);
+                });
+              });
+            }).catch(() => {});
+          }
+        }
+      },
+      /**
+       * ACTION PACK IMPORT ONLY.
+       *
+       * Contract:
+       * - Use explicit targetProfileId captured when import started
+       *   (before async media restore). Falls back to live currentProfileId.
+       * - Dual-write imported Actions into THAT target profile only
+       * - NEVER addProfile / switchProfile / replaceProfiles / pullCloudProfiles
+       *   / applyProfileImport / importProfilesByName / cloud enqueue
+       * - NEVER change currentProfileId
+       * - NEVER change streamProfiles length
+       * - If anything else mutates currentProfileId during import, restore target
+       */
+      importActionsToCurrentProfile: async (importedActions, explicitTargetProfileId) => {
+        const before = get();
+        const targetProfileId =
+          explicitTargetProfileId !== undefined
+            ? explicitTargetProfileId
+            : before.currentProfileId;
+        const profileCountBefore = before.streamProfiles.length;
+        const targetProfileName =
+          before.streamProfiles.find((p) => p.id === targetProfileId)?.name ?? null;
+
+        console.log("[ACTION-PACK-IMPORT-START]", JSON.stringify({
+          currentProfileId: before.currentProfileId,
+          currentProfileName:
+            before.streamProfiles.find((p) => p.id === before.currentProfileId)?.name ?? null,
+          importedActionCount: importedActions.length,
+          profileCountBefore,
+        }));
+        console.log("[ACTION-PACK-IMPORT-TARGET]", JSON.stringify({
+          targetProfileId,
+          targetProfileName,
+          explicitTarget: explicitTargetProfileId !== undefined,
+        }));
+
+        if (!targetProfileId) {
+          console.warn("[ACTION-PACK-IMPORT-PROFILE-MUTATION]", JSON.stringify({
+            operation: "skipped-no-current-profile",
+            beforeCurrentProfileId: targetProfileId,
+            afterCurrentProfileId: get().currentProfileId,
+            profileCountBefore,
+            profileCountAfter: get().streamProfiles.length,
+          }));
+          console.log("[ACTION-PACK-IMPORT-COMPLETE]", JSON.stringify({
+            targetProfileId,
+            finalCurrentProfileId: get().currentProfileId,
+            importedActionCount: 0,
+            restoredMediaCount: 0,
+          }));
+          return {
+            targetProfileId,
+            finalCurrentProfileId: get().currentProfileId,
+            importedActionCount: 0,
+            profileCountBefore,
+            profileCountAfter: get().streamProfiles.length,
+          };
+        }
+
+        const now = new Date().toISOString();
+        const minted: Action[] = importedActions.map((a) => ({
+          ...a,
+          id: a.id || "act_" + Math.random().toString(36).substring(2, 10),
+          createdAt: a.createdAt || now,
+          updatedAt: now,
+        }));
+
+        // Snapshot profile identities so we can detect illegal mutations
+        const profileIdsBefore = before.streamProfiles.map((p) => p.id);
+
+        // ALWAYS write to the explicit target — never "whatever is current now".
+        set((s) => {
+          const topActions = [...s.actions, ...minted];
+          const streamProfiles = s.streamProfiles.map((p) =>
+            p.id === targetProfileId
+              ? { ...p, actions: [...(p.actions ?? []), ...minted], updatedAt: now }
+              : p,
+          );
+          return { actions: topActions, streamProfiles };
+        });
+
+        // Defense-in-depth: if currentProfileId was altered, force it back to target
+        const mid = get();
+        if (mid.currentProfileId !== targetProfileId) {
+          console.log("[ACTION-PACK-IMPORT-PROFILE-MUTATION]", JSON.stringify({
+            operation: "restore-currentProfileId",
+            beforeCurrentProfileId: targetProfileId,
+            afterCurrentProfileId: mid.currentProfileId,
+            profileCountBefore,
+            profileCountAfter: mid.streamProfiles.length,
+          }));
+          set({ currentProfileId: targetProfileId });
+        }
+
+        // Defense-in-depth: profile count / identity must not change
+        const after = get();
+        if (after.streamProfiles.length !== profileCountBefore) {
+          console.warn("[ACTION-PACK-IMPORT-PROFILE-MUTATION]", JSON.stringify({
+            operation: "profile-count-changed",
+            beforeCurrentProfileId: targetProfileId,
+            afterCurrentProfileId: after.currentProfileId,
+            profileCountBefore,
+            profileCountAfter: after.streamProfiles.length,
+          }));
+        }
+        const profileIdsAfter = after.streamProfiles.map((p) => p.id);
+        const idsChanged =
+          profileIdsAfter.length !== profileIdsBefore.length ||
+          profileIdsAfter.some((id, i) => id !== profileIdsBefore[i]);
+        if (idsChanged) {
+          console.warn("[ACTION-PACK-IMPORT-PROFILE-MUTATION]", JSON.stringify({
+            operation: "profile-identity-changed",
+            beforeCurrentProfileId: targetProfileId,
+            afterCurrentProfileId: get().currentProfileId,
+            profileCountBefore,
+            profileCountAfter: get().streamProfiles.length,
+            profileIdsBefore,
+            profileIdsAfter,
+          }));
+        }
+
+        // CRITICAL ASSERTION: final currentProfileId === target, profile count unchanged
+        const finalState = get();
+        if (finalState.currentProfileId !== targetProfileId) {
+          console.error("[ACTION-PACK-IMPORT-ASSERT]", JSON.stringify({
+            ok: false,
+            reason: "finalCurrentProfileId !== targetProfileId",
+            targetProfileId,
+            finalCurrentProfileId: finalState.currentProfileId,
+          }));
+        } else if (finalState.streamProfiles.length !== profileCountBefore) {
+          console.error("[ACTION-PACK-IMPORT-ASSERT]", JSON.stringify({
+            ok: false,
+            reason: "profileCountAfter !== profileCountBefore",
+            profileCountBefore,
+            profileCountAfter: finalState.streamProfiles.length,
+          }));
+        } else {
+          console.log("[ACTION-PACK-IMPORT-ASSERT]", JSON.stringify({
+            ok: true,
+            targetProfileId,
+            finalCurrentProfileId: finalState.currentProfileId,
+            profileCountBefore,
+            profileCountAfter: finalState.streamProfiles.length,
+          }));
+        }
+
+        // NO cloud enqueue / pullCloudProfiles / processor trigger from this path.
+        // Cloud profile sync can replace local profile IDs and switch currentProfileId.
+
+        console.log("[ACTION-PACK-IMPORT-COMPLETE]", JSON.stringify({
+          targetProfileId,
+          finalCurrentProfileId: finalState.currentProfileId,
+          importedActionCount: minted.length,
+          restoredMediaCount: 0,
+          profileCountBefore,
+          profileCountAfter: finalState.streamProfiles.length,
+        }));
+
+        return {
+          targetProfileId,
+          finalCurrentProfileId: finalState.currentProfileId,
+          importedActionCount: minted.length,
+          profileCountBefore,
+          profileCountAfter: finalState.streamProfiles.length,
+        };
       },
       updateAction: async (id, action) => {
-        set((s) => ({
-          actions: s.actions.map((a) => (a.id === id ? { ...a, ...action, updatedAt: new Date().toISOString() } : a)),
-        }));
+        set((s) => {
+          const actions = s.actions.map((a) =>
+            a.id === id ? { ...a, ...action, updatedAt: new Date().toISOString() } : a
+          );
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId ? { ...p, actions } : p
+              )
+            : s.streamProfiles;
+          return { actions, streamProfiles };
+        });
       },
-      deleteAction: (id) => set((s) => ({ actions: s.actions.filter((a) => a.id !== id) })),
+      deleteAction: (id) =>
+        set((s) => {
+          const actions = s.actions.filter((a) => a.id !== id);
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId ? { ...p, actions } : p
+              )
+            : s.streamProfiles;
+          return { actions, streamProfiles };
+        }),
       duplicateAction: (id) => {
         const action = get().actions.find((a) => a.id === id);
         if (action) {
           const now = new Date().toISOString();
-          const copy: Action = { ...action, id: "act_" + Math.random().toString(36).substring(2, 10), name: action.name + " Copy", createdAt: now, updatedAt: now };
-          set((s) => ({ actions: [...s.actions, copy] }));
+          const copy: Action = {
+            ...action,
+            id: "act_" + Math.random().toString(36).substring(2, 10),
+            name: action.name + " Copy",
+            createdAt: now,
+            updatedAt: now,
+          };
+          set((s) => {
+            const actions = [...s.actions, copy];
+            const streamProfiles = s.currentProfileId
+              ? s.streamProfiles.map((p) =>
+                  p.id === s.currentProfileId ? { ...p, actions, updatedAt: now } : p
+                )
+              : s.streamProfiles;
+            return { actions, streamProfiles };
+          });
         }
       },
 
       // ══ Events CRUD ══════════════════════════════
+      // Dual-write events to top-level + profile.events (same as Actions).
       addEvent: (event) => {
         const now = new Date().toISOString();
         const newEvent: Event = {
@@ -289,12 +562,52 @@ export const useAppStore = create<AppStore>()(
           createdAt: now,
           updatedAt: now,
         };
-        set((s) => ({ events: [...s.events, newEvent] }));
+        set((s) => {
+          const events = [...s.events, newEvent];
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId ? { ...p, events, updatedAt: now } : p
+              )
+            : s.streamProfiles;
+          const profile = streamProfiles.find((p) => p.id === s.currentProfileId);
+          console.log("[RUNTIME-EVENT-1]", JSON.stringify({
+            eventId: newEvent.id,
+            eventName: newEvent.actionName,
+            currentProfileId: s.currentProfileId,
+            zustandEventsCount: events.length,
+            currentProfileEventsLength: profile?.events?.length ?? 0,
+            streamProfilesCount: streamProfiles.length,
+          }));
+          return { events, streamProfiles };
+        });
       },
-      updateEvent: (id, event) => set((s) => ({ events: s.events.map((e) => (e.id === id ? { ...e, ...event, updatedAt: new Date().toISOString() } : e)) })),
-      deleteEvent: (id) => set((s) => ({ events: s.events.filter((e) => e.id !== id) })),
+      updateEvent: (id, event) =>
+        set((s) => {
+          const events = s.events.map((e) =>
+            e.id === id ? { ...e, ...event, updatedAt: new Date().toISOString() } : e
+          );
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId ? { ...p, events } : p
+              )
+            : s.streamProfiles;
+          return { events, streamProfiles };
+        }),
+      deleteEvent: (id) =>
+        set((s) => {
+          const events = s.events.filter((e) => e.id !== id);
+          const streamProfiles = s.currentProfileId
+            ? s.streamProfiles.map((p) =>
+                p.id === s.currentProfileId ? { ...p, events } : p
+              )
+            : s.streamProfiles;
+          return { events, streamProfiles };
+        }),
 
       // ══ Sounds CRUD ══════════════════════════════
+      addImportedSound: (sound) => set((s) => ({
+        customSounds: [...s.customSounds.filter((item) => item.id !== sound.id), sound],
+      })),
       addSound: (sound) => {
         const { currentProfileId } = get();
         if (!currentProfileId) {
@@ -343,7 +656,19 @@ export const useAppStore = create<AppStore>()(
       setLicenseInfo: (info) => set((s) => ({ licenseInfo: { ...s.licenseInfo, ...info } })),
 
       // ══ Setup Config ═════════════════════════════
-      updateSetupConfig: (config) => set((s) => ({ setupConfig: { ...s.setupConfig, ...config } })),
+      updateSetupConfig: (config) => set((s) => {
+        const newSetupConfig = { ...s.setupConfig, ...config };
+        // If overlayScreensMaxQueue changed, update action-queue cache
+        if (config.overlayScreensMaxQueue) {
+          try {
+            const { updateMaxQueueLength } = require('../lib/action-queue');
+            for (const [screenId, maxQueue] of Object.entries(config.overlayScreensMaxQueue)) {
+              updateMaxQueueLength(screenId, maxQueue);
+            }
+          } catch {}
+        }
+        return { setupConfig: newSetupConfig };
+      }),
 
       // ══ Stream Profiles ══════════════════════════
       _isRehydrating: true,
@@ -351,18 +676,37 @@ export const useAppStore = create<AppStore>()(
 
       replaceProfiles: (profiles) => {
         const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
-        const lockedProfiles = profiles.map((profile, index) => ({
-          ...profile,
-          locked: index >= maxProfiles,
-        }));
+        const currentProfileId = get().currentProfileId;
+        const { profiles: lockedProfiles } = calculateProfileLockState(profiles, currentProfileId, maxProfiles);
+        // Preserve currentProfileId when the profile still exists after replace.
+        const prevId = get().currentProfileId;
+        const nextProfileId =
+          prevId && lockedProfiles.some((p) => p.id === prevId)
+            ? prevId
+            : lockedProfiles.length > 0
+              ? lockedProfiles[0].id
+              : null;
         set({
           streamProfiles: lockedProfiles,
-          currentProfileId: lockedProfiles.length > 0 ? lockedProfiles[0].id : null,
+          currentProfileId: nextProfileId,
         });
       },
 
       // V3: Apply portable profile configuration to the CURRENTLY ACTIVE profile
       applyProfileImport: (profileConfig: Record<string, unknown>) => {
+        // [PROFILE-IMPORT-1] Before import
+        const beforeMaxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        const beforeCurrentProfileId = get().currentProfileId;
+        const beforeCurrentProfile = get().streamProfiles.find(p => p.id === beforeCurrentProfileId);
+        console.log("[PROFILE-IMPORT-1]", JSON.stringify({
+          currentProfileId: beforeCurrentProfileId,
+          currentProfileName: beforeCurrentProfile?.name,
+          existingProfilesCount: get().streamProfiles.length,
+          existingProfiles: get().streamProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          maxProfiles: beforeMaxProfiles,
+          importType: "applyProfileImport (V3 portable)",
+        }));
+
         const { currentProfileId, alertSettings, setupConfig } = get();
         if (!currentProfileId) {
           console.warn('[IMPORT] No active profile to import into');
@@ -380,28 +724,93 @@ export const useAppStore = create<AppStore>()(
         const updated = [...prevProfiles];
 
         // Apply portable profile fields to the target profile (preserving id, createdAt, locked, serverId)
+        // MERGE actions/events by id — import must not delete existing local actions.
+        const prevActions = updated[targetIdx].actions ?? [];
+        const impActions = (profileConfig.actions as Action[]) ?? [];
+        // Order-preserving merge by id
+        const impActionById = new Map(impActions.filter((a) => a?.id).map((a) => [a.id, a]));
+        const seenAct = new Set<string>();
+        const mergedActions: Action[] = [];
+        for (const a of prevActions) {
+          if (a?.id && impActionById.has(a.id)) {
+            mergedActions.push(impActionById.get(a.id)!);
+            seenAct.add(a.id);
+          } else if (a) mergedActions.push(a);
+        }
+        for (const a of impActions) {
+          if (a?.id) {
+            if (!seenAct.has(a.id)) {
+              mergedActions.push(a);
+              seenAct.add(a.id);
+            }
+          } else if (a) mergedActions.push(a);
+        }
+        const prevEvents = updated[targetIdx].events ?? [];
+        const impEvents = (profileConfig.events as Event[]) ?? [];
+        const impEventById = new Map(impEvents.filter((e) => e?.id).map((e) => [e.id, e]));
+        const seenEvt = new Set<string>();
+        const mergedEvents: Event[] = [];
+        for (const e of prevEvents) {
+          if (e?.id && impEventById.has(e.id)) {
+            mergedEvents.push(impEventById.get(e.id)!);
+            seenEvt.add(e.id);
+          } else if (e) mergedEvents.push(e);
+        }
+        for (const e of impEvents) {
+          if (e?.id) {
+            if (!seenEvt.has(e.id)) {
+              mergedEvents.push(e);
+              seenEvt.add(e.id);
+            }
+          } else if (e) mergedEvents.push(e);
+        }
+        console.log("[ActionImport]", JSON.stringify({
+          importedCount: impActions.length,
+          normalizedCount: impActions.length,
+          persistedCount: mergedActions.length,
+          existingCount: prevActions.length,
+          finalCount: mergedActions.length,
+          path: "applyProfileImport",
+        }));
         updated[targetIdx] = {
           ...updated[targetIdx],
-          name: (profileConfig.name as string) ?? updated[targetIdx].name,
+          // Portable imports apply configuration to the destination; identity stays local.
+          name: updated[targetIdx].name,
           icon: (profileConfig.icon as string) ?? updated[targetIdx].icon,
           tiktokUsername: (profileConfig.tiktokUsername as string) ?? updated[targetIdx].tiktokUsername,
           overlaySettings: (profileConfig.overlaySettings as Record<string, unknown>) ?? updated[targetIdx].overlaySettings,
           alertsSettings: (profileConfig.alertsSettings as Record<string, unknown>) ?? updated[targetIdx].alertsSettings,
           alertsMasterEnabled: (profileConfig.alertsMasterEnabled as boolean) ?? updated[targetIdx].alertsMasterEnabled,
           ttsSettings: (profileConfig.ttsSettings as any) ?? updated[targetIdx].ttsSettings,
-          actions: (profileConfig.actions as Action[]) ?? updated[targetIdx].actions,
-          events: (profileConfig.events as Event[]) ?? updated[targetIdx].events,
+          actions: mergedActions,
+          events: mergedEvents,
           customSounds: (profileConfig.customSounds as any[]) ?? updated[targetIdx].customSounds,
           updatedAt: now,
         };
 
         const targetProfile = updated[targetIdx];
 
-        // Recalculate lock state
+        // [PROFILE-IMPORT-2] Immediately after imported profiles are parsed
+        console.log("[PROFILE-IMPORT-2]", JSON.stringify({
+          importedProfilesCount: 1,
+          importedProfiles: [{ id: targetProfile.id, name: targetProfile.name, locked: targetProfile.locked }],
+          updatedProfilesCount: updated.length,
+          updatedProfiles: updated.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          importType: "applyProfileImport (V3 portable)",
+        }));
+
+        // Recalculate lock state using central helper
         const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
-        const lockedProfiles = updated.map((p, i) => ({
-          ...p,
-          locked: i >= maxProfiles,
+        const activeProfileId = get().currentProfileId;
+        const { profiles: lockedProfiles } = calculateProfileLockState(updated, activeProfileId, maxProfiles);
+
+        // [PROFILE-IMPORT-3] Immediately before replaceProfiles / final profile write
+        console.log("[PROFILE-IMPORT-3]", JSON.stringify({
+          mergedProfilesCount: lockedProfiles.length,
+          profiles: lockedProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          currentProfileId: activeProfileId,
+          maxProfiles,
+          importType: "applyProfileImport (V3 portable)",
         }));
 
         // Sync the target profile's actions/events/alerts into top-level state
@@ -412,11 +821,41 @@ export const useAppStore = create<AppStore>()(
           alertSettings: targetProfile.alertsSettings || alertSettings,
           setupConfig: { ...setupConfig, tikTokName: targetProfile.tiktokUsername || "" },
         });
+
+        // [PROFILE-IMPORT-4] Immediately after import completes
+        const newState = get();
+        console.log("[PROFILE-IMPORT-4]", JSON.stringify({
+          finalProfiles: newState.streamProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          currentProfileId: newState.currentProfileId,
+          currentProfileName: newState.streamProfiles.find(p => p.id === newState.currentProfileId)?.name,
+          importType: "applyProfileImport (V3 portable)",
+        }));
+
+        // [PROFILE-IMPORT-PROFILE-ID] Profile ID tracking
+        console.log("[PROFILE-IMPORT-PROFILE-ID]", JSON.stringify({
+          beforeImportCurrentProfileId,
+          beforeImportCurrentProfileName: beforeCurrentProfile?.name,
+          afterImportCurrentProfileId: newState.currentProfileId,
+          afterImportCurrentProfileName: newState.streamProfiles.find(p => p.id === newState.currentProfileId)?.name,
+          importType: "applyProfileImport (V3 portable)",
+        }));
       },
 
       // V2/V1: Import all profiles by name matching (legacy)
       importProfilesByName: (importedProfiles) => {
-        const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        // [PROFILE-IMPORT-1] Before import
+        const beforeMaxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        const beforeCurrentProfileId = get().currentProfileId;
+        const beforeCurrentProfile = get().streamProfiles.find(p => p.id === beforeCurrentProfileId);
+        console.log("[PROFILE-IMPORT-1]", JSON.stringify({
+          currentProfileId: beforeCurrentProfileId,
+          currentProfileName: beforeCurrentProfile?.name,
+          existingProfilesCount: get().streamProfiles.length,
+          existingProfiles: get().streamProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          maxProfiles: beforeMaxProfiles,
+        }));
+
+        const maxProfiles = beforeMaxProfiles;
         const prevProfiles = get().streamProfiles;
         const updated = [...prevProfiles];
 
@@ -438,7 +877,68 @@ export const useAppStore = create<AppStore>()(
           }));
 
           if (existingIdx >= 0) {
-            // Update existing profile by name match
+            // Update existing profile by name match.
+            // MERGE actions/events by id — do not wipe local actions on import.
+            // Expected: existing A,B + import C,D → A,B,C,D
+            const existingActions = updated[existingIdx].actions ?? [];
+            const importedActions = imported.actions ?? [];
+            // Order-preserving merge: keep existing order, replace by id, append new
+            const importedById = new Map(
+              importedActions.filter((a: Action) => a?.id).map((a: Action) => [a.id, a])
+            );
+            const seenActionIds = new Set<string>();
+            const mergedActions: Action[] = [];
+            for (const a of existingActions) {
+              if (a?.id && importedById.has(a.id)) {
+                mergedActions.push(importedById.get(a.id)!);
+                seenActionIds.add(a.id);
+              } else if (a) {
+                mergedActions.push(a);
+              }
+            }
+            for (const a of importedActions) {
+              if (a?.id) {
+                if (!seenActionIds.has(a.id)) {
+                  mergedActions.push(a);
+                  seenActionIds.add(a.id);
+                }
+              } else if (a) {
+                mergedActions.push(a);
+              }
+            }
+            const existingEvents = updated[existingIdx].events ?? [];
+            const importedEvents = imported.events ?? [];
+            const importedEventsById = new Map(
+              importedEvents.filter((e: Event) => e?.id).map((e: Event) => [e.id, e])
+            );
+            const seenEventIds = new Set<string>();
+            const mergedEvents: Event[] = [];
+            for (const e of existingEvents) {
+              if (e?.id && importedEventsById.has(e.id)) {
+                mergedEvents.push(importedEventsById.get(e.id)!);
+                seenEventIds.add(e.id);
+              } else if (e) {
+                mergedEvents.push(e);
+              }
+            }
+            for (const e of importedEvents) {
+              if (e?.id) {
+                if (!seenEventIds.has(e.id)) {
+                  mergedEvents.push(e);
+                  seenEventIds.add(e.id);
+                }
+              } else if (e) {
+                mergedEvents.push(e);
+              }
+            }
+            console.log("[ActionImport]", JSON.stringify({
+              importedCount: importedActions.length,
+              normalizedCount: importedActions.length,
+              persistedCount: mergedActions.length,
+              existingCount: existingActions.length,
+              finalCount: mergedActions.length,
+              profileName: imported.name,
+            }));
             updated[existingIdx] = {
               ...updated[existingIdx],
               icon: imported.icon,
@@ -446,8 +946,8 @@ export const useAppStore = create<AppStore>()(
               alertsMasterEnabled: imported.alertsMasterEnabled,
               alertsSettings: imported.alertsSettings,
               ttsSettings: imported.ttsSettings,
-              actions: imported.actions,
-              events: imported.events,
+              actions: mergedActions,
+              events: mergedEvents,
               customSounds: imported.customSounds,
               overlaySettings: imported.overlaySettings,
               updatedAt: now,
@@ -466,7 +966,7 @@ export const useAppStore = create<AppStore>()(
               events: imported.events ?? [],
               customSounds: imported.customSounds ?? [],
               overlaySettings: imported.overlaySettings ?? {},
-              locked: updated.length >= maxProfiles,
+              locked: false, // Will be recalculated below
               createdAt: now,
               updatedAt: now,
             };
@@ -474,10 +974,24 @@ export const useAppStore = create<AppStore>()(
           }
         }
 
-        // Recalculate lock state for all profiles
-        const lockedProfiles = updated.map((p, i) => ({
-          ...p,
-          locked: i >= maxProfiles,
+        // [PROFILE-IMPORT-2] Immediately after imported profiles are parsed
+        console.log("[PROFILE-IMPORT-2]", JSON.stringify({
+          importedProfilesCount: importedProfiles.length,
+          importedProfiles: importedProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          updatedProfilesCount: updated.length,
+          updatedProfiles: updated.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+        }));
+
+        // Recalculate lock state for all profiles using central helper
+        const activeProfileId = get().currentProfileId;
+        const { profiles: lockedProfiles } = calculateProfileLockState(updated, activeProfileId, maxProfiles);
+
+        // [PROFILE-IMPORT-3] Immediately before replaceProfiles / final profile write
+        console.log("[PROFILE-IMPORT-3]", JSON.stringify({
+          mergedProfilesCount: lockedProfiles.length,
+          profiles: lockedProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          currentProfileId: activeProfileId,
+          maxProfiles,
         }));
 
         // Sync the active profile's data into top-level state so the UI
@@ -522,9 +1036,39 @@ export const useAppStore = create<AppStore>()(
                 actionIds: p.actions?.map((a: Action) => a.id) ?? [],
               })),
             }));
+
+            // [PROFILE-IMPORT-4] Immediately after import completes
+            console.log("[PROFILE-IMPORT-4]", JSON.stringify({
+              finalProfiles: syncedProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+              currentProfileId: get().currentProfileId,
+              currentProfileName: syncedProfiles.find(p => p.id === get().currentProfileId)?.name,
+            }));
+
+            // [PROFILE-IMPORT-PROFILE-ID] Profile ID tracking
+            console.log("[PROFILE-IMPORT-PROFILE-ID]", JSON.stringify({
+              beforeImportCurrentProfileId,
+              beforeImportCurrentProfileName: beforeCurrentProfile?.name,
+              afterImportCurrentProfileId: get().currentProfileId,
+              afterImportCurrentProfileName: syncedProfiles.find(p => p.id === get().currentProfileId)?.name,
+            }));
             return;
           }
         }
+
+        // [PROFILE-IMPORT-4] Immediately after import completes (fallback path)
+        console.log("[PROFILE-IMPORT-4]", JSON.stringify({
+          finalProfiles: lockedProfiles.map(p => ({ id: p.id, name: p.name, locked: p.locked })),
+          currentProfileId: get().currentProfileId,
+          currentProfileName: lockedProfiles.find(p => p.id === get().currentProfileId)?.name,
+        }));
+
+        // [PROFILE-IMPORT-PROFILE-ID] Profile ID tracking (fallback path)
+        console.log("[PROFILE-IMPORT-PROFILE-ID]", JSON.stringify({
+          beforeImportCurrentProfileId,
+          beforeImportCurrentProfileName: beforeCurrentProfile?.name,
+          afterImportCurrentProfileId: get().currentProfileId,
+          afterImportCurrentProfileName: lockedProfiles.find(p => p.id === get().currentProfileId)?.name,
+        }));
 
         set({ streamProfiles: lockedProfiles });
       },
@@ -546,9 +1090,9 @@ export const useAppStore = create<AppStore>()(
             overlaySettings: p.overlaySettings,
             alertsSettings: p.alertsSettings,
             alertsMasterEnabled: p.alertsMasterEnabled ?? true,
-            actions: Array.isArray(p.actions) ? (p.actions as Action[]) : [],
-            events: Array.isArray(p.events) ? (p.events as Event[]) : [],
-            customSounds: Array.isArray(p.customSounds) ? (p.customSounds as CustomSound[]) : [],
+            actions: Array.isArray(p.actions) ? (p.actions as unknown as Action[]) : [],
+            events: Array.isArray(p.events) ? (p.events as unknown as Event[]) : [],
+            customSounds: Array.isArray(p.customSounds) ? (p.customSounds as unknown as CustomSound[]) : [],
             ttsSettings: p.ttsSettings,
             createdAt: p.createdAt,
             updatedAt: p.updatedAt,
@@ -588,11 +1132,93 @@ export const useAppStore = create<AppStore>()(
           const pendingNames = new Set(
             pendingLocalProfiles.map(p => p.name.trim().toLowerCase())
           );
-          const filteredCloudProfiles = cloudProfiles.filter(
-            cp => !pendingNames.has(cp.name.trim().toLowerCase())
-          );
+          // MERGE actions/events by id when a local profile matches a cloud profile
+          // by name — cloud pull must not wipe local-only actions.
+          const mergeById = <T extends { id?: string }>(existing: T[] | undefined, incoming: T[] | undefined): T[] => {
+            const ex = existing ?? [];
+            const inc = incoming ?? [];
+            const incById = new Map(inc.filter((x) => x?.id).map((x) => [x.id as string, x]));
+            const seen = new Set<string>();
+            const out: T[] = [];
+            for (const x of ex) {
+              if (x?.id && incById.has(x.id)) {
+                out.push(incById.get(x.id)!);
+                seen.add(x.id);
+              } else if (x) out.push(x);
+            }
+            for (const x of inc) {
+              if (x?.id) {
+                if (!seen.has(x.id)) {
+                  out.push(x);
+                  seen.add(x.id);
+                }
+              } else if (x) out.push(x);
+            }
+            return out;
+          };
+          const filteredCloudProfiles = cloudProfiles
+            .filter(cp => !pendingNames.has(cp.name.trim().toLowerCase()))
+            .map((cp) => {
+              // Diagnostic: before matching — log every cloud profile
+              console.log('[CLOUD-MERGE-DIAG-1]', JSON.stringify({
+                marker: 'cloud profile before merge',
+                cloudId: cp.id,
+                cloudName: cp.name,
+                cloudIsDefault: cp.isDefault
+              }));
+              const localByName = localProfiles.find(
+                p => p.name.trim().toLowerCase() === cp.name.trim().toLowerCase()
+              );
+              if (!localByName) return cp;
+              // Diagnostic: before merge — log both cloud and local
+              console.log('[CLOUD-MERGE-DIAG-2]', JSON.stringify({
+                marker: 'before merge by name',
+                cloudId: cp.id,
+                cloudName: cp.name,
+                cloudIsDefault: cp.isDefault,
+                localId: localByName.id,
+                localName: localByName.name,
+                localIsDefault: localByName.isDefault
+              }));
+              const mergedActions = mergeById(localByName.actions, cp.actions);
+              const mergedEvents = mergeById(localByName.events, cp.events);
+              if (
+                mergedActions.length !== (cp.actions?.length ?? 0) ||
+                mergedEvents.length !== (cp.events?.length ?? 0)
+              ) {
+                console.log("[ActionHydration]", JSON.stringify({
+                  persistedCount: mergedActions.length,
+                  hydratedCount: cp.actions?.length ?? 0,
+                  profileId: cp.id,
+                  profileName: cp.name,
+                  localOnlyActionsPreserved: mergedActions.length - (cp.actions?.length ?? 0),
+                }));
+              }
+              const merged = { ...cp, actions: mergedActions, events: mergedEvents, isDefault: localByName.isDefault };
+              // Diagnostic: after merge — log merged result
+              console.log('[CLOUD-MERGE-DIAG-3]', JSON.stringify({
+                marker: 'after merge',
+                mergedId: merged.id,
+                mergedName: merged.name,
+                mergedIsDefault: merged.isDefault
+              }));
+              return merged;
+            });
 
           const mergedProfiles = [...filteredCloudProfiles, ...localOnlyProfiles, ...pendingLocalProfiles];
+
+          // Diagnostic: log each merged profile before calculateProfileLockState
+          for (const p of mergedProfiles) {
+            console.log('[MERGED-PROFILE-DIAG]', JSON.stringify({
+              marker: 'merged profile before lock calc',
+              id: p.id,
+              name: p.name,
+              isDefault: p.isDefault,
+              isDefaultProfileResult: isDefaultProfile(p),
+              idStartsWithProfile: p.id.startsWith('profile-'),
+              idStartsWithSpf: p.id.startsWith('spf_')
+            }));
+          }
 
           // Only apply locks if the license store is already initialized.
           // If not, set all profiles unlocked — the 'rosae:license-updated' event
@@ -601,16 +1227,65 @@ export const useAppStore = create<AppStore>()(
           const maxProfiles = licenseInitialized
             ? useLicenseStore.getState().getMaxStreamProfiles()
             : mergedProfiles.length;
-          const lockedProfiles = mergedProfiles.map((profile, index) => ({
-            ...profile,
-            locked: index >= maxProfiles,
+          const preferredId = get().currentProfileId;
+          const preferredLocal = localProfiles.find((p) => p.id === preferredId);
+          // Diagnostic: before calculateProfileLockState
+          console.log('[LOCK-CALC-DIAG]', JSON.stringify({
+            marker: 'before calculateProfileLockState',
+            mergedProfileCount: mergedProfiles.length,
+            maxProfiles,
+            profiles: mergedProfiles.map(p => ({
+              id: p.id,
+              name: p.name,
+              isDefault: p.isDefault,
+              isDefaultProfileResult: isDefaultProfile(p),
+              idStartsWithProfile: p.id.startsWith('profile-'),
+              idStartsWithSpf: p.id.startsWith('spf_')
+            }))
           }));
+          const { profiles: lockedProfiles } = calculateProfileLockState(mergedProfiles, preferredId, maxProfiles);
 
           // Sync the active profile's actions/events/alerts into top-level state
           // so the UI immediately reflects the correct data after cloud merge.
-          // Without this, top-level actions/events remain stale/empty after pull.
-          const activeId = lockedProfiles.length > 0 ? lockedProfiles[0].id : null;
-          const active = activeId ? lockedProfiles.find(p => p.id === activeId) : null;
+          // Prefer currentProfileId when it still exists after merge. If cloud
+          // name-merge replaced the local id with a server UUID, remap by NAME
+          // before falling back to lockedProfiles[0] (that fallback switched
+          // Stream Profiles after Action Pack import / reload).
+          const preferredName = preferredLocal?.name?.trim().toLowerCase() ?? null;
+          let activeId = null;
+          let activeResolution: "by-id" | "by-name" | "fallback-first" | "none" = "none";
+          if (preferredId && lockedProfiles.some((p) => p.id === preferredId)) {
+            activeId = preferredId;
+            activeResolution = "by-id";
+          } else if (preferredName) {
+            const byName = lockedProfiles.find(
+              (p) => p.name.trim().toLowerCase() === preferredName,
+            );
+            if (byName) {
+              activeId = byName.id;
+              activeResolution = "by-name";
+            }
+          }
+          if (!activeId && lockedProfiles.length > 0) {
+            activeId = lockedProfiles[0].id;
+            activeResolution = "fallback-first";
+          }
+          const active = activeId ? lockedProfiles.find((p) => p.id === activeId) : null;
+
+          console.log("[RUNTIME-POST-CLOUD]", JSON.stringify({
+            cloudProfileCount: cloudProfiles.length,
+            localProfileCount: localProfiles.length,
+            mergedProfileCount: mergedProfiles.length,
+            lockedProfileCount: lockedProfiles.length,
+            preferredProfileId: preferredId,
+            preferredProfileName: preferredLocal?.name ?? null,
+            activeProfileId: activeId,
+            activeResolution,
+            localActionsCount: localProfiles.reduce((sum, p) => sum + (p.actions?.length ?? 0), 0),
+            cloudActionsCount: cloudProfiles.reduce((sum, p) => sum + (p.actions?.length ?? 0), 0),
+            mergedActionsCount: lockedProfiles.reduce((sum, p) => sum + (p.actions?.length ?? 0), 0),
+            finalCurrentProfileId: activeId,
+          }));
 
           set({
             streamProfiles: lockedProfiles,
@@ -618,7 +1293,7 @@ export const useAppStore = create<AppStore>()(
             ...(active ? {
               actions: active.actions || [],
               events: active.events || [],
-              alertSettings: active.alertSettings || DEFAULT_ALERTS,
+              alertSettings: active.alertsSettings || DEFAULT_ALERTS,
               setupConfig: { ...get().setupConfig, tikTokName: active.tiktokUsername || "" },
             } : {}),
           });
@@ -685,10 +1360,11 @@ export const useAppStore = create<AppStore>()(
               }
             }
 
-            const lockedProfiles = updatedProfiles.map((profile, index) => ({
-              ...profile,
-              locked: index >= maxProfiles,
-            }));
+            const { profiles: lockedProfiles } = calculateProfileLockState(
+              updatedProfiles,
+              get().currentProfileId,
+              useLicenseStore.getState().getMaxStreamProfiles(),
+            );
 
             set({ streamProfiles: lockedProfiles });
           }
@@ -710,14 +1386,16 @@ export const useAppStore = create<AppStore>()(
       },
 
       addProfile: (profile) => {
-        const { streamProfiles } = get();
+        const { streamProfiles, currentProfileId } = get();
         const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
-        if (streamProfiles.length >= maxProfiles) {
-          console.warn(`[PROFILE-ENFORCEMENT] Cannot add profile: limit reached (${maxProfiles})`);
+        // Check occupied slots instead of total count
+        const { occupiedCount } = calculateProfileLockState(streamProfiles, currentProfileId, maxProfiles);
+        if (occupiedCount >= maxProfiles) {
+          console.warn(`[PROFILE-ENFORCEMENT] Cannot add profile: all ${maxProfiles} slots occupied`);
           return;
         }
         const now = new Date().toISOString();
-        const newProfile: StreamProfile = { ...profile, id: "spf_" + Math.random().toString(36).substring(2, 10), locked: false, alertsMasterEnabled: profile.alertsMasterEnabled ?? true, createdAt: now, updatedAt: now };
+        const newProfile: StreamProfile = { ...profile, id: "spf_" + Math.random().toString(36).substring(2, 10), locked: false, isDefault: false, alertsMasterEnabled: profile.alertsMasterEnabled ?? true, createdAt: now, updatedAt: now };
         set((s) => ({ streamProfiles: [...s.streamProfiles, newProfile] }));
 
         // Enqueue create operation (persistent, survives offline/restart)
@@ -843,23 +1521,16 @@ export const useAppStore = create<AppStore>()(
         const { streamProfiles, currentProfileId, actions, events, alertSettings, setupConfig, customSounds } = get();
         if (targetId === currentProfileId) return;
 
-        const targetProfile = streamProfiles.find(p => p.id === targetId);
+        // Entitlement check: defense-in-depth - use central helper for lock state
+        const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+        const { profiles: lockedProfiles } = calculateProfileLockState(streamProfiles, currentProfileId, maxProfiles);
+        const targetProfile = lockedProfiles.find(p => p.id === targetId);
         if (!targetProfile) {
           console.warn(`[PROFILE-ENFORCEMENT] Profile not found: ${targetId}`);
           return;
         }
-
-        // Lock-state check: blocked if profile is locked
         if (targetProfile.locked) {
           console.warn(`[PROFILE-ENFORCEMENT] Profile is locked: ${targetId}`);
-          return;
-        }
-
-        // Entitlement check: defense-in-depth
-        const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
-        const targetIndex = streamProfiles.findIndex(p => p.id === targetId);
-        if (targetIndex >= maxProfiles) {
-          console.warn(`[PROFILE-ENFORCEMENT] Profile index ${targetIndex} blocked (max ${maxProfiles})`);
           return;
         }
 
@@ -899,8 +1570,22 @@ export const useAppStore = create<AppStore>()(
           setupConfig: { ...setupConfig, tikTokName: updatedTarget.tiktokUsername || "" },
         });
 
-        // [REAL-SWITCH-ACTIONS] Profile switch action state
-        console.log('[REAL-SWITCH-ACTIONS]', JSON.stringify({
+        // Recalculate lock state after profile switch to ensure correct Pro/Free limits
+        // This prevents stale locked values from persisting across profile switches
+        const { profiles: recalculatedProfiles } = calculateProfileLockState(
+          updatedProfiles,
+          targetId,
+          useLicenseStore.getState().getMaxStreamProfiles(),
+        );
+        // Only apply if the recalculated state differs from what we just set
+        // (avoid unnecessary re-renders while still fixing the stale-lock bug)
+        const hasDifference = recalculatedProfiles.some((p, i) => p.locked !== updatedProfiles[i].locked);
+        if (hasDifference) {
+          set({ streamProfiles: recalculatedProfiles });
+        }
+
+      // [REAL-SWITCH-ACTIONS] Profile switch action state
+      console.log('[REAL-SWITCH-ACTIONS]', JSON.stringify({
           fromProfileId: currentProfileId,
           fromProfileName: previousProfile?.name ?? 'UNKNOWN',
           fromActionCount: actions.length,
@@ -1144,6 +1829,12 @@ export const useAppStore = create<AppStore>()(
               return patched;
             })
           );
+          console.log('[IMAGE-MEDIA-LIFECYCLE-DIAG]', JSON.stringify({
+            operation: 'hydrateMedia',
+            stage: 'complete',
+            currentProfileId: get().currentProfileId,
+            relevantActionIds: updatedActions.map((action) => action.id),
+          }));
           set({ actions: updatedActions });
         } catch (_) {}
       },
@@ -1161,7 +1852,15 @@ export const useAppStore = create<AppStore>()(
             if (existing && !existing.file && dbSound.file) {
               state.updateSound(dbSound.id, { file: dbSound.file, fileName: dbSound.fileName });
             } else if (!existing) {
-              state.addSound({ name: dbSound.name, file: dbSound.file, fileName: dbSound.fileName, enabled: true, profileId: dbSound.profileId } as any);
+              state.addImportedSound({
+                id: dbSound.id,
+                name: dbSound.name,
+                file: dbSound.file,
+                fileName: dbSound.fileName,
+                enabled: true,
+                profileId: dbSound.profileId,
+                createdAt: new Date().toISOString(),
+              });
             }
           }
         } catch (_) {}
@@ -1263,8 +1962,14 @@ export const useAppStore = create<AppStore>()(
       partialize: (state) => ({
         ...state,
         _isRehydrating: undefined, // never persist rehydration flag
+        // Strip media blobs from top-level AND profile-scoped actions.
+        // Large media in profile.actions can exceed localStorage quota → silent persist failure.
         actions: state.actions.map(({ soundFile, videoFile, imageFile, ...rest }) => rest),
-        customSounds: state.customSounds.map(({ file, ...rest }) => rest), // profileId is kept in rest
+        streamProfiles: state.streamProfiles.map((p) => ({
+          ...p,
+          actions: (p.actions || []).map(({ soundFile, videoFile, imageFile, ...rest }: any) => rest),
+        })),
+        customSounds: state.customSounds,
         // Strip runtime connection state — all screens start offline on restart
         tikTokConnection: {
           ...DEFAULT_TIKTOK_CONNECTION,
@@ -1277,55 +1982,344 @@ export const useAppStore = create<AppStore>()(
         liveEvents: [],
         screenLiveEvents: Object.fromEntries(SCREEN_IDS.map(id => [id, []])),
       }),
-      // Forensic: log rehydration actions
+      // Forensic: log rehydration actions AND verify actual localStorage content
       onRehydrateStorage: (state) => {
         if (state) {
-          console.log('[FORENSIC-ACTIONS-REHYDRATE]', JSON.stringify({
-            actionCount: state.actions?.length ?? 0,
-            actionIds: state.actions?.map((a: Action) => a.id) ?? [],
+          // Read actual localStorage BEFORE any merge
+          let storageRaw = null;
+          let storageExists = false;
+          try {
+            storageRaw = localStorage.getItem("rf-app-storage");
+            storageExists = storageRaw !== null;
+          } catch (e) { }
+
+          console.log("[RUNTIME-STORAGE-1]", JSON.stringify({
+            storageKey: "rf-app-storage",
+            storageExists,
+            storageByteLength: storageRaw ? storageRaw.length : 0,
+          }));
+
+          let parsed = null;
+          if (storageRaw) {
+            try {
+              parsed = JSON.parse(storageRaw);
+            } catch (e) { }
+          }
+
+          console.log("[RUNTIME-STORAGE-2]", JSON.stringify({
+            parsedExists: parsed !== null,
+            actionsCount: parsed?.state?.actions?.length ?? 0,
+            eventsCount: parsed?.state?.events?.length ?? 0,
+            profilesCount: parsed?.state?.streamProfiles?.length ?? 0,
+            currentProfileId: parsed?.state?.currentProfileId,
+          }));
+
+          console.log("[RUNTIME-HYDRATE-1]", JSON.stringify({
+            phase: "rehydrate",
+            persistedActionsCount: state.actions?.length ?? 0,
+            persistedEventsCount: state.events?.length ?? 0,
+            currentProfileId: state.currentProfileId,
             profileActionCounts: state.streamProfiles?.map((p: StreamProfile) => ({
               profileId: p.id,
               profileName: p.name,
               actionCount: p.actions?.length ?? 0,
-              actionIds: p.actions?.map((a: Action) => a.id) ?? [],
+              eventCount: p.events?.length ?? 0,
             })) ?? [],
           }));
         }
+
+        // OBS endpoint: preserve valid custom IP/port; fill only missing/invalid
+        // with defaults (127.0.0.1:4455). Never overwrite a valid saved value.
+        // Never touch obsPassword.
+        return (hydrated) => {
+          const sc = hydrated?.setupConfig;
+          if (sc) {
+            const next = normalizeObsEndpointOnRehydrate(sc);
+            if (next.obsIp !== sc.obsIp || next.obsPort !== sc.obsPort) {
+              useAppStore.setState({
+                setupConfig: {
+                  ...sc,
+                  obsIp: next.obsIp,
+                  obsPort: next.obsPort,
+                },
+              });
+            }
+          }
+
+          // Recalculate profile locks after rehydration using actual persisted state.
+          // Uses the rehydrated streamProfiles and currentProfileId (not pre-rehydration defaults).
+          // Handles both initialization orders: license init before or after rehydration.
+          const { streamProfiles, currentProfileId } = hydrated ?? {};
+          if (streamProfiles && currentProfileId) {
+            const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
+            const { profiles: updated } = calculateProfileLockState(streamProfiles, currentProfileId, maxProfiles);
+            useAppStore.setState({ streamProfiles: updated });
+          }
+        };
       },
       // Guard against an empty persisted streamProfiles overwriting defaults
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Record<string, unknown>;
+        // Prefer non-empty profile snapshot when both exist — do not let
+        // empty default profiles overwrite persisted actions/events.
+        const persistedProfiles = Array.isArray(persisted?.streamProfiles)
+          ? (persisted.streamProfiles as StreamProfile[])
+          : [];
+        const currentProfiles = currentState.streamProfiles || [];
+        const persistedHasData = persistedProfiles.some(
+          (p) => (p.actions?.length ?? 0) > 0 || (p.events?.length ?? 0) > 0
+        );
+        const currentHasData = currentProfiles.some(
+          (p) => (p.actions?.length ?? 0) > 0 || (p.events?.length ?? 0) > 0
+        );
+        let streamProfiles: StreamProfile[];
+        if (persistedProfiles.length > 0 && (!currentHasData || persistedHasData)) {
+          streamProfiles = persistedProfiles;
+        } else if (currentProfiles.length > 0) {
+          streamProfiles = currentProfiles;
+        } else {
+          streamProfiles = persistedProfiles.length > 0 ? persistedProfiles : currentProfiles;
+        }
+
+        // Restore isDefault: true for built-in default profiles that lost it during
+        // persistence/migration. Only applies when isDefault is undefined and name
+        // matches a canonical built-in profile name. Never overwrites explicit isDefault.
+        const builtinDefaultNames = new Set([
+          "Stream Profile 1", "Stream Profile 2", "Stream Profile 3", "Stream Profile 4",
+          "Stream Profile 5", "Stream Profile 6", "Stream Profile 7", "Stream Profile 8",
+          "Stream Profile 9", "Stream Profile 10"
+        ]);
+        streamProfiles = streamProfiles.map(p => ({
+          ...p,
+          isDefault: p.isDefault ?? builtinDefaultNames.has(p.name.trim())
+        }));
+
+        // Keep top-level actions/events from whichever side has more data.
+        const persistedActions = (persisted?.actions as Action[] | undefined) ?? [];
+        const persistedEvents = (persisted?.events as Event[] | undefined) ?? [];
+        const currentActions = currentState.actions ?? [];
+        const currentEvents = currentState.events ?? [];
+        const actions =
+          persistedActions.length >= currentActions.length ? persistedActions : currentActions;
+        const events =
+          persistedEvents.length >= currentEvents.length ? persistedEvents : currentEvents;
+
+        // Preserve currentProfileId from persistence when possible.
+        const persistedProfileId = persisted?.currentProfileId as string | null | undefined;
+        const currentProfileId =
+          persistedProfileId && streamProfiles.some((p) => p.id === persistedProfileId)
+            ? persistedProfileId
+            : currentState.currentProfileId;
+
         return {
           ...currentState,
           ...persisted,
-          streamProfiles: Array.isArray(persisted?.streamProfiles) && persisted.streamProfiles.length > 0
-            ? persisted.streamProfiles
-            : currentState.streamProfiles,
+          actions,
+          events,
+          streamProfiles,
+          currentProfileId,
         };
       },
     }
   )
 );
 
+// ── Central profile slot calculation helper ──────────────────────────
+// Determines which profiles occupy the available slots based on the new slot model.
+//
+// Slot occupancy rules:
+// 1. Active profile ALWAYS occupies a slot (never locked)
+// 2. Custom profiles (isDefault === false) occupy slots
+// 3. Default profiles (isDefault === true) with meaningful user data occupy slots
+// 4. Empty default placeholders (isDefault === true, no meaningful data) are placeholders
+//    that can be replaced by custom profiles
+// 4. Total unlocked/usable profiles must NEVER exceed maxProfiles
+// 5. Locked state is DERIVED from this calculation, not stored as source of truth
+//
+// Meaningful data is defined as any user-configured content:
+// - actions.length > 0
+// - events.length > 0
+// - customSounds.length > 0
+// - overlaySettings has user-configured values (non-empty object)
+// - alertsSettings has user-configured values (non-default)
+// - tiktokUsername is set (non-empty string)
+//
+// Backward compatibility: profiles without isDefault field are classified as:
+// - isDefault = true if id starts with "profile-" (legacy defaults)
+// - isDefault = false if id starts with "spf_" or otherwise (legacy custom)
+function hasMeaningfulData(profile: StreamProfile): boolean {
+  if ((profile.actions?.length ?? 0) > 0) return true;
+  if ((profile.events?.length ?? 0) > 0) return true;
+  if ((profile.customSounds?.length ?? 0) > 0) return true;
+  if (profile.tiktokUsername && profile.tiktokUsername.trim().length > 0) return true;
+  if (profile.overlaySettings && Object.keys(profile.overlaySettings).length > 0) return true;
+  if (profile.alertsSettings && Object.keys(profile.alertsSettings).length > 0) {
+    // Check if alertsSettings has non-default values
+    const hasNonDefaultAlerts = Object.entries(profile.alertsSettings).some(([key, value]) => {
+      if (!value || typeof value !== 'object') return true;
+      const defaultAlerts = DEFAULT_ALERTS[key as keyof typeof DEFAULT_ALERTS];
+      if (!defaultAlerts) return true;
+      return JSON.stringify(value) !== JSON.stringify(defaultAlerts);
+    });
+    if (hasNonDefaultAlerts) return true;
+  }
+  return false;
+}
+
+function isDefaultProfile(profile: StreamProfile): boolean {
+  // Backward compatibility: classify based on id pattern if isDefault not set
+  if (profile.isDefault !== undefined) return profile.isDefault;
+  if (profile.id.startsWith('profile-')) return true; // legacy defaults
+  if (profile.id.startsWith('spf_')) return false; // legacy custom
+  return false; // treat unknown as custom (safer)
+}
+
+function isCustomProfile(profile: StreamProfile): boolean {
+  return !isDefaultProfile(profile);
+}
+
+function profileOccupiesSlot(profile: StreamProfile, activeProfileId: string | null): boolean {
+  // Active profile ALWAYS occupies a slot
+  if (profile.id === activeProfileId) return true;
+  // Custom profiles always occupy a slot
+  if (isCustomProfile(profile)) return true;
+  // Default profiles with meaningful data occupy a slot
+  if (isDefaultProfile(profile) && hasMeaningfulData(profile)) return true;
+  // Empty default placeholders do NOT occupy a slot
+  return false;
+}
+
+/**
+ * Central helper to calculate profile slot state for all profiles.
+ * Returns an object with locked state for each profile and total occupied count.
+ *
+ * @param profiles - Array of stream profiles
+ * @param currentProfileId - ID of currently active profile
+ * @param maxProfiles - Maximum number of profiles allowed for current license
+ * @returns Object containing updated profiles with correct locked state and occupied count
+ */
+function calculateProfileLockState(
+  profiles: StreamProfile[],
+  currentProfileId: string | null,
+  maxProfiles: number
+): { profiles: StreamProfile[]; occupiedCount: number } {
+  // Default profiles have their own entitlement pool. Custom profiles use
+  // remaining capacity and never displace default placeholders.
+  const defaultProfiles = profiles.filter((profile) => isDefaultProfile(profile));
+  const customProfiles = profiles.filter((profile) => isCustomProfile(profile));
+  // Diagnostic: slot allocation
+  console.log('[LOCK-SLOTS-DIAG]', JSON.stringify({
+    marker: 'calculateProfileLockState slot allocation',
+    totalProfiles: profiles.length,
+    defaultProfilesCount: defaultProfiles.length,
+    customProfilesCount: customProfiles.length,
+    maxProfiles,
+    defaultSlots: Math.min(10, maxProfiles),
+    customSlots: Math.max(0, maxProfiles - Math.min(10, maxProfiles)),
+    defaultProfileIds: defaultProfiles.map(p => p.id),
+    customProfileIds: customProfiles.map(p => p.id)
+  }));
+
+  // Sort default profiles deterministically, keeping the active default first.
+  const sortedProfiles = [...defaultProfiles].sort((a, b) => {
+    const aActive = a.id === currentProfileId;
+    const bActive = b.id === currentProfileId;
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+    const aNum = parseInt(a.id.replace('profile-', ''), 10) || 999;
+    const bNum = parseInt(b.id.replace('profile-', ''), 10) || 999;
+    return aNum - bNum;
+  });
+  const sortedCustomProfiles = [...customProfiles].sort((a, b) => {
+    const aActive = a.id === currentProfileId;
+    const bActive = b.id === currentProfileId;
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+    return 0;
+  });
+  const defaultSlots = Math.min(10, maxProfiles);
+  const customSlots = Math.max(0, maxProfiles - defaultSlots);
+  const profilesWithSlots = new Set<string>();
+  for (const profile of sortedProfiles.slice(0, defaultSlots)) profilesWithSlots.add(profile.id);
+  for (const profile of sortedCustomProfiles.slice(0, customSlots)) profilesWithSlots.add(profile.id);
+
+  // Diagnostic: log slot allocation details before mapping
+  console.log('[LOCK-CALC-DIAG-2]', JSON.stringify({
+    marker: 'slot allocation details',
+    maxProfiles,
+    defaultSlots,
+    customSlots,
+    defaultProfilesLength: defaultProfiles.length,
+    customProfilesLength: customProfiles.length,
+    defaultProfiles: defaultProfiles.map(p => ({
+      id: p.id,
+      name: p.name,
+      isDefault: p.isDefault,
+      isDefaultProfileResult: isDefaultProfile(p),
+      idStartsWithProfile: p.id.startsWith('profile-'),
+      hasMeaningfulData: hasMeaningfulData(p),
+      getsSlot: profilesWithSlots.has(p.id)
+    })),
+    customProfiles: customProfiles.map(p => ({
+      id: p.id,
+      name: p.name,
+      isDefault: p.isDefault,
+      isDefaultProfileResult: isDefaultProfile(p),
+      idStartsWithProfile: p.id.startsWith('profile-'),
+      getsSlot: profilesWithSlots.has(p.id)
+    }))
+  }));
+
+  const updatedProfiles = profiles.map(p => ({
+    ...p,
+    locked: !profilesWithSlots.has(p.id),
+  }));
+  const occupiedCount = updatedProfiles.filter(p => !p.locked).length;
+  return { profiles: updatedProfiles, occupiedCount };
+}
+
+// Export for use in other modules
+export { calculateProfileLockState, profileOccupiesSlot, hasMeaningfulData, isDefaultProfile, isCustomProfile };
+
 // ── Recalculate profile lock state when license initializes/updates ──
 // Fixes race: pullCloudProfiles() runs before license is init'd → profiles 2-10 locked
 // even for Pro users. This listener fires once the license state is authoritative.
+// Current active profile should NEVER be locked, regardless of position.
 window.addEventListener('rosae:license-updated', () => {
   const store = useAppStore.getState();
-  const { streamProfiles } = store;
-  const maxProfiles = useLicenseStore.getState().getMaxStreamProfiles();
-  let changed = false;
-  const updated = streamProfiles.map((p, i) => {
-    const shouldBeLocked = i >= maxProfiles;
-    if (p.locked !== shouldBeLocked) {
-      changed = true;
-      return { ...p, locked: shouldBeLocked };
-    }
-    return p;
-  });
-  if (changed) {
-    useAppStore.setState({ streamProfiles: updated });
-  }
+  const { streamProfiles, currentProfileId } = store;
+  const licenseState = useLicenseStore.getState();
+  const effectivePlan = licenseState.effectivePlan();
+  const isInitialized = licenseState.isInitialized;
+  const maxProfiles = licenseState.getMaxStreamProfiles();
+
+  // Diagnostic: before calculation
+  console.log('[LICENSE-UPDATE-DIAG-1]', JSON.stringify({
+    marker: 'rosae:license-updated listener fired',
+    effectivePlan,
+    isInitialized,
+    maxProfiles,
+    profileCount: streamProfiles.length,
+    currentProfileId,
+    beforeProfiles: streamProfiles.map(p => ({
+      id: p.id,
+      name: p.name,
+      isDefault: p.isDefault,
+      locked: p.locked
+    }))
+  }));
+
+  const { profiles: updated, occupiedCount } = calculateProfileLockState(streamProfiles, currentProfileId, maxProfiles);
+
+  // Diagnostic: after calculation
+  console.log('[LICENSE-UPDATE-DIAG-2]', JSON.stringify({
+    marker: 'calculateProfileLockState result',
+    maxProfiles,
+    occupiedCount,
+    afterProfiles: updated.map(p => ({ id: p.id, locked: p.locked }))
+  }));
+
+  useAppStore.setState({ streamProfiles: updated });
 });
 
 // Export the store instance for non-React contexts (e.g., overlay-store)

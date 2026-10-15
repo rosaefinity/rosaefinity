@@ -5,6 +5,7 @@ import { useOverlayStore } from "../lib/overlay-store";
 import { useAuthStore } from "../store/auth-store";
 import { dispatchTikTokEvent } from "../store/event-dispatch";
 import { api, isElectron, safeInvoke } from "../services/electron-service";
+import { normalizeObsEndpointOnRehydrate } from "../lib/obs-local";
 import { getBrowserSourceHost } from "../lib/browser-source-url";
 import { initWorkflowRuntime } from "../workflow/runtime/workflow-runtime";
 import { getOverlayRuntimeManager } from "../overlay-runtime";
@@ -102,6 +103,16 @@ export function useInit() {
         a.onEvent((data) => {
           dispatchTikTokEvent(data);
         }),
+        a.onOverlayEvent?.((data) => {
+          if (data?.type !== 'media-complete') return;
+          console.log('[MEDIA-COMPLETE-RELAY][RENDERER]', JSON.stringify({
+            actionExecutionId: data.actionExecutionId,
+            screen: data.screen,
+            mediaType: data.mediaType,
+            timestamp: Date.now(),
+          }));
+          window.dispatchEvent(new CustomEvent('rosae:media-complete', { detail: data }));
+        }),
         a.onViewers((data) => {
           useAppStore.getState().setScreenStats(data.screenId, { views: data.viewerCount });
         }),
@@ -182,9 +193,13 @@ export function useInit() {
 
       // ── Sync saved config to backend modules (lightweight IPC) ──
       const { setupConfig } = useAppStore.getState();
-      if (setupConfig.obsIp) {
-        a.obsSetConfig({ obsIp: setupConfig.obsIp, obsPort: setupConfig.obsPort, obsPassword: setupConfig.obsPassword });
-      }
+      // OBS host/port are user-configurable; fill defaults only if missing/invalid
+      const obsEndpoint = normalizeObsEndpointOnRehydrate(setupConfig);
+      a.obsSetConfig({
+        obsIp: obsEndpoint.obsIp,
+        obsPort: obsEndpoint.obsPort,
+        obsPassword: obsEndpoint.obsPassword,
+      });
       if (setupConfig.sbAddress) {
         a.sbSetConfig({ sbAddress: setupConfig.sbAddress, sbPort: setupConfig.sbPort, sbEndpoint: setupConfig.sbEndpoint });
       }
@@ -222,6 +237,15 @@ export function useInit() {
       }, 1000));
 
       // 3c: Connection status checks (OBS, SB, Spotify) — UI indicators only
+      // OBS: also subscribe to live status changes so Create Action updates
+      // immediately when OBS connects/disconnects while a modal is open.
+      if (typeof a.onObsStatusChanged === "function") {
+        cleanups.push(
+          a.onObsStatusChanged((data) => {
+            useAppStore.getState().setObsConnected(!!data?.connected);
+          })
+        );
+      }
       idleCancels.current.push(whenIdle(() => {
         safeInvoke(a.obsStatus).then((result) => {
           if (result.success) useAppStore.getState().setObsConnected(result.data?.connected || false);
@@ -283,6 +307,19 @@ export function useInit() {
             const { fetchProfiles } = await import('../services/profile-api');
             const cloud = await fetchProfiles();
             const cloudProfiles = cloud.profiles || [];
+            console.log("[PERSISTENCE-TRACE-A]", JSON.stringify({
+              phase: "startup-cloud-pull",
+              cloudActionCount: cloudProfiles.reduce(
+                (n, p) => n + (Array.isArray(p.actions) ? p.actions.length : 0),
+                0
+              ),
+              localActionCount: appStore.actions.length,
+              localProfileActionCount: appStore.streamProfiles.reduce(
+                (n, p) => n + (p.actions?.length ?? 0),
+                0
+              ),
+              selectedCurrentProfileId: appStore.currentProfileId,
+            }));
 
             if (cloudProfiles.length > 0) {
               await appStore.pullCloudProfiles(userId);
@@ -294,16 +331,17 @@ export function useInit() {
 
             // [REAL-PROFILE-INIT-ACTIONS] Post-init profile state
             const initState = useAppStore.getState();
-            console.log('[REAL-PROFILE-INIT-ACTIONS]', JSON.stringify({
+            console.log("[PERSISTENCE-TRACE-A]", JSON.stringify({
+              phase: "post-hydration",
+              finalActionCount: initState.actions.length,
+              finalEventCount: initState.events.length,
+              finalCurrentProfileId: initState.currentProfileId,
               profiles: initState.streamProfiles.map(p => ({
                 profileId: p.id,
                 profileName: p.name,
                 actionCount: p.actions?.length ?? 0,
-                actionIds: p.actions?.map((a: Action) => a.id) ?? [],
+                eventCount: p.events?.length ?? 0,
               })),
-              currentProfileId: initState.currentProfileId,
-              topLevelActionCount: initState.actions.length,
-              topLevelActionIds: initState.actions.map((a: Action) => a.id),
             }));
 
             const { profileSyncProcessor } = await import('../services/profile-sync-processor');

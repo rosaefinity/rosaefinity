@@ -11,6 +11,10 @@ export interface GoalProgressConfig {
   /** Formal link to the Goal Store Goal that tracks this overlay's progress. */
   goalId?: string;
   target: number;
+  /** Original configured target — step size for 'increase' mode
+   *  (newTarget = target + initialTarget). Set at creation/user target
+   *  edit; system-driven increases never overwrite it. */
+  initialTarget?: number;
   title: string;
   reachedBehavior: GoalReachedBehavior;
   actionId: string | null;
@@ -25,6 +29,8 @@ export interface GoalProgressConfig {
 export const defaultGoalProgressConfig: GoalProgressConfig = {
   goalType: 'likes',
   target: 7000,
+  // New goals: step base = the configured target (spec: 2000 → initialTarget 2000)
+  initialTarget: 7000,
   title: 'Goal',
   reachedBehavior: 'increase',
   actionId: null,

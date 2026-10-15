@@ -21,6 +21,17 @@ if (!isAuthProviderInitialized()) {
 // set until after the await, allowing a second call to slip through.
 let _initRunning = false;
 
+// Debug flag for auth flow tracing
+let _authDebug: boolean | null = null;
+function isAuthDebug(): boolean {
+  if (_authDebug === null) {
+    try {
+      _authDebug = typeof window !== 'undefined' && window.localStorage.getItem('rf_overlay_debug') === '1';
+    } catch { _authDebug = false; }
+  }
+  return _authDebug;
+}
+
 const ROLE_LEVEL: Record<AccountType, number> = { guest: 0, free: 1, pro: 2, admin: 3 };
 
 interface AuthState {
@@ -81,17 +92,16 @@ export const useAuthStore = create<AuthState>()(
         // _initRunning is a module-level flag that prevents the StrictMode double-mount
         // from running initialize() concurrently before the async set({initialized:true}).
         if (get().initialized || _initRunning) {
-          console.log('[AUTH-FLOW] initialize SKIP — already initialized or in progress');
+          if (isAuthDebug()) console.log('[AUTH-FLOW] initialize SKIP — already initialized or in progress');
           return;
         }
         _initRunning = true;
-        console.log('[AUTH-FLOW] initialize START');
-        console.log('[AUTH-TRACE] initialize called', { stack: new Error().stack?.split('\n').slice(1, 4).join(' | ') });
+        if (isAuthDebug()) console.log('[AUTH-FLOW] initialize START');
         set({ isLoading: true });
         try {
           // Try restore cached session
           const restored = await sessionManager.restoreSession();
-          console.log('[AUTH-FLOW] cached session =', restored ? 'found' : 'none');
+          if (isAuthDebug()) console.log('[AUTH-FLOW] cached session =', restored ? 'found' : 'none');
           if (restored) {
             set({
               currentUser: restored.user,
@@ -101,7 +111,7 @@ export const useAuthStore = create<AuthState>()(
               isLoading: false,
               initialized: true,
             });
-            console.log('[AUTH-FLOW] isLoading = false (session restored)');
+            if (isAuthDebug()) console.log('[AUTH-FLOW] isLoading = false (session restored)');
           } else {
             // Clear any stale user from localStorage persist — session is gone
             set({
@@ -112,7 +122,7 @@ export const useAuthStore = create<AuthState>()(
               isLoading: false,
               initialized: true,
             });
-            console.log('[AUTH-FLOW] isLoading = false (no session, cleared stale user)');
+            if (isAuthDebug()) console.log('[AUTH-FLOW] isLoading = false (no session, cleared stale user)');
           }
 
           // Listen for route changes to catch tokens that expire while the user
@@ -138,11 +148,11 @@ export const useAuthStore = create<AuthState>()(
                 const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
                 const payload = JSON.parse(decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')));
                 if (typeof payload.exp === 'number' && Date.now() >= (payload.exp * 1000) - 30_000) {
-                  console.log('[AUTH-FLOW] route-change: token expired, clearing auth');
+                  if (isAuthDebug()) console.log('[AUTH-FLOW] route-change: token expired, clearing auth');
                   get().logout();
                 }
               } catch {
-                console.log('[AUTH-FLOW] route-change: token unparseable, clearing auth');
+                if (isAuthDebug()) console.log('[AUTH-FLOW] route-change: token unparseable, clearing auth');
                 get().logout();
               }
             }
@@ -165,7 +175,7 @@ export const useAuthStore = create<AuthState>()(
                 if (current.currentUser?.id === session.user.id && current.session?.accessToken === session.accessToken) {
                   return; // State unchanged — no re-render needed
                 }
-                console.log('[AUTH-FLOW] post-init auth change: session found');
+                if (isAuthDebug()) console.log('[AUTH-FLOW] post-init auth change: session found');
                 set({
                   currentUser: session.user,
                   session,
@@ -177,8 +187,7 @@ export const useAuthStore = create<AuthState>()(
                 if (!current.currentUser && !current.session) {
                   return; // Already cleared — no re-render needed
                 }
-                console.log('[AUTH-FLOW] post-init auth change: session cleared');
-                console.log('[AUTH-TRACE] onAuthStateChange clearing auth', { stack: new Error().stack?.split('\n').slice(1, 5).join(' | ') });
+                if (isAuthDebug()) console.log('[AUTH-FLOW] post-init auth change: session cleared');
                 set({
                   currentUser: null,
                   session: null,
@@ -190,11 +199,11 @@ export const useAuthStore = create<AuthState>()(
             });
           }
         } catch {
-          console.log('[AUTH-FLOW] initialize ERROR — finishing gracefully');
+          if (isAuthDebug()) console.log('[AUTH-FLOW] initialize ERROR — finishing gracefully');
           set({ isLoading: false, initialized: true });
         }
         _initRunning = false;
-        console.log('[AUTH-FLOW] initialize COMPLETE');
+        if (isAuthDebug()) console.log('[AUTH-FLOW] initialize COMPLETE');
       },
 
       login: async (email, password) => {
@@ -234,13 +243,13 @@ export const useAuthStore = create<AuthState>()(
           password = String(passwordArg ?? '');
           displayName = displayNameArg;
         }
-        console.log("[REGISTER] auth-store.register() called", { email, displayName });
+        if (isAuthDebug()) console.log("[REGISTER] auth-store.register() called", { email, displayName });
         set({ isLoading: true, error: null });
         try {
           const provider = getAuthProvider();
-          console.log("[REGISTER] provider =", provider.constructor.name);
+          if (isAuthDebug()) console.log("[REGISTER] provider =", provider.constructor.name);
           const result = await provider.signUpWithEmail(email, password, displayName);
-          console.log("[REGISTER] result =", result);
+          if (isAuthDebug()) console.log("[REGISTER] result =", result);
           if (!result.success) throw new Error(result.error);
           if (result.session) {
             set({
@@ -376,7 +385,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: async () => {
-        console.log('[AUTH-TRACE] logout CALLED', { stack: new Error().stack?.split('\n').slice(1, 5).join(' | ') });
+        if (isAuthDebug()) console.log('[AUTH-TRACE] logout CALLED');
         try {
           await getAuthProvider().signOut();
         } catch {
@@ -386,9 +395,9 @@ export const useAuthStore = create<AuthState>()(
           try {
             const { stopTTS } = await import('../services/tts');
             stopTTS();
-            console.log('[LOGOUT] TTS stopped for account isolation');
+            if (isAuthDebug()) console.log('[LOGOUT] TTS stopped for account isolation');
           } catch (err) {
-            console.error('[LOGOUT] Failed to stop TTS:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] Failed to stop TTS:', err);
           }
 
           // Capture userId BEFORE clearing auth state
@@ -398,9 +407,9 @@ export const useAuthStore = create<AuthState>()(
           try {
             const { resetSyncEngine } = await import('../services/sync/sync-engine');
             resetSyncEngine();
-            console.log('[LOGOUT] SyncEngine reset for account isolation');
+            if (isAuthDebug()) console.log('[LOGOUT] SyncEngine reset for account isolation');
           } catch (err) {
-            console.error('[LOGOUT] Failed to reset SyncEngine:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] Failed to reset SyncEngine:', err);
           }
 
           // ── Clear Electron overlay runtime map ──
@@ -408,10 +417,10 @@ export const useAuthStore = create<AuthState>()(
             const electronApi = api();
             if (electronApi?.syncOverlayInstances) {
               electronApi.syncOverlayInstances([]);
-              console.log('[LOGOUT] Cleared Electron overlay map for account isolation');
+              if (isAuthDebug()) console.log('[LOGOUT] Cleared Electron overlay map for account isolation');
             }
           } catch (err) {
-            console.error('[LOGOUT] Failed to clear Electron overlay map:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] Failed to clear Electron overlay map:', err);
           }
 
           // ── Clear account-specific overlay/goal runtime localStorage ──
@@ -429,9 +438,9 @@ export const useAuthStore = create<AuthState>()(
             for (const key of overlayKeys) {
               localStorage.removeItem(key);
             }
-            console.log('[LOGOUT] Cleared overlay/goal runtime localStorage for account isolation');
+            if (isAuthDebug()) console.log('[LOGOUT] Cleared overlay/goal runtime localStorage for account isolation');
           } catch (err) {
-            console.error('[LOGOUT] Failed to clear overlay localStorage:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] Failed to clear overlay localStorage:', err);
           }
 
           // Clear local Dexie custom sounds to prevent cross-account leakage
@@ -439,9 +448,9 @@ export const useAuthStore = create<AuthState>()(
           try {
             const { db } = await import('../lib/db');
             await db.sounds.clear();
-            console.log('[LOGOUT] Cleared Dexie sounds table for account isolation');
+            if (isAuthDebug()) console.log('[LOGOUT] Cleared Dexie sounds table for account isolation');
           } catch (err) {
-            console.error('[LOGOUT] FAILED to clear Dexie sounds table:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] FAILED to clear Dexie sounds table:', err);
             // Log but do NOT block logout — authentication state must still be cleared
           }
 
@@ -452,13 +461,13 @@ export const useAuthStore = create<AuthState>()(
             if (a?.clearAllPoints) {
               const result = await a.clearAllPoints();
               if (result?.success) {
-                console.log('[LOGOUT] Cleared Electron points-users.json for account isolation');
+                if (isAuthDebug()) console.log('[LOGOUT] Cleared Electron points-users.json for account isolation');
               } else {
-                console.error('[LOGOUT] FAILED to clear Electron points-users.json:', result?.error);
+                if (isAuthDebug()) console.error('[LOGOUT] FAILED to clear Electron points-users.json:', result?.error);
               }
             }
           } catch (err) {
-            console.error('[LOGOUT] FAILED to clear Electron points-users.json:', err);
+            if (isAuthDebug()) console.error('[LOGOUT] FAILED to clear Electron points-users.json:', err);
             // Log but do NOT block logout — authentication state must still be cleared
           }
 

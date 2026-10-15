@@ -1,5 +1,6 @@
 import type { AnyOverlayModule } from './types';
 import { giftAlertOverlay } from './gift-alert';
+import { GiftComboOverlay } from './gifts/GiftCombo';
 import { coinJarProOverlay } from './coin-jar-pro';
 import { goalProgressOverlay } from './goal-progress';
 import { goalLikesOverlay } from './goal-likes';
@@ -67,6 +68,8 @@ export function registryBuilder(modules: AnyOverlayModule[]): RegistryResult {
 const _initialModules: AnyOverlayModule[] = [
   // Gift Alert
   giftAlertOverlay as unknown as AnyOverlayModule,
+  // Gift Combo
+  GiftComboOverlay as unknown as AnyOverlayModule,
   // Coin Jar Pro
   coinJarProOverlay as unknown as AnyOverlayModule,
   // Goal Likes (renamed from Goal Progress — fixed to likes only)

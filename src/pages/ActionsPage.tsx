@@ -3,34 +3,51 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../store/app-store";
 import { useLicenseStore } from "../store/license-store";
+import { OBSSceneSelector } from "./components/OBSSceneSelector";
 import { cn } from "../lib/utils";
 import { UpgradeDialog } from "../components/UpgradeDialog";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
-import { showTestNotification } from "../components/TestNotification";
+import { showPendingKeystroke, updatePendingKeystroke, hidePendingKeystroke } from "../components/TestNotification";
 import { toast } from "../components/Toast";
 import { getGifts, getGiftsSync, getGiftEmoji, getGiftImageUrl, type TikTokGift } from "../services/gift-service";
 import { sendToOverlay } from "../lib/overlay-bus";
-import { saveActionMedia, deleteActionMedia, getAllSounds } from "../lib/db";
+import { db, saveActionMedia, deleteActionMedia, getAllSounds } from "../lib/db";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
 import { normalizeScreenWithTrace as normalizeScreen } from "../lib/screen-normalizer";
-import { executeAction } from "../store/event-dispatch";
+import { executeAction, executeDeferredTestKeystroke } from "../store/event-dispatch";
+import { runManualTestAction } from "../lib/manual-action-test";
+import { pendingKeystrokeController } from "../lib/pending-keystroke";
+import {
+  exportActionPackFromActions,
+  importActionPackWithDexie,
+  persistImportedMediaRows,
+  isActionPack,
+} from "../lib/action-pack-io";
 import {
   Plus, Search, Play, Edit, Trash2, X, Copy, CheckCircle2,
   Music, Video, Image, Keyboard, Monitor, Gift, Heart, Bell,
   MessageSquare, Share2, UserPlus, Star, Zap, Globe,
-  AlertTriangle, Volume2, VolumeX, Lock, ArrowRight, Sparkles, Library
+  AlertTriangle, Volume2, VolumeX, Lock, ArrowRight, Sparkles, Library,
+  Download, Upload,
 } from "lucide-react";
 import { getBuiltInSoundCatalog, getBuiltInSoundDataUrl, type BuiltInSound } from "../lib/builtin-sounds";
+import { MyInstantsBrowse } from "../components/MyInstantsBrowse";
 
 // ── SPECIAL KEYS & MODIFIERS (sama persis kaya Electron) ──────
-const SPECIAL_KEYS = [
-  "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
-  "Enter","Escape","Tab","Space","Backspace","Delete",
-  "ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown",
-];
+import {
+  SPECIAL_KEYS as SPECIAL_KEY_DEFS,
+  NUMPAD_KEY_DEFS,
+  MODIFIER_KEY_IDS,
+  formatKeystrokeTokenForDisplay,
+  normalizeKeystrokeToken,
+  parseKeystrokeKeys,
+} from "../lib/keystroke-keys";
+import { composeKeystroke } from "../lib/keystroke-composer";
 
-const MODIFIERS = ["Ctrl","Shift","Alt"];
+const SPECIAL_KEYS = SPECIAL_KEY_DEFS.map((k) => k.id);
+const NUMPAD_KEYS = NUMPAD_KEY_DEFS;
+const MODIFIERS = [...MODIFIER_KEY_IDS];
 
 const EVENT_ICONS: Record<string, string> = {
   gift: "🎁", follow: "👤", comment: "💬", like: "❤️",
@@ -76,14 +93,102 @@ const SOUND_LIBRARY_CATEGORIES = [
 ] as const;
 
 // ── SOUND LIBRARY MODAL ──────────────────────────
+export type SoundLibraryCustomSound = {
+  id: string;
+  name: string;
+  file?: string | null;
+  fileName?: string;
+  profileId?: string;
+  category?: string;
+  tags?: string[];
+  isBuiltIn?: boolean;
+};
+
+/**
+ * Merge Zustand custom sounds with Dexie rows for the Action Editor picker.
+ * When store has a sound id without `file` and Dexie has the same id with a
+ * valid dataURL, fill only the missing binary/file from Dexie (preserve store
+ * metadata). Do not create duplicate ids.
+ */
+export function mergeCustomSoundsWithDb(
+  storeCustoms: SoundLibraryCustomSound[],
+  dbSounds: SoundLibraryCustomSound[],
+): SoundLibraryCustomSound[] {
+  const merged: SoundLibraryCustomSound[] = storeCustoms.map((s) => ({ ...s }));
+  for (const ds of dbSounds) {
+    const existing = merged.find((s) => s.id === ds.id);
+    if (existing) {
+      if (!existing.file && ds.file) {
+        // Preserve store metadata; only backfill missing binary from Dexie
+        existing.file = ds.file;
+        if (!existing.fileName && ds.fileName) existing.fileName = ds.fileName;
+      }
+      continue;
+    }
+    // addSound generates a new id; avoid duplicate picker rows for the same name
+    const byName = merged.find(
+      (s) => s.name?.trim().toLowerCase() === ds.name?.trim().toLowerCase()
+    );
+    if (byName) {
+      if (!byName.file && ds.file) {
+        byName.file = ds.file;
+        if (!byName.fileName && ds.fileName) byName.fileName = ds.fileName;
+      }
+      continue;
+    }
+    merged.push({ ...ds });
+  }
+  return merged;
+}
+
+type HydrateSoundStore = {
+  customSounds: SoundLibraryCustomSound[];
+  addSound: (sound: Record<string, unknown>) => void;
+  updateSound: (id: string, updates: Record<string, unknown>) => void;
+};
+
+/**
+ * Hydrate Zustand CustomSounds from Dexie for the Action picker.
+ * Same rules as SoundsPage mount: backfill missing file; add if absent;
+ * never create duplicate ids; respect profileId.
+ */
+export async function hydrateCustomSoundsFromDexie(
+  profileId: string,
+  getStore: () => HydrateSoundStore,
+  getSoundsByProfile: (profileId: string) => Promise<SoundLibraryCustomSound[]>,
+): Promise<SoundLibraryCustomSound[]> {
+  const fromDb = await getSoundsByProfile(profileId);
+  for (const dbSound of fromDb) {
+    // Re-read live store each iteration so add/update mutations are visible
+    const store = getStore();
+    const existing = store.customSounds.find((s) => s.id === dbSound.id);
+    if (existing && !existing.file && dbSound.file) {
+      store.updateSound(dbSound.id, {
+        file: dbSound.file,
+        fileName: dbSound.fileName ?? existing.fileName,
+      });
+    } else if (!existing) {
+      store.addSound({
+        name: dbSound.name,
+        file: dbSound.file,
+        fileName: dbSound.fileName,
+        enabled: true,
+        profileId: dbSound.profileId || profileId,
+      });
+    }
+  }
+  return fromDb;
+}
+
 function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose: () => void; onSelect: (file: string, name: string) => void }) {
   const { customSounds, currentProfileId, getCurrentProfileCustomSounds } = useAppStore();
-  const [dbSounds, setDbSounds] = useState<Array<{ id: string; name: string; file: string | null; fileName?: string; profileId?: string }>>([]);
+  const [dbSounds, setDbSounds] = useState<SoundLibraryCustomSound[]>([]);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const audioRef = useState<{ current: HTMLAudioElement | null }>({ current: null })[0];
   const builtInUrlsRef = useRef<Map<string, string>>(new Map());
+  const [activeTab, setActiveTab] = useState<'library' | 'myinstants'>('library');
 
   const profileCustomSounds = getCurrentProfileCustomSounds();
 
@@ -93,13 +198,20 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
       if (!currentProfileId) return;
       try {
         const { getSoundsByProfile } = await import('../lib/db');
-        const fromDb = await getSoundsByProfile(currentProfileId);
+        // Hydrate Zustand from Dexie first (same path as SoundsPage mount)
+        // so the picker filter (isBuiltIn || file) sees CustomSounds with dataURL.
+        const fromDb = await hydrateCustomSoundsFromDexie(
+          currentProfileId,
+          () => useAppStore.getState() as unknown as HydrateSoundStore,
+          getSoundsByProfile,
+        );
         setDbSounds(fromDb);
       } catch { setDbSounds([]); }
     };
     load();
     setSearch('');
     setActiveCategory('all');
+    setActiveTab('library');
     setPlayingId(null);
     // Pre-cache all built-in sounds for synchronous lookup (ref, not state — avoids stale closure)
     builtInUrlsRef.current = new Map();
@@ -144,7 +256,7 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
     };
   }, [open, currentProfileId]);
 
-  // Merge: built-in sounds first, then custom + Dexie sounds (profile-specific)
+  // Merge: built-in sounds first, then custom sounds with Dexie file backfill
   const mergedSounds = useMemo(() => {
     const catalog = getBuiltInSoundCatalog();
     const builtIn = catalog.map((s) => ({
@@ -153,10 +265,7 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
       fileName: 'Built-in sound',
       isBuiltIn: true,
     }));
-    const user: Array<{ id: string; name: string; file: string | null; fileName?: string; category?: string; tags?: string[]; isBuiltIn?: boolean }> = [...profileCustomSounds];
-    for (const ds of dbSounds) {
-      if (!user.find(s => s.id === ds.id)) user.push(ds as any);
-    }
+    const user = mergeCustomSoundsWithDb(profileCustomSounds as SoundLibraryCustomSound[], dbSounds as SoundLibraryCustomSound[]);
     return [...builtIn, ...user];
   }, [profileCustomSounds, dbSounds]);
 
@@ -181,13 +290,13 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
   }, [soundsWithFiles, search, activeCategory]);
 
   // Resolve a sound's dataURL (built-in sounds generate on demand)
-  const resolveFile = async (sound: { id: string; file: string | null; isBuiltIn?: boolean }): Promise<string | null> => {
+  const resolveFile = async (sound: { id: string; file?: string | null; isBuiltIn?: boolean }): Promise<string | null> => {
     if (sound.file) return sound.file;
     if (sound.isBuiltIn) return getBuiltInSoundDataUrl(sound.id);
     return null;
   };
 
-  const previewSound = async (sound: { id: string; file: string | null; isBuiltIn?: boolean }) => {
+  const previewSound = async (sound: { id: string; file?: string | null; isBuiltIn?: boolean }) => {
     if (playingId === sound.id) {
       audioRef.current?.pause();
       audioRef.current = null;
@@ -205,7 +314,7 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
     audio.play().catch(() => setPlayingId(null));
   };
 
-  const handleSelect = (sound: { id: string; name: string; file: string | null; isBuiltIn?: boolean }) => {
+  const handleSelect = (sound: { id: string; name: string; file?: string | null; isBuiltIn?: boolean }) => {
     // Resolve synchronously: check user file first, then pre-cached built-in (ref, always fresh)
     const file = sound.file || builtInUrlsRef.current.get(sound.id) || null;
     if (!file) return;
@@ -236,65 +345,99 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
               <X className="w-4 h-4" />
             </button>
           </div>
-          {/* Search */}
-          <div className="px-5 py-3 border-b border-white/[0.06]">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
-              <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search sounds..."
-                className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-primary/50" />
-            </div>
+          {/* Tabs */}
+          <div className="flex gap-1 px-5 py-2 border-b border-white/[0.06]">
+            <button
+              onClick={() => setActiveTab('library')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'library'
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-white/50 hover:text-white/70 hover:bg-white/[0.04]'
+              }`}
+            >
+              Your Library
+            </button>
+            <button
+              onClick={() => setActiveTab('myinstants')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'myinstants'
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-white/50 hover:text-white/70 hover:bg-white/[0.04]'
+              }`}
+            >
+              MyInstants
+            </button>
           </div>
-          {/* Categories */}
-          <div className="px-5 py-2.5 border-b border-white/[0.06] flex gap-1.5 overflow-x-auto">
-            {SOUND_LIBRARY_CATEGORIES.map((cat) => (
-              <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
-                  activeCategory === cat.id
-                    ? 'bg-primary/20 text-primary'
-                    : 'bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/70'
-                }`}>
-                {cat.label}
-              </button>
-            ))}
-          </div>
-          {/* Sound list */}
-          <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
-            {filtered.length === 0 && (
-              <div className="text-center py-10">
-                <Music className="w-10 h-10 text-white/15 mx-auto mb-3" />
-                <p className="text-sm text-white/40 mb-1">
-                  {soundsWithFiles.length === 0
-                    ? 'No sounds in your library yet'
-                    : 'No sounds match your search'}
-                </p>
-                <p className="text-xs text-white/25">
-                  {soundsWithFiles.length === 0
-                    ? 'Built-in sounds are loading — try again in a moment'
-                    : 'Try a different search term'}
-                </p>
-              </div>
-            )}
-            {filtered.map((sound) => (
-              <div key={sound.id}
-                className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.05] transition-all group">
-                <button onClick={() => previewSound(sound)}
-                  className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-primary/20 text-white/50 hover:text-primary transition-colors flex-shrink-0">
-                  {playingId === sound.id ? <VolumeX className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                </button>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{sound.name}</p>
-                  <p className="text-[10px] text-white/30">
-                    {sound.isBuiltIn ? sound.category : (sound.fileName || 'Custom sound')}
-                  </p>
+          {/* Library Tab Content */}
+          {activeTab === 'library' && (
+            <>
+              {/* Search */}
+              <div className="px-5 py-3 border-b border-white/[0.06]">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+                  <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search sounds..."
+                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-primary/50" />
                 </div>
-                <button onPointerDown={() => handleSelect(sound)}
-                  className="px-3 py-1.5 rounded-lg bg-primary/20 text-primary text-xs font-medium hover:bg-primary/30 transition-colors flex-shrink-0 cursor-pointer">
-                  Use Sound
-                </button>
               </div>
-            ))}
-          </div>
+              {/* Categories */}
+              <div className="px-5 py-2.5 border-b border-white/[0.06] flex gap-1.5 overflow-x-auto">
+                {SOUND_LIBRARY_CATEGORIES.map((cat) => (
+                  <button key={cat.id} onClick={() => setActiveCategory(cat.id)}
+                    className={`px-3 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                      activeCategory === cat.id
+                        ? 'bg-primary/20 text-primary'
+                        : 'bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/70'
+                    }`}>
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+              {/* Sound list */}
+              <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
+                {filtered.length === 0 && (
+                  <div className="text-center py-10">
+                    <Music className="w-10 h-10 text-white/15 mx-auto mb-3" />
+                    <p className="text-sm text-white/40 mb-1">
+                      {soundsWithFiles.length === 0
+                        ? 'No sounds in your library yet'
+                        : 'No sounds match your search'}
+                    </p>
+                    <p className="text-xs text-white/25">
+                      {soundsWithFiles.length === 0
+                        ? 'Built-in sounds are loading — try again in a moment'
+                        : 'Try a different search term'}
+                    </p>
+                  </div>
+                )}
+                {filtered.map((sound) => (
+                  <div key={sound.id}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.05] transition-all group">
+                    <button onClick={() => previewSound(sound)}
+                      className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-primary/20 text-white/50 hover:text-primary transition-colors flex-shrink-0">
+                      {playingId === sound.id ? <VolumeX className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white truncate">{sound.name}</p>
+                      <p className="text-[10px] text-white/30">
+                        {sound.isBuiltIn ? sound.category : (sound.fileName || 'Custom sound')}
+                      </p>
+                    </div>
+                    <button onPointerDown={() => handleSelect(sound)}
+                      className="px-3 py-1.5 rounded-lg bg-primary/20 text-primary text-xs font-medium hover:bg-primary/30 transition-colors flex-shrink-0 cursor-pointer">
+                      Use Sound
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {/* MyInstants Tab Content */}
+          {activeTab === 'myinstants' && (
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              <MyInstantsBrowse masterVolume={60} />
+            </div>
+          )}
         </motion.div>
       </motion.div>
     </AnimatePresence>
@@ -302,9 +445,12 @@ function SoundLibraryModal({ open, onClose, onSelect }: { open: boolean; onClose
 }
 
 // ── MEDIA TOGGLE SUB-COMPONENT ─────────────────
+// NOTE: no overflow-hidden on the card. Runtime audit showed that clipping
+// the absolutely-positioned DarkListSelect popup made wheel events miss the
+// listbox (target = this card's label) and hit the form scroll container instead.
 function MediaToggle({ icon: Icon, label, color, formKey, form, setForm, children }: any) {
   return (
-    <div className="border border-white/[0.06] rounded-xl p-3 space-y-2 overflow-hidden">
+    <div className="border border-white/[0.06] rounded-xl p-3 space-y-2">
       <label className="flex items-center gap-2 cursor-pointer">
         <input type="checkbox" checked={form[formKey]} onChange={e => setForm({...form, [formKey]: e.target.checked})}
           className="w-4 h-4 rounded border-white/20 bg-white/[0.04] accent-primary" />
@@ -317,60 +463,6 @@ function MediaToggle({ icon: Icon, label, color, formKey, form, setForm, childre
 }
 
 // ── GIFT CARD ──────────────────────────────────
-
-// ── OBS SCENE SELECTOR ──────────────────────
-function OBSSceneSelector({ value, onChange }: { value: string; onChange: (sceneName: string) => void }) {
-  const [scenes, setScenes] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [obsConnected, setObsConnected] = useState(false);
-
-  useEffect(() => {
-    const a = (window as any).electronAPI;
-    if (!a?.obsStatus || !a?.obsGetScenes) return;
-    setLoading(true);
-    Promise.all([
-      a.obsStatus().catch(() => ({ connected: false })),
-      a.obsGetScenes().catch(() => ({ scenes: [] })),
-    ]).then(([status, sceneData]) => {
-      setObsConnected(status?.connected ?? false);
-      setScenes(sceneData?.scenes?.map((s: any) => s.name) ?? []);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  if (loading) {
-    return <div className="text-[10px] text-white/30 py-1">Loading OBS scenes...</div>;
-  }
-
-  if (!obsConnected) {
-    return (
-      <div className="text-[10px] text-yellow-400/70 py-1">
-        OBS not connected. Configure OBS in Settings first.
-      </div>
-    );
-  }
-
-  if (scenes.length === 0) {
-    return (
-      <div className="text-[10px] text-white/30 py-1">
-        No scenes found. Check OBS connection.
-      </div>
-    );
-  }
-
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40"
-    >
-      <option value="">Select a scene...</option>
-      {scenes.map((scene) => (
-        <option key={scene} value={scene}>{scene}</option>
-      ))}
-    </select>
-  );
-}
 
 // ── SPOTIFY TRACK SELECTOR ──────────────────────
 function SpotifyTrackSelector({ value, trackName, onChange }: { value: string; trackName: string; onChange: (uri: string, name: string) => void }) {
@@ -492,6 +584,7 @@ function GiftCard({ gift, selected, onSelect }: { gift: TikTokGift; selected: bo
 
 export function ActionsPage() {
   const { actions, addAction, updateAction, deleteAction, duplicateAction, events, addEvent, updateEvent, deleteEvent } = useAppStore();
+  const importActionsToCurrentProfile = useAppStore((s) => s.importActionsToCurrentProfile);
   const { plan, features } = useLicenseStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [allGifts, setAllGifts] = useState<TikTokGift[]>([]);
@@ -523,7 +616,9 @@ export function ActionsPage() {
 
   // Keystroke builder
   const [keystrokeBuffer, setKeystrokeBuffer] = useState<string[]>([]);
-  const [pendingModifier, setPendingModifier] = useState("");
+  // Stacked pending modifiers (Ctrl+Shift+Alt). Previously a single string,
+  // so the second modifier chip replaced the first (Ctrl+Shift+A was impossible).
+  const [pendingModifiers, setPendingModifiers] = useState<string[]>([]);
 
   // Helper to get current keystroke string (uses latest state via functional update in saveAction)
   const getKeystrokeString = useCallback(() => keystrokeBuffer.join(" "), [keystrokeBuffer]);
@@ -593,20 +688,20 @@ export function ActionsPage() {
     }
     setActionForm(getDefaultActionForm());
     setKeystrokeBuffer([]);
-    setPendingModifier("");
+    setPendingModifiers([]);
     setEditingAction(null);
     setShowActionModal(true);
   }
 
   function openEditAction(action: any) {
     setActionForm({ ...action });
-    setKeystrokeBuffer(action.keystrokeKeys?.split(/\s+/).filter(Boolean) || []);
-    setPendingModifier("");
+    setKeystrokeBuffer(parseKeystrokeKeys(action.keystrokeKeys));
+    setPendingModifiers([]);
     setEditingAction(action);
     setShowActionModal(true);
   }
 
-  function saveAction(e: React.FormEvent) {
+  async function saveAction(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     const hasMedia = actionForm.sound || actionForm.video || actionForm.image || actionForm.keystroke || actionForm.minecraft || actionForm.obs || actionForm.spotify;
     if (!hasMedia) { toast("Select at least one action type: Sound, Video, Image, Keystroke, Minecraft, OBS, or Spotify"); return; }
@@ -616,24 +711,59 @@ export function ActionsPage() {
     const ksStr = keystrokeBuffer.join(" ");
     const payload = { ...actionForm, keystrokeKeys: ksStr };
 
+    // KEY-E2E-SAVED: Log what will be saved
+    console.log("[KEY-E2E-SAVED]", JSON.stringify({
+      actionId: editingAction?.id || '(new)',
+      keystrokeKeys: ksStr,
+      keystrokeBuffer,
+      keystrokeHoldMs: payload.keystrokeHoldMs || 100,
+    }));
+
     if (editingAction) {
-      updateAction(editingAction.id, payload);
-      // Persist media to Dexie (stripped by Zustand partialize)
-      persistActionMedia(editingAction.id, payload);
+      await updateAction(editingAction.id, payload);
+      const mediaResult = await persistActionMedia(editingAction.id, payload);
+      if (!mediaResult.success) {
+        toast(mediaResult.error, 'error');
+        return;
+      }
     } else {
       if (!canCreate) { setShowUpgradeModal(true); return; }
-      addAction(payload as any);
-      // Persist media to Dexie — get the new ID from the latest action
+      await addAction(payload as any);
       const latest = useAppStore.getState().actions.slice(-1)[0];
-      if (latest) persistActionMedia(latest.id, payload);
+      if (latest) {
+        const mediaResult = await persistActionMedia(latest.id, payload);
+        if (!mediaResult.success) {
+          toast(mediaResult.error, 'error');
+          return;
+        }
+      }
     }
     setShowActionModal(false);
   }
 
   // Persist action media files to Dexie IndexedDB
-  async function persistActionMedia(actionId: string, payload: any) {
+  async function persistActionMedia(actionId: string, payload: any): Promise<{ success: boolean; error: string }> {
+    const logMedia = async (operation: string, stage: string): Promise<void> => {
+      const rows = await db.mediaFiles.where('actionId').equals(actionId).toArray();
+      const row = rows.find((candidate) => candidate.type === 'image') ?? rows[0] ?? null;
+      console.log('[IMAGE-MEDIA-LIFECYCLE-DIAG]', JSON.stringify({
+        operation,
+        stage,
+        actionId,
+        currentProfileId: useAppStore.getState().currentProfileId,
+        matchingMediaRow: Boolean(row),
+        rowId: row?.id ?? null,
+        rowType: row?.type ?? null,
+        hasFile: typeof row?.file === 'string' && row.file.length > 0,
+        fileLength: typeof row?.file === 'string' ? row.file.length : 0,
+        mediaRef: row?.mediaRef ?? null,
+        relevantActionIds: useAppStore.getState().actions.map((action) => action.id),
+      }));
+    };
     try {
+      await logMedia('persistActionMedia', 'before-delete');
       await deleteActionMedia(actionId);
+      await logMedia('persistActionMedia', 'after-delete');
       if (payload.sound && payload.soundFile) {
         await saveActionMedia(actionId + "_sound", actionId, "sound", payload.soundFile, payload.soundFileName || "");
       }
@@ -641,9 +771,125 @@ export function ActionsPage() {
         await saveActionMedia(actionId + "_video", actionId, "video", payload.videoFile, payload.videoFileName || "");
       }
       if (payload.image && payload.imageFile) {
+        await logMedia('persistActionMedia', 'before-image-save');
         await saveActionMedia(actionId + "_image", actionId, "image", payload.imageFile, payload.imageFileName || "");
+        await logMedia('persistActionMedia', 'after-image-save');
       }
-    } catch (_) {}
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[IMAGE-MEDIA-LIFECYCLE-DIAG]', JSON.stringify({
+        operation: 'persistActionMedia',
+        stage: 'error',
+        actionId,
+        currentProfileId: useAppStore.getState().currentProfileId,
+        error: message,
+      }));
+      return { success: false, error: `Media save failed: ${message}` };
+    }
+
+    const verifyRows = await db.mediaFiles.where('actionId').equals(actionId).toArray();
+    const expectedTypes = [
+      payload.sound && payload.soundFile ? 'sound' : null,
+      payload.video && payload.videoFile ? 'video' : null,
+      payload.image && payload.imageFile ? 'image' : null,
+    ].filter((type): type is 'sound' | 'video' | 'image' => type !== null);
+    const missingType = expectedTypes.find((type) => {
+      const row = verifyRows.find((candidate) => candidate.type === type);
+      return !row || typeof row.file !== 'string' || row.file.length === 0;
+    });
+    if (missingType) {
+      return { success: false, error: `Media save failed: ${missingType} file was not persisted.` };
+    }
+    return { success: true, error: '' };
+  }
+
+  // ── PORTABLE ACTION PACK EXPORT / IMPORT ─────────────────
+  function exportActionPack(action: any) {
+    void (async () => {
+      try {
+        const pack = await exportActionPackFromActions([action]);
+        const jsonStr = JSON.stringify(pack, null, 2);
+        const blob = new Blob([jsonStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `rosaefinity-action-${(action.name || action.id || "action").replace(/\s+/g, "-")}-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast(`Exported "${action.name}" with ${pack.mediaAssets.length} media asset(s)`, "success");
+      } catch (err) {
+        console.error("[MEDIA-EXPORT-FAIL]", err);
+        toast("Export failed", "error");
+      }
+    })();
+  }
+
+  function importActionPackFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.name.endsWith(".json")) {
+      toast("Please select an Action pack JSON file", "error");
+      return;
+    }
+
+    // CRITICAL: capture the active Stream Profile BEFORE any async work.
+    // Media restore / Dexie I/O can race with cloud pull or profile switches.
+    const targetProfileId = useAppStore.getState().currentProfileId;
+    const targetProfileName =
+      useAppStore.getState().streamProfiles.find((p) => p.id === targetProfileId)?.name ?? null;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const data = JSON.parse(String(ev.target?.result || ""));
+        if (!isActionPack(data)) {
+          toast("Not a valid RosaeFinity Action pack", "error");
+          return;
+        }
+        const store = useAppStore.getState();
+        const existingIds = new Set(store.actions.map((a) => a.id));
+        const result = await importActionPackWithDexie(data, existingIds);
+        // Persist media rows FIRST so Test/hydrate can resolve immediately
+        await persistImportedMediaRows(result.mediaRows);
+        // Dedicated Action Pack path: dual-write into the EXPLICIT target profile
+        // captured at import start. Never creates/switches/replaces Stream Profiles
+        // (unlike Settings profile import).
+        const importResult = await importActionsToCurrentProfile(
+          result.actions as any,
+          targetProfileId,
+        );
+        if (
+          importResult.targetProfileId &&
+          importResult.finalCurrentProfileId !== importResult.targetProfileId
+        ) {
+          console.warn("[ACTION-PACK-IMPORT] currentProfileId drifted during import", importResult);
+        }
+        if (importResult.profileCountAfter !== importResult.profileCountBefore) {
+          console.warn("[ACTION-PACK-IMPORT] profile count changed during import", importResult);
+        }
+        console.log("[ACTION-PACK-IMPORT-FILE]", JSON.stringify({
+          capturedTargetProfileId: targetProfileId,
+          capturedTargetProfileName: targetProfileName,
+          finalCurrentProfileId: importResult.finalCurrentProfileId,
+          importedActionCount: importResult.importedActionCount,
+          profileCountBefore: importResult.profileCountBefore,
+          profileCountAfter: importResult.profileCountAfter,
+        }));
+        // Persist pointer/blob rows under the final action ids
+        for (const imported of result.actions) {
+          await persistActionMedia(String((imported as any).id), imported);
+        }
+        toast(
+          `Imported ${result.actions.length} action(s) — media restored automatically`,
+          "success",
+        );
+      } catch (err) {
+        console.error("[MEDIA-IMPORT-FAIL]", err);
+        toast("Import failed", "error");
+      }
+    };
+    reader.readAsText(file);
   }
 
   // ── EVENT HANDLERS ────────────────────────────
@@ -712,21 +958,31 @@ export function ActionsPage() {
 
   // ── KEYSTROKE BUILDER ─────────────────────────
   function addSpecialKey(key: string) {
+    // Snapshot pending modifiers, then clear them in the same tick as the buffer update
+    // (no setTimeout) so Ctrl+Shift+A cannot race with a second chip click.
+    const mods = pendingModifiers;
     setKeystrokeBuffer(prev => {
       const newBuffer = [...prev];
-      if (pendingModifier) {
-        newBuffer.push(pendingModifier + "+" + key);
-        // We need to clear pendingModifier - do it after state update via setTimeout
-        setTimeout(() => setPendingModifier(""), 0);
+      if (mods.length > 0) {
+        // Canonical order: Ctrl, Shift, Alt, Meta — then main key
+        const order = ["Ctrl", "Shift", "Alt", "Meta"];
+        const stacked = [...mods].sort(
+          (a, b) => order.indexOf(a) - order.indexOf(b)
+        );
+        newBuffer.push(normalizeKeystrokeToken([...stacked, key].join("+")));
       } else {
-        newBuffer.push(key);
+        newBuffer.push(normalizeKeystrokeToken(key));
       }
       return newBuffer;
     });
+    setPendingModifiers([]);
   }
 
   function clickModifier(mod: string) {
-    setPendingModifier(prev => prev === mod ? "" : mod);
+    // Toggle each modifier independently so users can stack Ctrl+Shift+Alt.
+    setPendingModifiers(prev =>
+      prev.includes(mod) ? prev.filter(m => m !== mod) : [...prev, mod]
+    );
   }
 
   function removeKeystrokeKey(index: number) {
@@ -738,19 +994,291 @@ export function ActionsPage() {
   }
 
   function handleKeystrokeInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const value = e.target.value;
-    setActionForm((prev: any) => ({ ...prev, keystrokeKeys: value }));
-    setKeystrokeBuffer(value.split(/\s+/).filter(Boolean));
+    const rawValue = e.target.value;
+
+    // KEY-COMPOSE-1: Log raw inputs
+    console.log("[KEY-COMPOSE-1]", JSON.stringify({
+      pendingModifiers,
+      manualInput: rawValue,
+    }));
+
+    // Compose: combine pendingModifiers with manual input
+    const composed = composeKeystroke(pendingModifiers, rawValue);
+
+    // KEY-COMPOSE-2: Log normalized values
+    const parts = composed.split("+").filter(Boolean);
+    const mainKey = parts.length > 0 ? parts[parts.length - 1] : "";
+    const mods = parts.slice(0, -1);
+    console.log("[KEY-COMPOSE-2]", JSON.stringify({
+      normalizedMainKey: mainKey,
+      normalizedModifiers: mods,
+    }));
+
+    // KEY-COMPOSE-3: Log final combination
+    const newBuffer = parseKeystrokeKeys(composed);
+    console.log("[KEY-COMPOSE-3]", JSON.stringify({
+      finalCombination: composed,
+      keystrokeBuffer: newBuffer,
+    }));
+
+    // Update form and buffer
+    setActionForm((prev: any) => ({ ...prev, keystrokeKeys: composed }));
+    setKeystrokeBuffer(newBuffer);
+
+    // Clear pending modifiers after composition (they're now part of the combination)
+    if (pendingModifiers.length > 0 && composed) {
+      setPendingModifiers([]);
+    }
   }
 
   // ── TEST ACTION ──────────────────────────────────────────
   function testAction(action: any) {
+    // Find the event(s) that trigger this action
+    const store = useAppStore.getState();
+    const allEvents = store.events;
+    const allActions = store.actions;
+
+    // RF-KEY-TRACE: correlation id for one Test Action click → one keyboard execution
+    const rfKeyId = `RF-KEY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.log("[RF-KEY-TRACE]", JSON.stringify({
+      stage: "renderer-testAction-click",
+      id: rfKeyId,
+      actionId: action.id,
+      keystrokeKeys: action.keystrokeKeys,
+      keystroke: action.keystroke,
+    }));
+
+    // KEY-E2E-TEST: Log what the test button will execute
+    console.log("[KEY-E2E-TEST]", JSON.stringify({
+      actionId: action.id,
+      actionKeystrokeKeys: action.keystrokeKeys,
+      rfKeyId,
+      testPayload: {
+        keystrokeKeys: action.keystrokeKeys,
+        keystrokeHoldMs: action.keystrokeHoldMs || 100,
+        keystroke: action.keystroke,
+      },
+    }));
+
+    console.log('[TEST-ACTION-START]', JSON.stringify({
+      actionId: action.id,
+      actionName: action.name,
+      actionEnabled: action.enabled,
+      actionType: action.sound ? 'sound' : action.video ? 'video' : action.image ? 'image' : action.keystroke ? 'keystroke' : action.minecraft ? 'minecraft' : 'other',
+      keystrokeKeys: action.keystrokeKeys,
+      keystrokeHoldMs: action.keystrokeHoldMs,
+      overlayScreen: action.overlayScreen,
+      displayDuration: action.displayDuration,
+      duration: action.duration,
+    }));
+
+    console.log('[TEST-ACTION-ALL-EVENTS]', JSON.stringify({
+      totalEvents: allEvents.length,
+      enabledEvents: allEvents.filter(e => e.enabled).length,
+      events: allEvents.map(e => ({
+        id: e.id,
+        enabled: e.enabled,
+        triggerType: e.triggerType,
+        actionName: e.actionName,
+        actionNames: e.actionNames,
+        whoTrigger: e.whoTrigger,
+        giftName: e.giftName,
+        minCoins: e.minCoins,
+        minLikes: e.minLikes,
+        keyword: e.keyword,
+      })),
+    }));
+
+    console.log('[TEST-ACTION-ALL-ACTIONS]', JSON.stringify({
+      totalActions: allActions.length,
+      enabledActions: allActions.filter(a => a.enabled).length,
+      actions: allActions.map(a => ({
+        id: a.id,
+        name: a.name,
+        enabled: a.enabled,
+      })),
+    }));
+
+    const linkedEvents = allEvents.filter(
+      (e) => e.enabled && (e.actionName === action.name || (e.actionNames || []).includes(action.name))
+    );
+
+    console.log('[TEST-ACTION-EVENT]', JSON.stringify({
+      linkedEventCount: linkedEvents.length,
+      linkedEvents: linkedEvents.map(e => ({
+        id: e.id,
+        actionName: e.actionName,
+        actionNames: e.actionNames,
+        triggerType: e.triggerType,
+        whoTrigger: e.whoTrigger,
+        specificUser: e.specificUser,
+        giftName: e.giftName,
+        minCoins: e.minCoins,
+        minLikes: e.minLikes,
+        keyword: e.keyword,
+      })),
+    }));
+
+    // If no linked event, fall back to a generic test but with proper structure
+    if (linkedEvents.length === 0) {
+      console.warn('[TEST-ACTION] No linked event found for action:', action.name, '- using generic gift test');
+      testActionWithGenericEvent(action, rfKeyId);
+      return;
+    }
+
+    // Use the first linked event's trigger type to generate appropriate test event
+    const triggerType = linkedEvents[0].triggerType;
+    const eventConfig = linkedEvents[0];
+
+    console.log('[TEST-ACTION-TRIGGER]', JSON.stringify({
+      selectedTriggerType: triggerType,
+      eventConfig: {
+        id: eventConfig.id,
+        triggerType: eventConfig.triggerType,
+        actionName: eventConfig.actionName,
+        actionNames: eventConfig.actionNames,
+        giftName: eventConfig.giftName,
+        minCoins: eventConfig.minCoins,
+        minLikes: eventConfig.minLikes,
+        keyword: eventConfig.keyword,
+      },
+    }));
+
     const catalog = getGiftsSync();
-    // Pick a real gift from the catalog - prefer one with an image URL
     const giftsWithImages = catalog?.filter(g => getGiftImageUrl(g)) || [];
-    const entry = giftsWithImages.length > 0
-      ? giftsWithImages[0]  // First gift with a valid image
-      : catalog?.[0];       // Fallback to first gift
+    const giftEntry = giftsWithImages.length > 0 ? giftsWithImages[0] : catalog?.[0];
+
+    console.log('[TEST-ACTION-GIFT-CATALOG]', JSON.stringify({
+      catalogLength: catalog?.length || 0,
+      giftEntry: giftEntry ? {
+        name: giftEntry.name,
+        giftId: giftEntry.giftId,
+        coins: giftEntry.coins,
+        imageUrl: getGiftImageUrl(giftEntry),
+      } : null,
+    }));
+
+    let testEventData: any = {
+      user: "test_user",
+      nickname: "test_user",
+      screenId: action.overlayScreen || "Screen 1",
+      timestamp: Date.now(),
+    };
+
+    // Generate test event matching the trigger type (matching tiktok-service.cjs normalization)
+    switch (triggerType) {
+      case "follow":
+        testEventData.type = "follow";
+        break;
+      case "gift":
+        testEventData.type = "gift";
+        testEventData.giftName = giftEntry?.name || "Test Gift";
+        testEventData.giftId = giftEntry?.giftId || "test-gift";
+        testEventData.diamondCount = giftEntry?.coins || 1;
+        testEventData.repeatCount = 1;
+        testEventData.giftImageUrl = giftEntry ? getGiftImageUrl(giftEntry) : undefined;
+        break;
+      case "specificgift":
+        testEventData.type = "gift";
+        testEventData.giftName = eventConfig.giftName || (giftEntry?.name || "Test Gift");
+        testEventData.giftId = giftEntry?.giftId || "test-gift";
+        testEventData.diamondCount = giftEntry?.coins || 1;
+        testEventData.repeatCount = 1;
+        testEventData.giftImageUrl = giftEntry ? getGiftImageUrl(giftEntry) : undefined;
+        break;
+      case "giftcoins":
+        testEventData.type = "gift";
+        testEventData.giftName = giftEntry?.name || "Test Gift";
+        testEventData.giftId = giftEntry?.giftId || "test-gift";
+        testEventData.diamondCount = Math.max(eventConfig.minCoins || 1, giftEntry?.coins || 1);
+        testEventData.repeatCount = 1;
+        testEventData.giftImageUrl = giftEntry ? getGiftImageUrl(giftEntry) : undefined;
+        break;
+      case "like":
+        testEventData.type = "like";
+        testEventData.likeCount = Math.max(eventConfig.minLikes || 100, 1);
+        testEventData.totalLikeCount = testEventData.likeCount * 2;
+        break;
+      case "comment":
+        testEventData.type = "comment";
+        testEventData.comment = eventConfig.keyword || "test comment";
+        break;
+      case "command":
+        testEventData.type = "comment";
+        testEventData.comment = "/" + (eventConfig.keyword || "test");
+        break;
+      case "join":
+        testEventData.type = "member"; // Real TikTok event type from tiktok-service.cjs
+        break;
+      case "subscribe":
+        testEventData.type = "subscribe";
+        break;
+      case "share":
+        testEventData.type = "share";
+        break;
+      case "firstactivity":
+        testEventData.type = "follow"; // First activity typically maps to follow
+        break;
+      case "subemote":
+        testEventData.type = "subscribe";
+        break;
+      case "fansclub":
+        testEventData.type = "subscribe";
+        break;
+      case "shop":
+        testEventData.type = "gift"; // Shop purchase treated as gift-like
+        testEventData.giftName = "TikTok Shop Purchase";
+        testEventData.giftId = "shop";
+        testEventData.diamondCount = 100;
+        testEventData.repeatCount = 1;
+        break;
+      default:
+        console.warn('[TestAction] Unknown trigger type:', triggerType, '- falling back to generic');
+        testActionWithGenericEvent(action, rfKeyId);
+        return;
+    }
+
+    console.log('[TEST-ACTION-SYNTHETIC]', JSON.stringify({
+      triggerType,
+      generatedEvent: testEventData,
+    }));
+
+    // Use the same executeAction path as TikTok events, but bypass the queue
+    // so repeated test clicks play immediately instead of waiting for the previous test
+    console.log('[TEST-ACTION-EXECUTE]', JSON.stringify({
+      actionId: action.id,
+      actionName: action.name,
+      eventType: testEventData.type,
+      bypassQueue: true,
+      rfKeyId,
+    }));
+    console.log("[RF-KEY-TRACE]", JSON.stringify({
+      stage: "renderer-dispatch",
+      id: rfKeyId,
+      actionId: action.id,
+      bypassQueue: true,
+    }));
+
+    // Shared Test Action architecture — identical for existing/new/copied/edited.
+    // Pending 5s countdown ONLY when canonical keystroke data is present.
+    runManualTestAction(action, testEventData, rfKeyId, {
+      executeAction,
+      executeDeferredTestKeystroke,
+      showPendingKeystroke,
+      updatePendingKeystroke,
+      hidePendingKeystroke,
+      pendingController: pendingKeystrokeController,
+      setInterval: (fn, ms) => window.setInterval(fn, ms),
+      clearInterval: (id) => window.clearInterval(id),
+    });
+  }
+
+  // Fallback generic test event (gift-based, for backward compatibility)
+  function testActionWithGenericEvent(action: any, rfKeyId?: string) {
+    const rfKey = rfKeyId || `RF-KEY-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const catalog = getGiftsSync();
+    const giftsWithImages = catalog?.filter(g => getGiftImageUrl(g)) || [];
+    const entry = giftsWithImages.length > 0 ? giftsWithImages[0] : catalog?.[0];
 
     if (!entry) {
       console.error('[COIN-JAR-TEST] No catalog entries available');
@@ -759,47 +1287,38 @@ export function ActionsPage() {
     }
 
     const resolvedImageUrl = getGiftImageUrl(entry);
-    const resolvedGiftId = entry?.giftId || 'test-gift';
-
-    console.log('[COIN-JAR-IMAGE-SOURCE] ACTION_TEST_EVENT', JSON.stringify({
-      giftId: resolvedGiftId,
-      giftName: entry.name,
-      diamondCount: entry.coins,
-      repeatCount: 2,
-      giftImageUrl: resolvedImageUrl || '(empty)',
-      imageSource: resolvedImageUrl ? 'catalog' : 'empty',
-    }));
 
     const testEventData = {
-      type: "test",
+      type: "gift",
       user: "test_user",
       nickname: "test_user",
       screenId: action.overlayScreen || "Screen 1",
       giftName: entry.name,
       giftId: entry?.giftId || 'test-gift',
       diamondCount: entry.coins,
-      repeatCount: 2,
+      repeatCount: 1,
       giftImageUrl: resolvedImageUrl || undefined,
       timestamp: Date.now(),
     };
 
-    // Use the same executeAction path as TikTok events, but bypass the queue
-    // so repeated test clicks play immediately instead of waiting for the previous test
-    executeAction(action, testEventData, { bypassQueue: true });
+    console.log('[TestAction] Fallback generic gift test event');
+    console.log("[RF-KEY-TRACE]", JSON.stringify({
+      stage: "renderer-generic-test-dispatch",
+      id: rfKey,
+      actionId: action.id,
+    }));
 
-    // Show test notification (NOT during live TikTok events)
-    const effects: string[] = [];
-    if (action.sound) effects.push("Sound");
-    if (action.video) effects.push("Video");
-    if (action.image) effects.push("Image");
-    if (action.keystroke) effects.push("Keystroke");
-    if (action.minecraft) effects.push("Minecraft");
-
-    showTestNotification({
-      actionName: action.name,
-      screen: action.overlayScreen || "Screen 1",
-      duration: action.displayDuration || action.duration || 5,
-      effects,
+    // SAME architecture as linked-event Test Action — including keystroke pending.
+    // New Actions often have no linked event; they must not bypass pending.
+    runManualTestAction(action, testEventData, rfKey, {
+      executeAction,
+      executeDeferredTestKeystroke,
+      showPendingKeystroke,
+      updatePendingKeystroke,
+      hidePendingKeystroke,
+      pendingController: pendingKeystrokeController,
+      setInterval: (fn, ms) => window.setInterval(fn, ms),
+      clearInterval: (id) => window.clearInterval(id),
     });
   }
 
@@ -830,7 +1349,7 @@ export function ActionsPage() {
       <SoundLibraryModal
         open={showSoundLibrary}
         onClose={() => setShowSoundLibrary(false)}
-        onSelect={(file, name) => setActionForm({ ...actionForm, soundFile: file, soundFileName: name })}
+        onSelect={(file, name) => setActionForm({ ...actionForm, sound: true, soundFile: file, soundFileName: name })}
       />
 
       {/* ── HEADER ─────────────────────────────── */}
@@ -844,6 +1363,10 @@ export function ActionsPage() {
             <span className="text-xs text-white/40">
                 {actions.length} / {isUnlimited ? "∞" : maxActions} actions
               </span>
+            <label className="cursor-pointer inline-flex items-center gap-2 h-9 px-3 rounded-xl bg-white/[0.06] text-sm text-white hover:bg-white/[0.1] transition-colors">
+              <Upload className="w-4 h-4" /> Import Pack
+              <input type="file" accept=".json" onChange={importActionPackFile} style={{ display: "none" }} />
+            </label>
             <Button onClick={openCreateAction} disabled={!canCreate} className="gap-2">
               <Plus className="w-4 h-4" /> Create New Action
             </Button>
@@ -892,6 +1415,7 @@ export function ActionsPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1">
                         <button onClick={() => testAction(action)} className="w-7 h-7 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary-light flex items-center justify-center text-xs transition-all" title="Test"><Play className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => exportActionPack(action)} className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-white/60 hover:text-white flex items-center justify-center text-xs transition-all" title="Export Action pack (with media)"><Download className="w-3.5 h-3.5" /></button>
                         <button onClick={() => openEditAction(action)} className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-white/60 hover:text-white flex items-center justify-center text-xs transition-all" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
                         <button onClick={() => duplicateAction(action.id)} className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-white/60 hover:text-white flex items-center justify-center text-xs transition-all" title="Duplicate"><Copy className="w-3.5 h-3.5" /></button>
                         <button onClick={() => deleteAction(action.id)} className="w-7 h-7 rounded-lg bg-white/[0.04] hover:bg-danger/20 text-white/60 hover:text-danger flex items-center justify-center text-xs transition-all" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -1307,10 +1831,18 @@ export function ActionsPage() {
                           ))}
                         </div>
                         <div className="flex flex-wrap gap-1.5 mb-2">
+                          <span className="w-full text-[10px] text-white/35 mb-0.5">Numpad</span>
+                          {NUMPAD_KEYS.map(k => (
+                            <button type="button" key={k.id} onClick={() => addSpecialKey(k.id)}
+                              title={k.id}
+                              className="px-2 py-1 text-[10px] rounded bg-white/[0.04] border border-white/[0.08] text-white/70 hover:bg-amber/20 hover:text-amber hover:border-amber/30 transition-all">{k.label}</button>
+                          ))}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mb-2">
                           {MODIFIERS.map(m => (
                             <button type="button" key={m} onClick={() => clickModifier(m)}
                               className={`px-2 py-1 text-[10px] rounded border transition-all ${
-                                pendingModifier === m
+                                pendingModifiers.includes(m)
                                   ? "bg-primary/20 border-primary/30 text-primary-light"
                                   : "bg-white/[0.04] border-white/[0.08] text-white/70 hover:bg-primary/20 hover:border-primary/30"
                               }`}>{m}</button>
@@ -1319,16 +1851,16 @@ export function ActionsPage() {
                         <div className="flex flex-wrap gap-1 mb-2">
                           {keystrokeBuffer.map((k, i) => (
                             <span key={i} className="px-2 py-0.5 text-[10px] rounded bg-primary/20 border border-primary/30 text-primary-light flex items-center gap-1">
-                              {k}
+                              {formatKeystrokeTokenForDisplay(k)}
                               <button type="button" onClick={() => removeKeystrokeKey(i)} className="hover:text-danger">×</button>
                             </span>
                           ))}
                         </div>
-                        <input type="text" placeholder="Or type manually (e.g., Ctrl+Shift+K)"
+                        <input type="text" placeholder="Or type manually (e.g., Ctrl+Shift+K or Ctrl+Numpad1)"
                           value={actionForm.keystrokeKeys}
                           onChange={handleKeystrokeInputChange}
                           className="w-full h-9 px-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder:text-white/20 outline-none focus:border-primary/40" />
-                        <p className="text-[10px] text-white/30">Hold: {actionForm.keystrokeHoldMs || 100}ms</p>
+                        <p className="text-[10px] text-white/30">Hold: {actionForm.keystrokeHoldMs || 100}ms · Numpad: Numpad0–9, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide, NumpadDecimal, NumpadEnter</p>
                         <input type="range" min="50" max="5000" step="50" value={actionForm.keystrokeHoldMs || 100}
                           onChange={(e) => setActionForm({...actionForm, keystrokeHoldMs: Number(e.target.value)})}
                           className="w-full h-2 accent-amber" />

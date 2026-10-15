@@ -62,6 +62,12 @@ function sanitize(raw: Record<string, unknown>): GoalGiftsConfig {
     lastCompletedTarget: typeof raw.lastCompletedTarget === 'number' ? raw.lastCompletedTarget : defaultGoalGiftsConfig.lastCompletedTarget,
     reachedBehavior: reachedBehavior as GoalGiftsConfig['reachedBehavior'],
     actionId: (raw.actionId as string) || null,
+    // Session/mode state — must survive sanitize or increase-mode step + like baselines break
+    initialTarget: typeof raw.initialTarget === 'number' && raw.initialTarget > 0
+      ? raw.initialTarget
+      : (typeof raw.target === 'number' && raw.target > 0 ? raw.target : defaultGoalGiftsConfig.initialTarget),
+    sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : null,
+    lastLikeTotal: typeof raw.lastLikeTotal === 'number' ? raw.lastLikeTotal : 0,
     barColor: typeof raw.barColor === 'string' ? raw.barColor : defaultGoalGiftsConfig.barColor,
     gradientColor: typeof raw.gradientColor === 'string' ? raw.gradientColor : defaultGoalGiftsConfig.gradientColor,
     backgroundColor: typeof raw.backgroundColor === 'string' ? raw.backgroundColor : defaultGoalGiftsConfig.backgroundColor,

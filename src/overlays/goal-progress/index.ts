@@ -60,6 +60,12 @@ function sanitizeGoalProgressConfig(raw: Record<string, unknown>): GoalProgressC
   return {
     goalType: 'likes',
     target: typeof raw.target === 'number' ? raw.target : defaultGoalProgressConfig.target,
+    // Increase-mode step base: preserve explicit initialTarget; otherwise
+    // seed from the configured target (never stripped — old configs fall
+    // back to target, which is correct for a fresh goal).
+    initialTarget: typeof raw.initialTarget === 'number' && raw.initialTarget > 0
+      ? raw.initialTarget
+      : (typeof raw.target === 'number' && raw.target > 0 ? raw.target : defaultGoalProgressConfig.initialTarget),
     title: typeof raw.title === 'string' ? raw.title : defaultGoalProgressConfig.title,
     reachedBehavior: reachedBehavior as GoalProgressConfig['reachedBehavior'],
     actionId: (raw.actionId as string) || null,

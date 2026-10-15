@@ -14,6 +14,13 @@ export interface GoalInstanceConfig {
   lastCompletedTarget: number;
   reachedBehavior: GoalReachedBehavior;
   actionId: string | null;
+  /** Original configured target — step size for 'increase' mode
+   *  (newTarget = oldTarget + initialTarget). */
+  initialTarget?: number;
+  /** LIVE-session identity (TikTok roomId) this progress belongs to. */
+  sessionId?: string | null;
+  /** Last observed cumulative like total for session-delta math. */
+  lastLikeTotal?: number;
 
   // Visual
   barColor: string;
@@ -32,6 +39,9 @@ export const defaultGoalInstanceConfig: GoalInstanceConfig = {
   lastCompletedTarget: 0,
   reachedBehavior: 'increase',
   actionId: null,
+  initialTarget: 10000,
+  sessionId: null,
+  lastLikeTotal: 0,
   barColor: '#8b5cf6',
   gradientColor: '#c084fc',
   backgroundColor: 'transparent',

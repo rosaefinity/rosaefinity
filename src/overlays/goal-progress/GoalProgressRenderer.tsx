@@ -4,9 +4,10 @@
 // animated progress, and tier-responsive visual energy.
 // =============================================
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback, memo } from "react";
 import type { GoalProgressConfig } from "./types";
 import type { RendererProps, OverlayEvent } from "../types";
+import { overlayDebugLog } from "../../lib/overlay-debug";
 
 // ─── Injected CSS Keyframes (once, globally) ────────────────
 const STYLE_ID = "goal-progress-overlay-styles";
@@ -215,13 +216,13 @@ function generateFloatingParticles(
 
 // ─── Main Renderer ──────────────────────────────────────────
 
-export function GoalProgressRenderer({
+function GoalProgressRendererImpl({
   config,
   mode,
   events,
   instanceId,
 }: RendererProps<GoalProgressConfig> & { instanceId?: string }): React.JSX.Element {
-  console.log('[PREVIEW-RUNTIME-2]', JSON.stringify({
+  overlayDebugLog('[PREVIEW-RUNTIME-2]', JSON.stringify({
     textColor: config?.textColor,
     barColor: config?.barColor,
     gradientColor: config?.gradientColor,
@@ -251,7 +252,7 @@ export function GoalProgressRenderer({
       // Percentage text
       const pctEl = root.querySelector('[style*="fontWeight: 900"][style*="textAlign: center"]');
 
-      console.log('[PREVIEW-RUNTIME-3]', JSON.stringify({
+      overlayDebugLog('[PREVIEW-RUNTIME-3]', JSON.stringify({
         textColor: textEl ? getComputedStyle(textEl).color : 'NOT_FOUND',
         progressBackground: progressEl ? getComputedStyle(progressEl).background : 'NOT_FOUND',
         progressBackgroundColor: progressEl ? getComputedStyle(progressEl).backgroundColor : 'NOT_FOUND',
@@ -263,10 +264,50 @@ export function GoalProgressRenderer({
       }, null, 2));
     });
   }, [config.barColor, config.gradientColor, config.textColor, config.backgroundColor]);
-  const [current, setCurrent] = useState(0);
-  const [reached, setReached] = useState(false);
+  // Runtime goal-state fields — present on instance-based goal configs
+  // (GoalInstanceConfig) but absent on the legacy goal-progress config type.
+  const runtimeCfg = config as unknown as { current?: number; reached?: boolean };
+  const [current, setCurrent] = useState(() =>
+    typeof runtimeCfg.current === 'number' ? runtimeCfg.current : 0,
+  );
+  const [reached, setReached] = useState(() => runtimeCfg.reached === true);
   const [pulsing, setPulsing] = useState(false);
   const [justReached, setJustReached] = useState(false);
+
+  // [GOAL-RENDERER-FORENSIC] Temporary diagnostics — which state key each
+  // goal renderer displays, and whether the per-instance event filter is active.
+  // [GOAL-INITIAL-RENDER-FORENSIC] — Task 9: value BEFORE any SSE event.
+  useEffect(() => {
+    const cfgCurrent = typeof runtimeCfg.current === 'number' ? runtimeCfg.current : 0;
+    if (overlayDebugEnabled()) {
+      console.log('[GOAL-RENDERER-FORENSIC]', JSON.stringify({
+        phase: 'mount',
+        instanceId: instanceId ?? null,
+        goalType: (config as any)?.goalType ?? null,
+        current: cfgCurrent,
+        target: (config as any)?.target ?? null,
+        sourceStateKey: 'instanceConfig.current (config prop)',
+        filterActive: Boolean(instanceId),
+      }));
+      console.log('[GOAL-INITIAL-RENDER-FORENSIC]', JSON.stringify({
+        instanceId: instanceId ?? null,
+        moduleId: (config as any)?.goalType ?? null,
+        configCurrent: cfgCurrent,
+        configTarget: (config as any)?.target ?? null,
+        displayCurrent: mode === 'preview' ? Math.floor(((config as any)?.target ?? 0) * 0.35) : cfgCurrent,
+        source: 'config-prop-at-mount (upstream of any SSE)',
+      }));
+    }
+  }, [instanceId, config, mode]);
+
+  // Hydrate from persisted instance config — renderer reload / SSE reconnect
+  // must NOT visually reset goal progress (state lives in instance config).
+  useEffect(() => {
+    if (typeof runtimeCfg.current === 'number' && runtimeCfg.current > 0) {
+      setCurrent(runtimeCfg.current);
+    }
+    if (runtimeCfg.reached) setReached(true);
+  }, [runtimeCfg.current, runtimeCfg.reached]);
 
   // Preview: show 35% unless a Test event set a non-zero value
   const previewCurrent = Math.floor(config.target * 0.35);
@@ -288,15 +329,46 @@ export function GoalProgressRenderer({
     if (!events) return;
     const unsub = events.subscribe((event: OverlayEvent) => {
       if (event.type === "goal-progress") {
-        // Instance-based filtering: if instanceId is set, only accept matching goalId
-        if (instanceId && (event as any).goalId && (event as any).goalId !== instanceId) return;
-        // [OVERLAY-EVENT-FLOW] GoalProgressRenderer received event
-        console.log('[OVERLAY-EVENT-FLOW] GoalProgressRenderer:', JSON.stringify({
-          instanceId: instanceId ?? 'NONE',
-          eventGoalId: (event as any).goalId ?? 'NONE',
-          current: event.current,
-          reached: (event as any).reached,
-        }));
+        // Per-instance isolation: accept only events whose goalId matches THIS
+        // renderer's overlay instance (or the legacy goal-store association
+        // stored in config.goalId). Other Goal instances' events are ignored —
+        // multiple Goal browser sources coexist in the same LIVE.
+        const eventGoalId = (event as any).goalId ?? null;
+        const legacyGoalId = (config as any)?.goalId ?? null;
+        let filterDecision: string;
+        if (!instanceId) {
+          filterDecision = 'ACCEPTED-NO-INSTANCEID-FILTER-INACTIVE';
+        } else if (eventGoalId === instanceId) {
+          filterDecision = 'ACCEPT';
+        } else if (legacyGoalId && eventGoalId === legacyGoalId) {
+          filterDecision = 'ACCEPT-LEGACY-GOALID-ASSOC';
+        } else if (eventGoalId) {
+          filterDecision = 'IGNORE-INSTANCE-MISMATCH';
+        } else {
+          // Event without goalId cannot be attributed — apply only when we
+          // have no instance identity to enforce (legacy behavior).
+          filterDecision = instanceId ? 'IGNORE-NO-GOALID' : 'ACCEPTED-NO-INSTANCEID-FILTER-INACTIVE';
+        }
+        // [GOAL-INSTANCE-FORENSIC] / [GOAL-RENDERER-FORENSIC] diagnostics
+        if (overlayDebugEnabled()) {
+          console.log('[GOAL-INSTANCE-FORENSIC]', JSON.stringify({
+            instanceId: instanceId ?? null,
+            moduleId: (config as any)?.goalType ?? null,
+            eventGoalId,
+            current: event.current,
+            filterDecision,
+          }));
+          console.log('[GOAL-RENDERER-FORENSIC]', JSON.stringify({
+            phase: 'sse-goal-progress',
+            instanceId: instanceId ?? null,
+            goalType: (config as any)?.goalType ?? null,
+            eventGoalId,
+            eventCurrent: event.current,
+            filterDecision,
+            previousCurrent: current,
+          }));
+        }
+        if (filterDecision.startsWith('IGNORE')) return;
         setCurrent(event.current);
         if ((event as any).reached) setReached(true);
       }
@@ -723,3 +795,6 @@ export function GoalProgressRenderer({
     </div>
   );
 }
+
+export const GoalProgressRenderer = memo(GoalProgressRendererImpl);
+export default GoalProgressRenderer;

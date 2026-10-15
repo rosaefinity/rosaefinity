@@ -26,15 +26,20 @@ export function UpdateNotification(): React.JSX.Element | null {
 
   // Reset dismissed when new update available
   useEffect(() => {
-    if (status === 'available') {
+    if (status === 'available' || status === 'error') {
       setDismissed(false);
     }
   }, [status]);
 
   if (dismissed) return null;
 
-  // Don't show if idle, checking, not-available, or error
-  if (status !== 'available' && status !== 'downloading' && status !== 'downloaded') {
+  // Don't show if idle, checking, or not-available
+  if (
+    status !== 'available' &&
+    status !== 'downloading' &&
+    status !== 'downloaded' &&
+    !(status === 'error' && error)
+  ) {
     return null;
   }
 

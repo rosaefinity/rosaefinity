@@ -1,9 +1,13 @@
 {
   "name": "rosaefinity",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.3",
   "type": "module",
   "main": "electron/main.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rosaefinity/rosaefinity.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -11,7 +15,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite --port 5173 --strictPort --host 127.0.0.1\" \"wait-on http://localhost:5173 --timeout 30000 && cross-env NODE_ENV=development ELECTRON_DEV_PORT=5173 electron .\"",
+    "electron:dev": "concurrently \"vite --force --port 5173 --strictPort --host 127.0.0.1\" \"wait-on http://localhost:5173 --timeout 30000 && cross-env NODE_ENV=development ELECTRON_DEV_PORT=5173 electron .\"",
     "electron:build": "npm run build && electron-builder",
     "electron:preview": "npm run build && electron .",
     "postinstall": "node patches/apply-tiktok-connector-fix.cjs"
@@ -39,6 +43,7 @@
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.9",
     "framer-motion": "^12.42.0",
+    "koffi": "^3.3.2",
     "lucide-react": "^1.21.0",
     "puppeteer-core": "^25.9.0",
     "react": "^19.2.7",
@@ -83,6 +88,11 @@
       "dist/**/*",
       "electron/**/*",
       "build/RosaeFinity.ico"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@nut-tree-fork/**/*",
+      "**/node_modules/**/libnut*/**/*",
+      "**/node_modules/koffi/**/*"
     ],
     "extraResources": [
       {

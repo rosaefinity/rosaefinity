@@ -11,9 +11,36 @@ let connected = false;
 let reconnectTimer = null;
 let requestId = 1;
 
+// Status listeners — single authoritative flag is `connected`, mirrored to renderer
+const statusListeners = new Set();
+
+function onStatusChange(cb) {
+  if (typeof cb !== "function") return () => {};
+  statusListeners.add(cb);
+  return () => statusListeners.delete(cb);
+}
+
+function emitStatusChange() {
+  const payload = { connected };
+  for (const cb of statusListeners) {
+    try { cb(payload); } catch (_) { /* listener errors must not break controller */ }
+  }
+}
+
+function setConnected(next) {
+  const value = !!next;
+  if (connected === value) return;
+  connected = value;
+  emitStatusChange();
+}
+
+// Default local OBS endpoint. Users may override IP/port in Settings.
+const OBS_LOCAL_HOST = "127.0.0.1";
+const OBS_LOCAL_PORT = 4455;
+
 const OBS_CONFIG = {
-  ip: "127.0.0.1",
-  port: 4567,
+  ip: OBS_LOCAL_HOST,
+  port: OBS_LOCAL_PORT,
   password: "",
 };
 
@@ -39,10 +66,21 @@ function computeObsAuth(password, challenge, salt) {
 }
 
 // ══ Connection ═════════════════════════════
+// Accepts configured IP/port from Settings (defaults 127.0.0.1:4455).
+// Password updates only when the key is present as a string (never wiped
+// by a config payload that omits it).
 function setConfig(config) {
-  OBS_CONFIG.ip = config.obsIp || OBS_CONFIG.ip;
-  OBS_CONFIG.port = config.obsPort || OBS_CONFIG.port;
-  OBS_CONFIG.password = config.obsPassword || OBS_CONFIG.password;
+  if (!config) return;
+  if (typeof config.obsIp === "string" && config.obsIp.trim()) {
+    OBS_CONFIG.ip = config.obsIp.trim();
+  }
+  const port = Number(config.obsPort);
+  if (Number.isFinite(port) && port >= 1 && port <= 65535) {
+    OBS_CONFIG.port = port;
+  }
+  if (typeof config.obsPassword === "string") {
+    OBS_CONFIG.password = config.obsPassword;
+  }
 }
 
 async function connect() {
@@ -50,7 +88,7 @@ async function connect() {
     if (connection) disconnect();
 
     const url = `ws://${OBS_CONFIG.ip}:${OBS_CONFIG.port}`;
-    console.log(`[OBS] Connecting to ${url}...`);
+    if (OBS_DEBUG) console.log(`[OBS] Connecting to ${url}...`);
 
     try {
       connection = new WebSocket(url);
@@ -102,15 +140,15 @@ async function connect() {
           }
 
           if (msg.op === 2) {
-            // Identified successfully
-            connected = true;
+            // Identified successfully — this is the authoritative connected state
+            setConnected(true);
             console.log("[OBS] ✅ Connected & identified");
             resolve({ success: true });
           }
 
           if (msg.op === 7) {
-            // Request response
-            console.log("[OBS] Request response:", JSON.stringify(msg.d).slice(0, 200));
+            // Request response - high frequency, gate behind debug
+            if (OBS_DEBUG) console.log("[OBS] Request response:", JSON.stringify(msg.d).slice(0, 200));
           }
         } catch (e) {
           console.error("[OBS] Message parse error:", e.message);
@@ -122,7 +160,7 @@ async function connect() {
       });
 
       connection.on("close", () => {
-        connected = false;
+        setConnected(false);
         console.log("[OBS] Connection closed");
         scheduleReconnect();
       });
@@ -151,7 +189,7 @@ function disconnect() {
     try { connection.close(); } catch (_) {}
     connection = null;
   }
-  connected = false;
+  setConnected(false);
 }
 
 function cleanup() {
@@ -159,7 +197,7 @@ function cleanup() {
     try { connection.close(); } catch (_) {}
     connection = null;
   }
-  connected = false;
+  setConnected(false);
 }
 
 function scheduleReconnect() {
@@ -190,6 +228,17 @@ function sendRequest(requestType, requestData = {}) {
         const resp = JSON.parse(raw.toString());
         if (resp.op === 7 && resp.d && resp.d.requestId === String(reqId)) {
           connection.removeListener("message", handler);
+          const status = resp.d.requestStatus;
+          // OBS v5: requestStatus.result===false means the request failed
+          // even though the WebSocket frame itself arrived.
+          if (status && status.result === false) {
+            resolve({
+              success: false,
+              error: status.comment || `OBS request failed (code ${status.code})`,
+              code: status.code,
+            });
+            return;
+          }
           resolve({ success: true, data: resp.d.responseData || resp.d });
         }
       } catch (_) {}
@@ -207,12 +256,86 @@ function sendRequest(requestType, requestData = {}) {
 }
 
 // ══ Scene Management ═══════════════════════
+// Normalize OBS GetSceneList payloads to a stable IPC shape.
+// OBS WebSocket v5 responseData.scenes[] uses `sceneName` (not `name`).
+// sendRequest may wrap as { data: responseData } or fall back to the raw
+// op-7 envelope — both must parse.
+function extractSceneNames(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  const candidates = [];
+  if (Array.isArray(payload.scenes)) candidates.push(payload.scenes);
+  if (payload.data && Array.isArray(payload.data.scenes)) candidates.push(payload.data.scenes);
+  if (payload.responseData && Array.isArray(payload.responseData.scenes)) {
+    candidates.push(payload.responseData.scenes);
+  }
+  for (const list of candidates) {
+    const names = list
+      .map((s) => {
+        if (typeof s === "string") return s;
+        if (!s || typeof s !== "object") return null;
+        return s.sceneName ?? s.name ?? null;
+      })
+      .filter((n) => typeof n === "string" && n.length > 0);
+    if (names.length > 0) return names;
+  }
+  // Legitimate empty list only when we saw a scenes array and it was empty
+  if (Array.isArray(payload.scenes) || (payload.data && Array.isArray(payload.data.scenes))) {
+    return [];
+  }
+  return [];
+}
+
+const OBS_DEBUG = process.env.RF_OBS_DEBUG === "1" || process.env.RF_OBS_DEBUG === "true";
+
 async function switchScene(sceneName) {
   return sendRequest("SetCurrentProgramScene", { sceneName });
 }
 
 async function getSceneList() {
-  return sendRequest("GetSceneList");
+  const result = await sendRequest("GetSceneList");
+  if (!result.success) {
+    if (OBS_DEBUG) {
+      console.log("[OBS-SCENES]", JSON.stringify({ success: false, error: result.error }));
+    }
+    return {
+      success: false,
+      error: result.error || "Failed to load OBS scenes",
+      scenes: [],
+    };
+  }
+
+  const payload = result.data || {};
+  // If sendRequest fell back to the op-7 envelope, responseData holds the scenes
+  const effective = payload.responseData && payload.scenes === undefined && payload.data === undefined
+    ? payload
+    : payload;
+
+  const status = payload.requestStatus || payload.responseData?.requestStatus;
+  if (status && status.result === false) {
+    const error = status.comment || `OBS GetSceneList failed (code ${status.code})`;
+    if (OBS_DEBUG) {
+      console.log("[OBS-SCENES]", JSON.stringify({ success: false, error, code: status.code }));
+    }
+    return { success: false, error, scenes: [] };
+  }
+
+  const scenes = extractSceneNames(effective);
+  const currentScene =
+    effective.currentProgramSceneName ??
+    effective.responseData?.currentProgramSceneName ??
+    null;
+
+  if (OBS_DEBUG) {
+    console.log("[OBS-SCENES]", JSON.stringify({
+      success: true,
+      sceneCount: scenes.length,
+      scenes: scenes.slice(0, 20),
+      currentScene,
+    }));
+  }
+
+  // Stable shape for renderer: scenes is always string[]
+  return { success: true, scenes, currentScene };
 }
 
 async function getCurrentScene() {
@@ -267,44 +390,15 @@ function getConfig() {
 }
 
 // ══ Test Connection ════════════════════════
+// "Test Connection" must leave OBS actually connected.
+// Uses the configured IP/port (defaults 127.0.0.1:4455).
 async function testConnection(ip, port, password) {
-  return new Promise((resolve) => {
-    const url = `ws://${ip || OBS_CONFIG.ip}:${port || OBS_CONFIG.port}`;
-    let resolved = false;
-    let ws;
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        if (ws) try { ws.close(); } catch (_) {}
-        resolve({ success: false, error: "Connection timed out" });
-      }
-    }, 4000);
-
-    try {
-      ws = new WebSocket(url);
-      ws.on("open", () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          resolve({ success: true, error: null });
-          if (ws) try { ws.close(); } catch (_) {}
-        }
-      });
-      ws.on("error", (err) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          resolve({ success: false, error: err.message });
-        }
-      });
-    } catch (e) {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timeout);
-        resolve({ success: false, error: e.message });
-      }
-    }
+  setConfig({
+    obsIp: ip,
+    obsPort: port,
+    obsPassword: typeof password === "string" ? password : OBS_CONFIG.password,
   });
+  return connect();
 }
 
 module.exports = {
@@ -321,4 +415,5 @@ module.exports = {
   isConnected,
   getConfig,
   testConnection,
+  onStatusChange,
 };

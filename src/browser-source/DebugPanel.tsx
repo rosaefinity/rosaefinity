@@ -6,7 +6,7 @@
 // Zero overhead in production.
 // ─────────────────────────────────────────────────────
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useBrowserSourceContext } from './BrowserSourceContext';
 
 // ─── Styles ───
@@ -75,7 +75,19 @@ const headerStyle: React.CSSProperties = {
 export function DebugPanel(): React.ReactElement {
   const ctx = useBrowserSourceContext();
 
-  const fpsColor = ctx.fps >= 55 ? '#22c55e' : ctx.fps >= 30 ? '#fbbf24' : '#ef4444';
+  // Poll FPS ref so production path never re-renders the tree every second
+  const [liveFps, setLiveFps] = useState(ctx.fps);
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (ctx.fpsRef) {
+        setLiveFps(ctx.fpsRef.current);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [ctx.fpsRef]);
+
+  const fps = ctx.fpsRef ? liveFps : ctx.fps;
+  const fpsColor = fps >= 55 ? '#22c55e' : fps >= 30 ? '#fbbf24' : '#ef4444';
   const latencyColor = ctx.eventLatency < 10 ? '#22c55e' : ctx.eventLatency < 50 ? '#fbbf24' : '#ef4444';
 
   return (
@@ -116,7 +128,7 @@ export function DebugPanel(): React.ReactElement {
       {/* Performance */}
       <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
         <span style={labelStyle}>FPS</span>
-        <span style={{ ...valueStyle, color: fpsColor }}>{ctx.fps}</span>
+        <span style={{ ...valueStyle, color: fpsColor }}>{fps}</span>
       </div>
       <div>
         <span style={labelStyle}>Render</span>

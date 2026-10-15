@@ -51,7 +51,7 @@ export const useUpdateStore = create<UpdateStore>()(
     (set, get) => ({
       // â”€â”€ Initial state â”€â”€
       status: 'idle',
-      currentVersion: '1.0.1',
+      currentVersion: '',
       latestVersion: null,
       channel: 'stable',
       progress: null,
@@ -68,11 +68,18 @@ export const useUpdateStore = create<UpdateStore>()(
       initialize: async () => {
         if (get().isInitialized) return;
         if (!isElectron()) {
-          set({ isInitialized: true, currentVersion: '1.0.1' });
+          set({ isInitialized: true });
           return;
         }
 
         const a = api();
+        if (a?.getAppVersion) {
+          try {
+            set({ currentVersion: await a.getAppVersion() });
+          } catch (_) {
+            // Update info remains authoritative when the version IPC is unavailable.
+          }
+        }
         if (!a) {
           set({ isInitialized: true });
           return;
@@ -99,7 +106,11 @@ export const useUpdateStore = create<UpdateStore>()(
 
           // Subscribe to update events
           a.onUpdateStatus((status) => {
-            set({ status: status as UpdateStatus });
+            const s = status as UpdateStatus;
+            set((state) => ({
+              status: s,
+              error: s === 'error' ? state.error : null,
+            }));
           });
 
           a.onUpdateProgress((progress) => {
@@ -111,7 +122,7 @@ export const useUpdateStore = create<UpdateStore>()(
           });
 
           a.onUpdateNotAvailable((data) => {
-            set({ latestVersion: data.version });
+            set({ latestVersion: data.version, error: null, progress: null });
           });
 
           a.onUpdateDownloaded((info) => {
@@ -189,7 +200,6 @@ export const useUpdateStore = create<UpdateStore>()(
         if (!a) return;
         try {
           await a.updateCancel();
-          set({ status: 'idle', progress: null });
         } catch (err: any) {
           set({ error: err.message });
         }
@@ -254,7 +264,7 @@ export const useUpdateStore = create<UpdateStore>()(
       },
 
       // â”€â”€ Clear error â”€â”€
-      clearError: () => set({ error: null }),
+      clearError: () => set({ status: 'idle', error: null }),
     }),
     {
       name: 'rf-update-store',

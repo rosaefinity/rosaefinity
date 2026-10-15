@@ -36,6 +36,8 @@ export interface BrowserSourceRuntimeContext {
   renderTime: number;
   eventLatency: number;
   performanceMode: boolean;
+  /** Live FPS ref for DebugPanel (production path never re-renders on FPS). */
+  fpsRef?: { current: number };
 
   // ── Runtime ──
   runtimeVersion: string;

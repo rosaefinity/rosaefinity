@@ -1,44 +1,44 @@
 // ─────────────────────────────────────────────────────
 // RosaeFinity Browser Source — FPS Monitor Hook
 // v3.1 Architecture Spec (Frozen)
+//
+// Production: FPS is stored in a ref — zero React re-renders.
+// Debug (?debug=true): performanceMode may flip rarely; FPS
+// display is polled by DebugPanel from the ref.
 // ─────────────────────────────────────────────────────
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const LOW_FPS_THRESHOLD = 30;
 const MEASUREMENT_INTERVAL_MS = 1000;
 
+export interface UseFPSMonitorReturn {
+  /** Latest FPS value; does not trigger re-renders. */
+  fpsRef: { current: number };
+  /** True only when sustained low FPS is detected (rare state change). */
+  performanceMode: boolean;
+}
+
 /**
- * FPS monitor hook for browser source overlays.
- * Tracks frames per second and triggers performance mode when FPS drops.
+ * Tracks FPS without re-rendering the overlay tree every second.
  *
- * @param enabled - Whether to track FPS (disable in production for zero overhead)
- * @param onLowPerformance - Callback when FPS drops below threshold
+ * @param enabled - enable only for debug/diagnostics
  */
-export function useFPSMonitor(
-  enabled: boolean = true,
-  onLowPerformance?: () => void,
-): { fps: number; performanceMode: boolean } {
-  const [fps, setFps] = useState(0);
+export function useFPSMonitor(enabled: boolean): UseFPSMonitorReturn {
   const [performanceMode, setPerformanceMode] = useState(false);
+  const fpsRef = useRef(0);
+  const performanceModeRef = useRef(false);
 
   const frameCountRef = useRef(0);
-  const lastTimeRef = useRef(performance.now());
-  const rafRef = useRef<number>(0);
+  const lastTimeRef = useRef(0);
+  const rafRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const onLowPerformanceRef = useRef(onLowPerformance);
   const lowFpsCountRef = useRef(0);
-
-  onLowPerformanceRef.current = onLowPerformance;
-
-  const tick = useCallback(() => {
-    frameCountRef.current += 1;
-    rafRef.current = requestAnimationFrame(tick);
-  }, []);
 
   useEffect(() => {
     if (!enabled) {
-      setFps(0);
+      fpsRef.current = 0;
+      performanceModeRef.current = false;
       setPerformanceMode(false);
       return;
     }
@@ -47,32 +47,38 @@ export function useFPSMonitor(
     frameCountRef.current = 0;
     lowFpsCountRef.current = 0;
 
-    // Start frame counting
+    const tick = (): void => {
+      frameCountRef.current += 1;
+      rafRef.current = requestAnimationFrame(tick);
+    };
     rafRef.current = requestAnimationFrame(tick);
 
-    // Measure FPS every second
     intervalRef.current = setInterval(() => {
       const now = performance.now();
       const elapsed = now - lastTimeRef.current;
       const currentFps = Math.round((frameCountRef.current / elapsed) * 1000);
 
-      setFps(currentFps);
+      // Ref only — does NOT re-render BrowserSourceApp
+      fpsRef.current = currentFps;
       frameCountRef.current = 0;
       lastTimeRef.current = now;
 
-      // Track consecutive low FPS
+      let nextPerfMode = performanceModeRef.current;
       if (currentFps < LOW_FPS_THRESHOLD && currentFps > 0) {
         lowFpsCountRef.current += 1;
-        if (lowFpsCountRef.current >= 3 && !performanceMode) {
-          setPerformanceMode(true);
-          onLowPerformanceRef.current?.();
+        if (lowFpsCountRef.current >= 3) {
+          nextPerfMode = true;
         }
       } else {
         lowFpsCountRef.current = 0;
-        // Recover from performance mode after 5 seconds of good FPS
-        if (performanceMode && currentFps >= LOW_FPS_THRESHOLD) {
-          setPerformanceMode(false);
+        if (currentFps >= LOW_FPS_THRESHOLD) {
+          nextPerfMode = false;
         }
+      }
+
+      if (nextPerfMode !== performanceModeRef.current) {
+        performanceModeRef.current = nextPerfMode;
+        setPerformanceMode(nextPerfMode);
       }
     }, MEASUREMENT_INTERVAL_MS);
 
@@ -83,7 +89,7 @@ export function useFPSMonitor(
         intervalRef.current = null;
       }
     };
-  }, [enabled, tick, performanceMode]);
+  }, [enabled]);
 
-  return { fps, performanceMode };
+  return { fpsRef, performanceMode };
 }

@@ -1,18 +1,25 @@
+// ─────────────────────────────────────────────────────
+// RosaeFinity Browser Source — EventSource
+//
+// DEPRECATED for Browser Source runtime.
+// BrowserSourceApp now uses useSSEConnection exclusively
+// (ONE EventSource per Browser Source identity).
+//
+// This class remains for any non-BrowserSource consumers
+// that need an OverlayEventSource without React.
+// Do NOT create a second SSE connection from BrowserSourceApp.
+// ─────────────────────────────────────────────────────
+
 import type { OverlayEvent, OverlayEventSource } from '../overlays/types';
 import { getSSEBaseUrl } from '../lib/browser-source-url';
 
 const CHANNEL_NAME = 'rosaefinity-overlay';
 
 /**
- * BrowserEventSource - Abstracts event delivery for browser source overlays.
+ * BrowserEventSource — OverlayEventSource adapter.
  *
- * Implements OverlayEventSource interface with multiple transports:
- * 1. BroadcastChannel (same-process, zero latency)
- * 2. EventSource/SSE (cross-process: OBS, TikTok LIVE Studio)
- * 3. localStorage polling (fallback for restricted environments)
- *
- * Transport selection is automatic based on browser capabilities.
- * All transports deliver the same OverlayEvent type to subscribers.
+ * @deprecated Browser Source runtime uses useSSEConnection only.
+ * Prefer a stable subscriber bus fed by that single connection.
  */
 export class BrowserEventSource implements OverlayEventSource {
   private listeners = new Set<(event: OverlayEvent) => void>();
@@ -23,20 +30,12 @@ export class BrowserEventSource implements OverlayEventSource {
   private browserSourceId: string;
   private connected = false;
 
-  constructor(
-    browserSourceId: string,
-    sseUrl?: string
-  ) {
-    // Use dynamic SSE URL based on current hostname
+  constructor(browserSourceId: string, sseUrl?: string) {
     this.sseUrl = sseUrl || getSSEBaseUrl();
     this.browserSourceId = browserSourceId;
     this.connect();
   }
 
-  /**
-   * Subscribe to overlay events.
-   * Returns an unsubscribe function.
-   */
   subscribe(callback: (event: OverlayEvent) => void): () => void {
     this.listeners.add(callback);
     return () => {
@@ -47,9 +46,6 @@ export class BrowserEventSource implements OverlayEventSource {
     };
   }
 
-  /**
-   * Clean up all connections.
-   */
   destroy(): void {
     this.channel?.close();
     this.channel = null;
@@ -69,17 +65,15 @@ export class BrowserEventSource implements OverlayEventSource {
   private connect(): void {
     if (this.connected) return;
 
-    // 1. BroadcastChannel - same process, zero latency
     try {
       this.channel = new BroadcastChannel(CHANNEL_NAME);
       this.channel.onmessage = (e) => {
         this.emit(e.data as OverlayEvent);
       };
     } catch {
-      // BroadcastChannel not supported (e.g., Safari private mode)
+      // BroadcastChannel not supported
     }
 
-    // 2. EventSource/SSE - cross-process (OBS browser source, TikTok LIVE Studio)
     try {
       const url = `${this.sseUrl}/overlay/${this.browserSourceId}/events`;
       this.eventSource = new EventSource(url);
@@ -92,13 +86,12 @@ export class BrowserEventSource implements OverlayEventSource {
         }
       };
       this.eventSource.onerror = () => {
-        // EventSource auto-reconnects silently
+        // Native EventSource auto-reconnects
       };
     } catch {
       // EventSource not available
     }
 
-    // 3. localStorage polling fallback
     this.storageHandler = (e: StorageEvent) => {
       if (e.key === 'rf_overlay_events' && e.newValue) {
         try {

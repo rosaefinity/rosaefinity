@@ -42,10 +42,15 @@ export function getBrowserSourceUrl(browserSourceId: string): string {
  * Generates the overlay widget URL with screen parameter.
  * Used for direct overlay-widget.html access with screen filtering.
  */
-export function getOverlayWidgetUrl(screen?: string | number): string {
+export function getOverlayWidgetUrl(screen?: string | number, maxQueue?: number): string {
   const baseUrl = `${getSSEBaseUrl()}/overlay-widget.html`;
   if (screen !== undefined && screen !== null && screen !== '') {
-    return `${baseUrl}?screen=${screen}`;
+    const params = new URLSearchParams();
+    params.set('screen', String(screen));
+    if (maxQueue !== undefined && maxQueue !== null) {
+      params.set('maxQueue', String(maxQueue));
+    }
+    return `${baseUrl}?${params.toString()}`;
   }
   return baseUrl;
 }

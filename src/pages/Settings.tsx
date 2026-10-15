@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../store/app-store";
+import { useObsConnection } from "../hooks/use-obs-connection";
 import { useAuthStore } from "../store/auth-store";
 import { useLicenseStore } from "../store/license-store";
 import { useTikTokStore, selectScreenStatus, selectScreenUsername, selectScreenViewerCount, selectScreenStats, selectScreenRoomId, selectScreenIsReconnecting, selectScreenReconnectAttempts, selectScreenLastError, selectScreenIsRateLimited, selectScreenServerRetryUntil } from "../store/tiktok-store";
@@ -9,13 +10,18 @@ import { toast } from "../components/Toast";
 import { Button } from "../components/ui/button";
 import { Settings, Save, Download, Upload, CheckCircle2, XCircle, Copy } from "lucide-react";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
+import { SCREEN_IDS, type Action } from "../types";
+import { OBS_LOCAL_HOST, OBS_LOCAL_PORT } from "../lib/obs-local";
 import { TTSChatSettings } from "../components/tts/TTSChatSettings";
-import { db, reopenDatabase, importGoals, importOverlays } from "../lib/db";
+import { db, reopenDatabase, importGoals, importOverlays, importMediaLibrary } from "../lib/db";
+import { collectProfileMediaAssetsFromDexie, persistImportedMediaRows, importActionPackWithDexie } from "../lib/action-pack-io";
+import { isActionPack } from "../lib/action-media-pack";
 import { useGoalStore } from "../store/goal-store";
 import { useThemeStore } from "../theme/ThemeStore";
 import { useCoinJarStore } from "../store/coin-jar-store";
 import { useOverlayStore as useOverlayInstanceStore } from "../lib/overlay-store";
 import { useOverlayStore as useActiveOverlayStore } from "../state/overlayStore";
+import { exportProfilePackage, importProfilePackage, isProfilePackage } from "../lib/profile-portability";
 
 type Section = "tiktok" | "points" | "levels" | "obs" | "streamerbot" | "minecraft" | "spotify" | "songrequest" | "overlayscreens" | "reset" | "account" | "importexport" | "advanced" | "license" | "tts";
 
@@ -58,6 +64,8 @@ export function SettingsPage() {
 
   // TikTok store for connection management
   const tikTokStatus = useTikTokStore(selectScreenStatus("screen-0"));
+  // Authoritative OBS connection state (shared with Create Action via Zustand)
+  const { obsConnected } = useObsConnection();
   const tikTokUsername = useTikTokStore(selectScreenUsername("screen-0"));
   const tikTokViewerCount = useTikTokStore(selectScreenViewerCount("screen-0"));
   const tikTokStats = useTikTokStore(selectScreenStats("screen-0"));
@@ -128,6 +136,8 @@ export function SettingsPage() {
   const [licenseMsg, setLicenseMsg] = useState("");
   const [showLevels, setShowLevels] = useState(false);
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [isConnectingManual, setIsConnectingManual] = useState(false);
+  const inFlightManualConnect = useRef(false);
 
   const showPw = (key: string) => showPasswords[key] || false;
   const togglePw = (key: string) => setShowPasswords(p => ({ ...p, [key]: !p[key] }));
@@ -195,6 +205,7 @@ export function SettingsPage() {
     if (a) {
       try {
         a.syncPointsConfig(setupConfig);
+        // OBS host/port are user-configurable (defaults 127.0.0.1:4455)
         a.obsSetConfig({ obsIp: setupConfig.obsIp, obsPort: setupConfig.obsPort, obsPassword: setupConfig.obsPassword });
         a.sbSetConfig({ sbAddress: setupConfig.sbAddress, sbPort: setupConfig.sbPort, sbEndpoint: setupConfig.sbEndpoint });
         a.mcSetConfig({ mcMode: setupConfig.mcMode, mcPlayer: setupConfig.mcPlayer, mcIp: setupConfig.mcIp, mcPort: setupConfig.mcPort, mcPassword: setupConfig.mcPassword });
@@ -262,7 +273,8 @@ export function SettingsPage() {
     }
   }
 
-  // Test OBS
+  // Test OBS — controller.testConnection leaves OBS actually connected.
+  // Uses the configured IP/port from Settings (defaults 127.0.0.1:4455).
   const testOBS = async () => {
     setObsStatus("testing");
     const a = api();
@@ -270,7 +282,10 @@ export function SettingsPage() {
       try {
         a.obsSetConfig({ obsIp: setupConfig.obsIp, obsPort: setupConfig.obsPort, obsPassword: setupConfig.obsPassword });
         const result = await a.obsTest({ ip: setupConfig.obsIp, port: setupConfig.obsPort, password: setupConfig.obsPassword });
-        setObsStatus(result?.success ? "ok" : "fail");
+        const ok = !!result?.success;
+        setObsStatus(ok ? "ok" : "fail");
+        // Defensive: also push into the shared store (event path is primary)
+        if (ok) useAppStore.getState().setObsConnected(true);
         if (result?.success) {
           toast("OBS connected successfully!", "success");
         } else {
@@ -438,9 +453,112 @@ export function SettingsPage() {
 
         // ── Detect version ──
 
+        // ═══ V4: Complete portable profile package ═══
+        if (isProfilePackage(data)) {
+          const targetId = useAppStore.getState().currentProfileId;
+          if (!targetId) throw new Error('No active destination profile');
+          const imported = await importProfilePackage(data, targetId);
+          const target = useAppStore.getState().streamProfiles.find((p) => p.id === targetId);
+          if (!target) throw new Error('Destination profile no longer exists');
+          const existingActionIds = new Set(target.actions.map((action) => action.id));
+          const actionsForMediaPack = imported.actions.map((action) => {
+            const sourceActionId = imported.package.profile.actions.find((candidate) => candidate.id === action.id)?.id ?? action.id;
+            const enriched = { ...action } as Record<string, unknown>;
+            for (const type of ['sound', 'video', 'image'] as const) {
+              const row = imported.package.mediaFiles.find((candidate) => candidate.actionId === sourceActionId && candidate.type === type);
+              if (row) enriched[`${type}MediaRef`] = row.mediaRef || row.id;
+            }
+            return enriched;
+          });
+          const prepared = await importActionPackWithDexie({
+            format: 'rosaefinity-action-pack', version: 1, exportedAt: imported.package.exportedAt,
+            actions: actionsForMediaPack,
+            mediaAssets: imported.package.mediaAssets,
+          }, existingActionIds);
+          // importActionPackWithDexie remaps action/media IDs and creates safe pointer rows.
+          const existingSoundIds = new Set(useAppStore.getState().customSounds.map((sound) => sound.id));
+          const importedSounds = imported.customSounds.map((sound) => {
+            if (!existingSoundIds.has(sound.id)) {
+              existingSoundIds.add(sound.id);
+              return sound;
+            }
+            let id = '';
+            do {
+              id = `snd_${Math.random().toString(36).slice(2, 10)}`;
+            } while (existingSoundIds.has(id));
+            existingSoundIds.add(id);
+            return { ...sound, id };
+          });
+          try {
+            await persistImportedMediaRows(prepared.mediaRows);
+            await importMediaLibrary({
+              sounds: importedSounds.map((sound) => ({
+                id: sound.id,
+                name: sound.name,
+                file: sound.file,
+                fileName: sound.fileName,
+                profileId: targetId,
+              })),
+            });
+            let profileCommitted = false;
+            useAppStore.setState((state) => {
+              const profile = state.streamProfiles.find((p) => p.id === targetId);
+              if (!profile) return state;
+              profileCommitted = true;
+              const customSounds = [...state.customSounds, ...importedSounds];
+              const importedActions = prepared.actions as Action[];
+              const nextProfile = { ...profile, actions: [...profile.actions, ...importedActions], events: [...profile.events, ...imported.events], customSounds, updatedAt: new Date().toISOString() };
+              return { streamProfiles: state.streamProfiles.map((item) => item.id === targetId ? nextProfile : item), actions: [...state.actions, ...importedActions], events: [...state.events, ...imported.events], customSounds };
+            });
+            if (!profileCommitted) throw new Error('Destination profile no longer exists');
+          } catch (commitErr) {
+            await db.mediaFiles.bulkDelete(prepared.mediaRows.map((row) => row.id)).catch(() => undefined);
+            await db.sounds.bulkDelete(importedSounds.map((sound) => sound.id)).catch(() => undefined);
+            throw commitErr;
+          }
+          toast(`Imported ${imported.actions.length} action(s), ${imported.events.length} event(s), and ${imported.package.mediaAssets.length} media asset(s)`, "success");
+          return;
+        }
+
         // ═══ V3: Portable per-profile import ═══
         if (data.format === 'rosaefinity-profile' && data.version === 3) {
           const errors: string[] = [];
+
+          // 0. Restore mediaAssets to Dexie BEFORE applying profile actions
+          //    so imported Action media references resolve immediately.
+          //    Old v3 exports without mediaAssets skip this block entirely.
+          if (Array.isArray(data.mediaAssets) && data.mediaAssets.length > 0) {
+            try {
+              const packLike = {
+                format: "rosaefinity-action-pack" as const,
+                version: 1 as const,
+                exportedAt: data.exportedAt || new Date().toISOString(),
+                actions: (data.profile?.actions as Array<Record<string, unknown>>) ?? [],
+                mediaAssets: data.mediaAssets as Array<Record<string, unknown>>,
+              };
+              const existingIds = new Set(
+                (useAppStore.getState().actions ?? []).map((a) => a.id),
+              );
+              // Restore media under original action ids from the export when free
+              const mediaResult = await importActionPackWithDexie(packLike as any, existingIds);
+              // Only persist media rows for assets whose actionId matches profile actions
+              // (profile import keeps original action ids when free — merge-by-id path)
+              const profileActionIds = new Set(
+                ((data.profile?.actions as Array<{ id?: string }>) ?? []).map((a) => String(a.id ?? "")),
+              );
+              const rowsForProfile = mediaResult.mediaRows.filter(
+                (r) => !r.actionId || profileActionIds.has(r.actionId) || !r.actionId,
+              );
+              await persistImportedMediaRows(rowsForProfile.length > 0 ? rowsForProfile : mediaResult.mediaRows);
+              console.log("[MEDIA-IMPORT-PROFILE]", JSON.stringify({
+                mediaAssets: data.mediaAssets.length,
+                restored: mediaResult.restoredMediaAssets,
+                reused: mediaResult.reusedMediaAssets,
+              }));
+            } catch (mediaErr) {
+              errors.push(`Media: ${mediaErr instanceof Error ? mediaErr.message : 'unknown error'}`);
+            }
+          }
 
           // 1. Apply profile configuration to currently active profile
           try {
@@ -765,29 +883,40 @@ export function SettingsPage() {
         .filter(o => o.profileId === state.currentProfileId)
         .map(({ userId, profileId, ...o }) => o);
 
+      // Complete v4 package includes all action/event/library data and Dexie media bytes.
+      const profilePackage = await exportProfilePackage(
+        syncedProfile,
+        syncedProfile.actions ?? [],
+        syncedProfile.events ?? [],
+        (state.customSounds ?? []).filter((sound) => sound.profileId === state.currentProfileId),
+      );
+
+      // Additive portable mediaAssets — large blobs stay out of action JSON;
+      // they ride in mediaAssets for self-contained profile packages.
+      let mediaAssets: Awaited<ReturnType<typeof collectProfileMediaAssetsFromDexie>> = [];
+      try {
+        mediaAssets = await collectProfileMediaAssetsFromDexie(
+          (syncedProfile.actions ?? []) as Array<Record<string, unknown>>,
+        );
+      } catch (mediaErr) {
+        console.warn("[EXPORT] mediaAssets collection failed (export continues without media):", mediaErr);
+      }
+
       const exportData = {
-        format: 'rosaefinity-profile' as const,
-        version: 3 as const,
-        exportedAt: new Date().toISOString(),
-        sourceProfile: {
-          name: syncedProfile.name,
-        },
+        ...profilePackage,
         profile: {
-          name: syncedProfile.name,
-          icon: syncedProfile.icon,
-          tiktokUsername: syncedProfile.tiktokUsername,
-          overlaySettings: syncedProfile.overlaySettings,
-          alertsSettings: syncedProfile.alertsSettings,
-          alertsMasterEnabled: syncedProfile.alertsMasterEnabled,
-          ttsSettings: syncedProfile.ttsSettings,
-          actions: syncedProfile.actions?.map(({ soundFile, videoFile, imageFile, soundFileName, videoFileName, imageFileName, ...action }) => action) ?? [],
-          events: syncedProfile.events ?? [],
-          customSounds: syncedProfile.customSounds?.map(({ file, ...sound }) => sound) ?? [],
+          ...profilePackage.profile,
           goals: profileGoals,
           overlays: profileOverlays,
         },
+        sourceProfile: {
+          id: syncedProfile.id,
+          name: syncedProfile.name,
+        },
+        mediaAssets: [...profilePackage.mediaAssets, ...mediaAssets.filter((asset) => !profilePackage.mediaAssets.some((existing) => existing.mediaId === asset.mediaId))],
+        goals: profileGoals,
+        overlays: profileOverlays,
       };
-
       const jsonStr = JSON.stringify(exportData, null, 2);
       const blob = new Blob([jsonStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -876,7 +1005,7 @@ export function SettingsPage() {
                   </Button>
                 ) : (
                   <Button size="sm"
-                    onClick={() => {
+                    onClick={async () => {
                       // FRONTEND COOLDOWN GUARD — uses same authoritative deadline as backend
                       if (isRateLimited) {
                         console.log(`[TIKTOK-CONNECT-GUARD] frontend blocked`, JSON.stringify({
@@ -887,13 +1016,32 @@ export function SettingsPage() {
                         }));
                         return;
                       }
+
+                      // Prevent duplicate manual Connect while a request is in-flight
+                      if (inFlightManualConnect.current) {
+                        console.log(`[TIKTOK-UI] Connect ignored — manual request already in progress`, {
+                          screenId: "screen-0",
+                        });
+                        return;
+                      }
+
+                      // Mark manual connection as in-flight
+                      inFlightManualConnect.current = true;
+                      setIsConnectingManual(true);
+
                       console.log(`[TIKTOK-UI] Connect clicked`);
                       const username = setupConfig.tikTokName.trim();
-                      if (!username) return;
+                      if (!username) {
+                        inFlightManualConnect.current = false;
+                        setIsConnectingManual(false); // Release lock if username is empty
+                        return;
+                      }
                       const a = api();
                       if (!a) {
                         console.error('[TIKTOK-UI] electronAPI is not available — TikTok LIVE connection requires the RosaeFinity desktop app');
                         toast('TikTok LIVE connection is only available in the RosaeFinity desktop application.', 'error');
+                        inFlightManualConnect.current = false;
+                        setIsConnectingManual(false); // Release lock if API is unavailable
                         return;
                       }
                       console.log(`[TIKTOK-CONNECT-TRACE] connect button clicked`, JSON.stringify({
@@ -904,16 +1052,45 @@ export function SettingsPage() {
                         preClickStoreState: useTikTokStore.getState().screens['screen-0'],
                       }));
                       console.log(`[TIKTOK-UI] invoking IPC tiktok:connect screenId=screen-0 username=${username}`);
-                      a.connectTikTokScreen("screen-0", username)
-                        .then((result: unknown) => {
-                          console.log(`[TIKTOK-CONNECT-TRACE] IPC result received`, JSON.stringify({ screenId: 'screen-0', result }));
-                        })
-                        .catch((err: unknown) => {
-                          console.error(`[TIKTOK-UI] IPC error:`, err);
-                          toast(`TikTok connection failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
-                        });
+                      try {
+                        const result: unknown = await a.connectTikTokScreen("screen-0", username);
+                        console.log(`[TIKTOK-CONNECT-TRACE] IPC result received`, JSON.stringify({ screenId: 'screen-0', result }));
+                        const r = result as { success?: boolean; error?: string; isRateLimit?: boolean; cooldownRemainingMs?: number; alreadyConnected?: boolean; alreadyConnecting?: boolean } | undefined;
+
+                        if (!r || r.success === false) {
+                          // Service returned an explicit failure
+                          if (
+                            r &&
+                            r.isRateLimit === true &&
+                            typeof r.cooldownRemainingMs === "number" &&
+                            Number.isFinite(r.cooldownRemainingMs) &&
+                            r.cooldownRemainingMs > 0
+                          ) {
+                            // Defensive store sync: IPC response contains rate-limit cooldown in ms,
+                            // convert to absolute deadline (epoch ms) for store
+                            useTikTokStore.getState().setScreenRateLimited(
+                              "screen-0",
+                              true,
+                              Date.now() + r.cooldownRemainingMs
+                            );
+                            toast(`Rate limited. Try again in ${Math.ceil(r.cooldownRemainingMs / 1000)}s`, 'error');
+                          } else {
+                            toast(r?.error || 'TikTok connection failed', 'error');
+                          }
+                        } else if (r && (r.alreadyConnected || r.alreadyConnecting)) {
+                          console.log(`[TIKTOK-UI] Connection already active or in progress:`, r);
+                        }
+                        // Note: Successful connection triggers the 'connected' event
+                      } catch (err: unknown) {
+                        console.error(`[TIKTOK-UI] IPC error:`, err);
+                        toast(`TikTok connection failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+                      } finally {
+                        // Finalize: Release manual UI lock, guaranteed
+                        inFlightManualConnect.current = false;
+                        setIsConnectingManual(false);
+                      }
                     }}
-                    disabled={!setupConfig.tikTokName.trim() || isRateLimited}>
+                    disabled={!setupConfig.tikTokName.trim() || isRateLimited || tikTokStatus === "connecting" || isConnectingManual}>
                     {isRateLimited ? `Rate Limited — ${serverRetryRemainingSec}s` : "Connect"}
                   </Button>
                 )}
@@ -1092,7 +1269,9 @@ export function SettingsPage() {
         return (
           <div className="space-y-6">
             <h3 className="text-lg font-bold text-white">🎬 OBS Connection</h3>
-            <p className="text-sm text-white/50">Control OBS via WebSocket. OBS 28+ required.</p>
+            <p className="text-sm text-white/50">
+              Control OBS via WebSocket. OBS 28+ required. Defaults: 127.0.0.1:4455.
+            </p>
             <SettingRow label="IP Address">
               <input type="text" value={setupConfig.obsIp} onChange={e => setField("obsIp", e.target.value)}
                 className="w-40 h-10 px-4 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-white outline-none focus:border-primary/40" />
@@ -1113,8 +1292,9 @@ export function SettingsPage() {
               <Button onClick={testOBS} disabled={obsStatus === "testing"} className="gap-2">
                 {obsStatus === "testing" ? "⏳ Testing..." : "🧪 Test Connection"}
               </Button>
-              {obsStatus === "ok" && <span className="flex items-center gap-1 text-green text-sm"><CheckCircle2 className="w-4 h-4" /> Connected</span>}
-              {obsStatus === "fail" && <span className="flex items-center gap-1 text-red text-sm"><XCircle className="w-4 h-4" /> Failed</span>}
+              {/* Connected badge reflects the shared store flag (same as Create Action) */}
+              {obsConnected && <span className="flex items-center gap-1 text-green text-sm"><CheckCircle2 className="w-4 h-4" /> Connected</span>}
+              {!obsConnected && obsStatus === "fail" && <span className="flex items-center gap-1 text-red text-sm"><XCircle className="w-4 h-4" /> Failed</span>}
             </div>
           </div>
         );
@@ -1261,8 +1441,10 @@ export function SettingsPage() {
             </div>
             <div className="divide-y divide-white/[0.04] rounded-xl border border-white/[0.06] overflow-hidden">
               {[1,2,3,4,5,6,7,8].map((n, i) => {
+                const screenId = SCREEN_IDS[n - 1];
                 const screenActions = actions.filter(a => (a.overlayScreen || a.screen || "Screen 1") === `Screen ${n}`);
-                const url = getOverlayWidgetUrl(n);
+                const maxQueue = setupConfig.overlayScreensMaxQueue?.[screenId] ?? 5;
+                const url = getOverlayWidgetUrl(n, maxQueue);
                 return (
                   <motion.div key={n} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
                     className="flex items-center gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
@@ -1287,9 +1469,16 @@ export function SettingsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="w-12 h-7 px-2 rounded-lg bg-white/[0.02] border border-white/[0.04] text-xs text-white/50 text-center flex items-center justify-center">8</span>
-                        <span className="text-[10px] text-white/30">max</span>
+                      <div className="flex items-center gap-2">
+                        <label className="text-[10px] text-white/40">Max Queue:</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={maxQueue}
+                          onChange={e => setField("overlayScreensMaxQueue", { ...setupConfig.overlayScreensMaxQueue, [screenId]: parseInt(e.target.value) || 5 })}
+                          className="w-16 h-7 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs text-white outline-none focus:border-primary/40 text-center"
+                        />
                       </div>
                       <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-green/10 text-green border border-green/20">
                         <span className="w-1.5 h-1.5 rounded-full bg-green" />

@@ -47,3 +47,15 @@ coverage/
 
 # Wrangler local dev state
 server/worker/.wrangler/
+
+# Worker secrets (root .dev.vars already ignored above)
+server/worker/.dev.vars
+
+# Root-level test artifacts
+test-login.json
+test-me.json
+test-register.json
+test-reactivation.cjs
+
+# Local audit artifacts
+.audit-tmp/

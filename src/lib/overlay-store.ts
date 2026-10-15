@@ -4,6 +4,8 @@ import type { OverlayInstance } from '../overlays/types';
 import { resolveConfig } from '../overlays/createConfig';
 import { defaultGoalProgressConfig } from '../overlays/goal-progress/types';
 import type { GoalProgressConfig } from '../overlays/goal-progress/types';
+import { defaultGoalFollowersConfig } from '../overlays/goal-followers/types';
+import { defaultGoalGiftsConfig } from '../overlays/goal-gifts/types';
 import { sendToOverlay } from './overlay-bus';
 import {
   saveOverlayInstance,
@@ -12,6 +14,54 @@ import {
 } from './db';
 import { authStore } from '../store/auth-store';
 import { appStore } from '../store/app-store';
+
+// ─── Goal config repair (hydration) ───
+// The config-loss bug persisted STRIPPED goal configs to Dexie. On load,
+// missing goal fields are reconstructed from the module defaultConfig —
+// the only safe source. A user's lost target value is NOT recoverable
+// once stripped; we do not guess it (default is used and logged).
+const GOAL_MODULE_DEFAULTS: Record<string, Record<string, unknown>> = {
+  'goal-progress': defaultGoalProgressConfig as unknown as Record<string, unknown>,
+  'goal-followers': defaultGoalFollowersConfig as unknown as Record<string, unknown>,
+  'goal-gifts': defaultGoalGiftsConfig as unknown as Record<string, unknown>,
+};
+const VALID_GOAL_BEHAVIORS = new Set(['keep', 'increase', 'double', 'hide']);
+
+function repairGoalInstanceConfig(
+  moduleId: string,
+  config: Record<string, unknown>,
+): { config: Record<string, unknown>; repaired: string[] } {
+  const defaults = GOAL_MODULE_DEFAULTS[moduleId];
+  if (!defaults) return { config, repaired: [] };
+  const cfg: Record<string, unknown> = { ...config };
+  const repaired: string[] = [];
+
+  // target: keep any valid positive number; otherwise reconstruct from default
+  if (typeof cfg.target !== 'number' || !(cfg.target > 0)) {
+    cfg.target = typeof defaults.target === 'number' && defaults.target > 0 ? defaults.target : 0;
+    repaired.push('target');
+  }
+  // reachedBehavior: keep valid values; otherwise default
+  if (typeof cfg.reachedBehavior !== 'string' || !VALID_GOAL_BEHAVIORS.has(cfg.reachedBehavior as string)) {
+    cfg.reachedBehavior = typeof defaults.reachedBehavior === 'string' ? defaults.reachedBehavior : 'keep';
+    repaired.push('reachedBehavior');
+  }
+  // initialTarget: keep positive; else = repaired target (fresh-goal step base)
+  if (typeof cfg.initialTarget !== 'number' || !(cfg.initialTarget > 0)) {
+    cfg.initialTarget = cfg.target;
+    repaired.push('initialTarget');
+  }
+  // Fill remaining missing goal/display fields from defaults — NEVER overwrite
+  // valid persisted values.
+  for (const key of ['goalType', 'title', 'actionId', 'barColor', 'gradientColor', 'backgroundColor', 'textColor', 'showPercentage', 'showNumbers']) {
+    if (cfg[key] === undefined && defaults[key] !== undefined) {
+      cfg[key] = defaults[key];
+      repaired.push(key);
+    }
+  }
+  // Runtime state fields (current/reached/lastCompletedTarget/sessionId/lastLikeTotal) untouched.
+  return { config: cfg, repaired };
+}
 
 // ─── BrowserSourceId UUID format check ───
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -190,6 +240,20 @@ export const useOverlayStore = create<OverlayStore>()(
         };
 
         set((state) => ({ instances: [...state.instances, instance] }));
+        // [GOAL-CONFIG-FORENSIC] Temporary diagnostics — instance creation (boundary A)
+        if (String(params.moduleId).startsWith('goal-')) {
+          const c = instance.config as any;
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+            console.log('[GOAL-CONFIG-FORENSIC] addInstance', JSON.stringify({
+              boundary: 'A-creation',
+              moduleId: instance.moduleId,
+              configKeys: Object.keys(instance.config || {}),
+              target: c?.target ?? null,
+              initialTarget: c?.initialTarget ?? null,
+              reachedBehavior: c?.reachedBehavior ?? null,
+            }));
+          }
+        }
         get().persistInstance(instance);
 
         // Queue create for cloud sync (unless remote-originated)
@@ -211,9 +275,44 @@ export const useOverlayStore = create<OverlayStore>()(
           return;
         }
 
+        // MERGE semantics: incoming config is a PATCH over the existing config.
+        // Production callers (goal-tracker session reset / completion) send
+        // partial payloads; replacing wholesale destroyed target/reachedBehavior/
+        // initialTarget and persisted the stripped config to Dexie (config-loss bug).
+        const previousConfig = ((target?.config ?? {}) as Record<string, unknown>);
+        const incomingConfig = ((config ?? {}) as Record<string, unknown>);
+        const mergedConfig: Record<string, unknown> = { ...previousConfig, ...incomingConfig };
+
+        // [GOAL-CONFIG-FORENSIC] Temporary diagnostics — merge boundary (C).
+        if (target && String(target.moduleId).startsWith('goal-')) {
+          const prevKeys = Object.keys(previousConfig);
+          const nextKeys = Object.keys(incomingConfig);
+          const dropped = prevKeys.filter((k) => !(k in incomingConfig));
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+            console.log('[GOAL-CONFIG-FORENSIC] updateConfig', JSON.stringify({
+              boundary: 'C-updateConfig-MERGE',
+              id,
+              moduleId: target.moduleId,
+              incomingKeys: nextKeys,
+              previousKeys: prevKeys,
+              droppedKeysAfterMerge: dropped, // should be [] — merge preserves all previous keys
+              before: {
+                target: previousConfig.target ?? null,
+                initialTarget: previousConfig.initialTarget ?? null,
+                reachedBehavior: previousConfig.reachedBehavior ?? null,
+              },
+              after: {
+                target: mergedConfig.target ?? null,
+                initialTarget: mergedConfig.initialTarget ?? null,
+                reachedBehavior: mergedConfig.reachedBehavior ?? null,
+              },
+            }));
+          }
+        }
+
         set((state) => ({
           instances: state.instances.map((inst) =>
-            inst.id === id ? { ...inst, config, updatedAt: Date.now() } : inst
+            inst.id === id ? { ...inst, config: mergedConfig, updatedAt: Date.now() } : inst
           ),
         }));
 
@@ -349,10 +448,37 @@ export const useOverlayStore = create<OverlayStore>()(
             rawInstances = rawInstances.filter(inst => inst.profileId === profileId);
           }
           // Resolve configs to fill any missing base fields (position, size, etc.)
-          let instances = rawInstances.map((inst) => ({
-            ...inst,
-            config: resolveConfig(inst.config),
-          }));
+          // + repair stripped goal configs from the config-loss bug (TASK 3):
+          // missing target/reachedBehavior/initialTarget reconstructed from
+          // module defaultConfig; valid persisted values never overwritten.
+          let instances = rawInstances.map((inst) => {
+            const resolved = resolveConfig(inst.config);
+            if (!String(inst.moduleId).startsWith('goal-')) {
+              return { ...inst, config: resolved };
+            }
+            const { config: repairedCfg, repaired } = repairGoalInstanceConfig(
+              inst.moduleId,
+              resolved as Record<string, unknown>,
+            );
+            if (repaired.length > 0) {
+              if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+                console.log('[GOAL-CONFIG-REPAIR]', JSON.stringify({
+                  id: inst.id,
+                  moduleId: inst.moduleId,
+                  repaired,
+                  configAfter: {
+                    target: (repairedCfg as any).target ?? null,
+                    initialTarget: (repairedCfg as any).initialTarget ?? null,
+                    reachedBehavior: (repairedCfg as any).reachedBehavior ?? null,
+                  },
+                }));
+              }
+              // Persist repaired config so Dexie stops serving stripped rows
+              saveOverlayInstance({ ...inst, config: repairedCfg } as OverlayInstance).catch(() => {});
+              return { ...inst, config: repairedCfg };
+            }
+            return { ...inst, config: resolved };
+          });
 
           // ── Backfill non-UUID browserSourceIds (legacy migration) ──
           // Some overlay instances from older code versions stored non-UUID
@@ -372,7 +498,9 @@ export const useOverlayStore = create<OverlayStore>()(
             return { ...inst, browserSourceId: newId };
           });
           if (migrated > 0) {
-            console.log('[OVERLAY-ID-MIGRATION] migrated', migrated, 'overlay instance(s)');
+            if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+              console.log('[OVERLAY-ID-MIGRATION] migrated', migrated, 'overlay instance(s)');
+            }
             // Persist the migrated instances to Dexie
             for (const inst of instances) {
               // Only save instances that actually changed (compare against originals)
@@ -384,6 +512,42 @@ export const useOverlayStore = create<OverlayStore>()(
           }
 
           set({ instances, loaded: true });
+          // [GOAL-RAW-STORE-FORENSIC] Temporary diagnostics — Task 3: RAW store
+          // records after hydration (NOT effective/default config). Reveals
+          // whether followers/gifts configs already carry a foreign current
+          // BEFORE any SSE reaches a renderer.
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+            for (const inst of instances) {
+              if (!String(inst.moduleId).startsWith('goal-')) continue;
+              const c = (inst.config ?? {}) as any;
+              console.log('[GOAL-RAW-STORE-FORENSIC]', JSON.stringify({
+                instanceId: inst.id,
+                browserSourceId: inst.browserSourceId ?? null,
+                moduleId: inst.moduleId,
+                configCurrent: c.current ?? null,
+                configTarget: c.target ?? null,
+                configReached: c.reached ?? null,
+                configSessionId: c.sessionId ?? null,
+                configLastLikeTotal: c.lastLikeTotal ?? null,
+                configInitialTarget: c.initialTarget ?? null,
+                configReachedBehavior: c.reachedBehavior ?? null,
+              }));
+            }
+            // [GOAL-CONFIG-FORENSIC] Temporary diagnostics — hydration (boundary E)
+            for (const inst of instances) {
+              if (!String(inst.moduleId).startsWith('goal-')) continue;
+              const c = (inst.config ?? {}) as any;
+              console.log('[GOAL-CONFIG-FORENSIC] loadInstances-hydrate', JSON.stringify({
+                boundary: 'E-hydration',
+                moduleId: inst.moduleId,
+                id: inst.id,
+                configKeys: Object.keys(inst.config || {}),
+                target: c.target ?? null,
+                initialTarget: c.initialTarget ?? null,
+                reachedBehavior: c.reachedBehavior ?? null,
+              }));
+            }
+          }
           // Push to main process immediately — populates the instance map
           // BEFORE Browser Source /config requests can arrive (eliminates race)
           pushInstancesToMain(instances);
@@ -406,6 +570,18 @@ export const useOverlayStore = create<OverlayStore>()(
       persistInstance: async (instance: OverlayInstance) => {
         try {
           await saveOverlayInstance(instance);
+          // [GOAL-DEXIE-FORENSIC] Temporary diagnostics — Task 4: what Dexie received
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+            const c = (instance.config ?? {}) as any;
+            console.log('[GOAL-DEXIE-FORENSIC]', JSON.stringify({
+              instanceId: instance.id,
+              moduleId: instance.moduleId,
+              persistedCurrent: c.current ?? null,
+              persistedTarget: c.target ?? null,
+              persistedSessionId: c.sessionId ?? null,
+              persistedLastLikeTotal: c.lastLikeTotal ?? null,
+            }));
+          }
           // Sync to main process for SSE config endpoint
           notifyInstanceUpdated(instance);
           // Sync Goal Progress config to localStorage + server + broadcast via SSE

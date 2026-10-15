@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { RendererProps, OverlayEvent } from '../types';
 import type { CoinJarProConfig, CoinJarState, RecentGift, Particle } from './types';
 import { useCoinJarStore } from '../../store/coin-jar-store';
+import { overlayDebugLog, overlayDebugWarn } from '../../lib/overlay-debug';
 import {
   calculateFillRatio,
   formatCoins,
@@ -47,7 +48,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
   // Return cached blob URL if available
   const cached = imageBlobCache.get(externalUrl);
   if (cached) {
-    console.log('[COIN-JAR-IMAGE-RESOLVE-CACHE]', JSON.stringify({ externalUrl: externalUrl.slice(0, 100), cachedBlob: cached.slice(0, 60) }));
+    overlayDebugLog('[COIN-JAR-IMAGE-RESOLVE-CACHE]', JSON.stringify({ externalUrl: externalUrl.slice(0, 100), cachedBlob: cached.slice(0, 60) }));
     return cached;
   }
 
@@ -56,7 +57,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
   if (pending) return pending;
 
   // ═══ STEP 1: RESOLVE START ═══
-  console.log('[COIN-JAR-IMAGE-RESOLVE-START]', JSON.stringify({
+  overlayDebugLog('[COIN-JAR-IMAGE-RESOLVE-START]', JSON.stringify({
     originalUrl: externalUrl.slice(0, 200),
     protocol: (() => { try { return new URL(externalUrl).protocol; } catch { return 'parse-error'; } })(),
     hostname: (() => { try { return new URL(externalUrl).hostname; } catch { return 'parse-error'; } })(),
@@ -69,7 +70,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
   const fetchPromise = (async () => {
     try {
       // ═══ STEP 2: FETCH ═══
-      console.log('[COIN-JAR-IMAGE-FETCH]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-IMAGE-FETCH]', JSON.stringify({
         url: externalUrl.slice(0, 200),
         mode: 'cors',
         credentials: 'omit',
@@ -82,7 +83,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
         redirect: 'follow',
       });
 
-      console.log('[COIN-JAR-IMAGE-FETCH-RESPONSE]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-IMAGE-FETCH-RESPONSE]', JSON.stringify({
         url: externalUrl.slice(0, 200),
         status: response.status,
         ok: response.ok,
@@ -99,7 +100,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
 
       // ═══ STEP 3: BLOB CREATION ═══
       const blob = await response.blob();
-      console.log('[COIN-JAR-IMAGE-BLOB-CREATE]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-IMAGE-BLOB-CREATE]', JSON.stringify({
         url: externalUrl.slice(0, 200),
         blobSize: blob.size,
         blobType: blob.type,
@@ -110,7 +111,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
       const blobUrl = URL.createObjectURL(blob);
       imageBlobCache.set(externalUrl, blobUrl);
 
-      console.log('[COIN-JAR-BLOB-URL]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-BLOB-URL]', JSON.stringify({
         originalUrl: externalUrl.slice(0, 200),
         generatedBlobUrl: blobUrl.slice(0, 100),
         blobSize: blob.size,
@@ -121,7 +122,7 @@ async function resolveImageToBlobUrl(externalUrl: string): Promise<string> {
       // ═══ STEP 5: TEST BLOB IN <img> ELEMENT ═══
       const testImg = new Image();
       testImg.onload = () => {
-        console.log('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
           src: blobUrl.slice(0, 100),
           status: 'loaded',
           naturalWidth: testImg.naturalWidth,
@@ -196,7 +197,7 @@ function resolveGiftImageUrl(giftName: string, giftId?: string): string {
   if (giftId) {
     const cached = getCachedGiftImage(giftId, '');
     if (cached && !isInvalidImageUrl(cached)) {
-      console.log('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
         giftName, giftId, found: true, source: 'cache-by-id', resolvedImageUrl: cached.slice(0, 100),
       }));
       return cached;
@@ -211,7 +212,7 @@ function resolveGiftImageUrl(giftName: string, giftId?: string): string {
       const url = getGiftImageUrl(byId);
       if (url) {
         cacheGiftImage(giftId, giftName, url);
-        console.log('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
           giftName, giftId, found: true, source: 'catalog-by-id', resolvedImageUrl: url.slice(0, 100),
         }));
         return url;
@@ -223,7 +224,7 @@ function resolveGiftImageUrl(giftName: string, giftId?: string): string {
   if (giftName) {
     const cached = getCachedGiftImage('', giftName);
     if (cached && !isInvalidImageUrl(cached)) {
-      console.log('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
         giftName, giftId, found: true, source: 'cache-by-name', resolvedImageUrl: cached.slice(0, 100),
       }));
       return cached;
@@ -237,7 +238,7 @@ function resolveGiftImageUrl(giftName: string, giftId?: string): string {
       const url = getGiftImageUrl(byName);
       if (url) {
         cacheGiftImage(giftId || '', giftName, url);
-        console.log('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
           giftName, giftId, found: true, source: 'catalog-by-name', resolvedImageUrl: url.slice(0, 100),
         }));
         return url;
@@ -246,7 +247,7 @@ function resolveGiftImageUrl(giftName: string, giftId?: string): string {
   }
 
   // Priority 5: SVG fallback (empty = renderer uses path icon)
-  console.log('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
+  overlayDebugLog('[COIN-JAR-CATALOG-LOOKUP]', JSON.stringify({
     giftName, giftId, found: false, source: 'none',
     catalogLoaded: isCatalogLoaded(),
     catalogSize: giftCatalogCache ? giftCatalogCache.size : 0,
@@ -601,7 +602,7 @@ const GlassJar: React.FC<{
 
     // Log visual diagnostics on first frame
     if (progress < 0.05) {
-      console.log('[COIN-JAR-VISUAL] FALLING_GIFT', {
+      overlayDebugLog('[COIN-JAR-VISUAL] FALLING_GIFT', {
         giftName: gift.giftData?.giftName,
         hasImageUrl: !!url,
         url: url ? url.slice(0, 80) : '(none)',
@@ -615,7 +616,7 @@ const GlassJar: React.FC<{
           <>
             {(() => {
               const hrefType = url.startsWith('blob:') ? 'blob' : url.startsWith('data:') ? 'data' : 'external';
-              console.log('[COIN-JAR-SVG-IMAGE-SET]', JSON.stringify({
+              overlayDebugLog('[COIN-JAR-SVG-IMAGE-SET]', JSON.stringify({
                 giftName: gift.giftData?.giftName || '(empty)',
                 giftId: gift.giftData?.giftId || '(empty)',
                 href: url.slice(0, 200),
@@ -632,7 +633,7 @@ const GlassJar: React.FC<{
               href={url}
               preserveAspectRatio="xMidYMid meet"
               onLoad={() => {
-                console.log('[COIN-JAR-SVG-IMAGE-LOAD]', JSON.stringify({
+                overlayDebugLog('[COIN-JAR-SVG-IMAGE-LOAD]', JSON.stringify({
                   giftName: gift.giftData?.giftName,
                   url: url.slice(0, 100),
                   hrefType: url.startsWith('blob:') ? 'blob' : url.startsWith('data:') ? 'data' : 'external',
@@ -670,7 +671,7 @@ const GlassJar: React.FC<{
   // [COIN-JAR-SVG-RENDER] Log SVG state on first render
   if (typeof window !== 'undefined' && !(window as any).__coinJarSvgDiagnosticLogged) {
     (window as any).__coinJarSvgDiagnosticLogged = true;
-    console.log('[COIN-JAR-SVG-RENDER]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-SVG-RENDER]', JSON.stringify({
       width, height,
       svgWidth: width, svgHeight: height,
       viewBox: `0 ${-FALL_AREA} ${DW} ${DH}`,
@@ -682,7 +683,7 @@ const GlassJar: React.FC<{
       timestamp: Date.now(),
     }));
     // [COIN-JAR-VISUAL-STYLE] Log jar visual properties
-    console.log('[COIN-JAR-VISUAL-STYLE]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-VISUAL-STYLE]', JSON.stringify({
       jarStroke: 'rgba(255,255,255,0.6)',
       jarStrokeWidth: '2',
       jarStrokeOpacity: 0.6,
@@ -716,7 +717,7 @@ const GlassJar: React.FC<{
         // Log accumulated render state (once per render, not per gift)
         if (typeof window !== 'undefined' && (window as any).__coinJarDebugAccumulated !== accumulatedGifts.length) {
           (window as any).__coinJarDebugAccumulated = accumulatedGifts.length;
-          console.log('[COIN-JAR-DEBUG] ACCUMULATED_RENDER', {
+          overlayDebugLog('[COIN-JAR-DEBUG] ACCUMULATED_RENDER', {
             count: accumulatedGifts.length,
             gifts: accumulatedGifts.map(g => ({
               id: g.id,
@@ -750,7 +751,7 @@ const GlassJar: React.FC<{
 
             // Log every accumulated gift render
             if (accumulatedGifts.length <= 20) {
-              console.log('[COIN-JAR-FINAL-URL]', {
+              overlayDebugLog('[COIN-JAR-FINAL-URL]', {
                 id: gift.id,
                 giftName: gift.giftName || gift.giftData?.giftName,
                 giftId: gift.giftData?.giftId,
@@ -775,7 +776,7 @@ const GlassJar: React.FC<{
                     href={url}
                     preserveAspectRatio="xMidYMid meet"
                     onLoad={() => {
-                      console.log('[COIN-JAR-SVG-IMAGE] LOADED', JSON.stringify({
+                      overlayDebugLog('[COIN-JAR-SVG-IMAGE] LOADED', JSON.stringify({
                         giftName: gift.giftName || gift.giftData?.giftName,
                         url: url.slice(0, 80),
                         protocol: (() => { try { return new URL(url).protocol; } catch { return 'parse-error'; } })(),
@@ -1135,15 +1136,21 @@ const GoalProgress: React.FC<{
 /**
  * Main Coin Jar Pro Renderer
  */
-export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { initialTotalCoins?: number }> = ({
+const CoinJarProRendererImpl: React.FC<RendererProps<CoinJarProConfig> & { initialTotalCoins?: number }> = ({
   config,
   mode = 'preview',
   events,
   size,
   initialTotalCoins,
 }) => {
-  // Build marker — confirms new code is running
-  console.log('[COIN-JAR-BUILD]', 'DYNAMIC-TIKTOK-CATALOG-IMAGE-FIX');
+  // Build marker — DEBUG ONLY (must not run in production hot path)
+  overlayDebugLog('[COIN-JAR-BUILD]', 'DYNAMIC-TIKTOK-CATALOG-IMAGE-FIX');
+
+  // Latest props via refs so callbacks stay identity-stable for React.memo / subscribe effects
+  const configRef = useRef(config);
+  configRef.current = config;
+  const initialTotalCoinsRef = useRef(initialTotalCoins);
+  initialTotalCoinsRef.current = initialTotalCoins;
 
   // Animation completion tracking for demo mode
   const animationCompleteRef = useRef(false);
@@ -1152,17 +1159,21 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
   const mountedRef = useRef(true);
 
   // Guaranteed valid initial state factory — used by useState AND as fallback in every updater
-  const makeDefaultState = useCallback((overrides?: Partial<CoinJarState>): CoinJarState => ({
-    totalCoins: initialTotalCoins || 0,
-    goalCoins: config.goalCoins,
-    currentFill: calculateFillRatio(initialTotalCoins || 0, config.goalCoins, config.continueAfterGoal),
-    recentGift: undefined,
-    donors: [],
-    particles: [],
-    fallingGifts: [],
-    accumulatedGifts: [],
-    ...overrides,
-  }), [initialTotalCoins, config.goalCoins, config.continueAfterGoal]);
+  const makeDefaultState = useCallback((overrides?: Partial<CoinJarState>): CoinJarState => {
+    const cfg = configRef.current;
+    const initial = initialTotalCoinsRef.current;
+    return ({
+      totalCoins: initial || 0,
+      goalCoins: cfg.goalCoins,
+      currentFill: calculateFillRatio(initial || 0, cfg.goalCoins, cfg.continueAfterGoal),
+      recentGift: undefined,
+      donors: [],
+      particles: [],
+      fallingGifts: [],
+      accumulatedGifts: [],
+      ...overrides,
+    });
+  }, []);
 
   const [state, setState] = useState<CoinJarState>(() => makeDefaultState());
 
@@ -1210,7 +1221,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     if (!allSettled) return;
     // Log summary after a short delay to let remaining tests settle
     const timer = setTimeout(() => {
-      console.log('[COIN-JAR-IMAGE-COMPATIBILITY]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-IMAGE-COMPATIBILITY]', JSON.stringify({
         giftName: diagnosticGift.giftName,
         blobImg: diagBlobImg,
         blobSvg: diagBlobSvg,
@@ -1307,7 +1318,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     const giftScreenSize = Math.round(20 * svgScale); // GIFT_VISUAL_SIZE = 20
 
     if (!prev || prev.width !== width || prev.height !== height) {
-      console.log('[COIN-JAR-VISUAL-SCALE]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-VISUAL-SCALE]', JSON.stringify({
         viewportWidth: width,
         viewportHeight: height,
         rendererWidth: width,
@@ -1378,7 +1389,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         diamonds: g.diamonds, repeatCount: g.repeatCount,
         giftId: g.giftId, giftImageUrl: g.giftImageUrl, screenId: g.screenId,
       };
-      console.log(`[COIN-JAR-TRACE][${g.giftId || 'none'}-${String(Date.now()).slice(-6)}] QUEUED_GIFT_PROCESSED`, { giftName: g.giftName });
+      overlayDebugLog(`[COIN-JAR-TRACE][${g.giftId || 'none'}-${String(Date.now()).slice(-6)}] QUEUED_GIFT_PROCESSED`, { giftName: g.giftName });
       // Re-invoke handleEvent with the queued gift
       handleEventRef.current(testEvent);
     }
@@ -1401,7 +1412,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
     const internal = (events as any)._internal;
     if (internal && typeof internal.notifyAnimationComplete === 'function') {
-      console.log('[COIN-JAR-RENDERER] notifying demo source animation complete (delayed)');
+      overlayDebugLog('[COIN-JAR-RENDERER] notifying demo source animation complete (delayed)');
       internal.notifyAnimationComplete();
     }
   }, [events]);
@@ -1452,28 +1463,15 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
   // Ref to always have the latest handleEvent (for pending queue)
   const handleEventRef = useRef<(event: OverlayEvent) => void>(() => {});
 
-  // Process incoming events
+  // Process incoming events — identity-stable via config/size refs
   const handleEvent = useCallback((event: OverlayEvent) => {
-    // [COIN-JAR-DUPLICATE-TRACE] EVENT_HANDLER
-    if ((event as any).type === 'gift') {
-      console.log('[COIN-JAR-DUPLICATE-TRACE] EVENT_HANDLER', JSON.stringify({
-        handlerId: 'CoinJarProRenderer',
-        eventId: `${(event as any).giftId || 'none'}-${String(Date.now()).slice(-6)}`,
-        giftName: (event as any).giftName || '(empty)',
-        giftId: (event as any).giftId || '(empty)',
-        repeatCount: (event as any).repeatCount || 1,
-        source: (event as any)._source || 'unknown',
-        timestamp: Date.now(),
-      }));
-    }
-
-    // Track event source for session summary
+    const cfg = configRef.current;
     const eventSource = (event as any)._source || ((event as any).type === 'custom' ? 'sse' : 'unknown');
     if (eventSource === 'manual-test') sessionSummaryRef.current.manualEventsReceived++;
     else if (eventSource === 'demo') sessionSummaryRef.current.demoEventsReceived++;
     else if (eventSource === 'real-tiktok-live' || eventSource === 'sse') sessionSummaryRef.current.realEventsReceived++;
 
-    console.log('[COIN-JAR-RENDERER] event received', {
+    overlayDebugLog('[COIN-JAR-RENDERER] event received', {
       type: event.type,
       source: eventSource,
       username: 'username' in event ? event.username : undefined,
@@ -1488,7 +1486,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
       const raw = event as unknown as { type: string; data: Record<string, unknown> };
       const d = raw.data;
       if (d.type === 'coin-jar-state' && typeof d.currentAmount === 'number') {
-        console.log('[COIN-JAR-TRACE] state received (hydration)', { currentAmount: d.currentAmount, goalAmount: d.goalAmount, reset: d.reset });
+        overlayDebugLog('[COIN-JAR-TRACE] state received (hydration)', { currentAmount: d.currentAmount, goalAmount: d.goalAmount, reset: d.reset });
         // On reset: clear accumulated/falling gifts immediately
         if (d.reset) {
           lastRepeatCountRef.current.clear();
@@ -1497,12 +1495,12 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         setState(prev => {
           const current = prev ?? makeDefaultState();
           const goalCoins = (typeof d.goalAmount === 'number' ? d.goalAmount : current.goalCoins);
-          const fillRatio = calculateFillRatio(d.currentAmount, goalCoins, config.continueAfterGoal);
+          const fillRatio = calculateFillRatio(d.currentAmount, goalCoins, cfg.continueAfterGoal);
           return {
             ...current,
             totalCoins: d.currentAmount,
             goalCoins,
-            currentFill: clamp(fillRatio, 0, config.continueAfterGoal ? 2 : 1),
+            currentFill: clamp(fillRatio, 0, cfg.continueAfterGoal ? 2 : 1),
             // On reset: clear all visual gift state
             ...(d.reset ? {
               accumulatedGifts: [],
@@ -1528,15 +1526,15 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         const gdId = (giftData.giftId as string) || '';
         const gdImageUrl = (giftData.giftImageUrl as string) || '';
         const eid = `${gdId || 'none'}-${String(Date.now()).slice(-6)}`;
-        console.log('[COIN-JAR-REAL-LIVE][RENDERER]', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-REAL-LIVE][RENDERER]', JSON.stringify({
           giftId: gdId, giftName: gdName, giftImageUrl: gdImageUrl || '(empty)',
         }));
-        console.log(`[COIN-JAR-TRACE][${eid}] BROWSER_SOURCE_RECEIVED`, { coinValue, giftName: gdName });
+        overlayDebugLog(`[COIN-JAR-TRACE][${eid}] BROWSER_SOURCE_RECEIVED`, { coinValue, giftName: gdName });
 
         // ── Catalog race condition: queue if image not ready ──
         const hasCachedUrl = gdId && getCachedGiftImage(gdId, gdName);
         if (!isCatalogLoaded() && !hasCachedUrl) {
-          console.log(`[COIN-JAR-TRACE][${eid}] QUEUED (catalog loading)`, { giftName: gdName });
+          overlayDebugLog(`[COIN-JAR-TRACE][${eid}] QUEUED (catalog loading)`, { giftName: gdName });
           pendingGiftsRef.current.push({
             giftName: gdName, giftId: gdId, diamonds: coinValue, repeatCount: 1,
             username: 'Gift',
@@ -1546,7 +1544,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         }
 
         // [COIN-JAR-REAL-TEST] RENDERER received coin-jar-gift from store
-        console.log('[COIN-JAR-REAL-TEST] RENDERER coin-jar-gift received', {
+        overlayDebugLog('[COIN-JAR-REAL-TEST] RENDERER coin-jar-gift received', {
           coinValue,
           previousAmount: state?.totalCoins || 0,
           newAmount: d.currentAmount,
@@ -1562,12 +1560,12 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
           const current = prev ?? makeDefaultState();
           const newTotal = d.currentAmount;
           const goalCoins = (typeof d.goalAmount === 'number' ? d.goalAmount : current.goalCoins);
-          const newFillRatio = calculateFillRatio(newTotal, goalCoins, config.continueAfterGoal);
+          const newFillRatio = calculateFillRatio(newTotal, goalCoins, cfg.continueAfterGoal);
 
           const jarDesignWidth = 200;
           const jarDesignHeight = 192;
           const newParticles: Particle[] = [];
-          const particleCount = Math.min(config.particleAmount, 4);
+          const particleCount = Math.min(cfg.particleAmount, 4);
           for (let i = 0; i < particleCount; i++) {
             newParticles.push(createParticle(jarDesignWidth, jarDesignHeight, newFillRatio));
           }
@@ -1576,7 +1574,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
             ...current,
             totalCoins: newTotal,
             goalCoins,
-            currentFill: clamp(newFillRatio, 0, config.continueAfterGoal ? 2 : 1),
+            currentFill: clamp(newFillRatio, 0, cfg.continueAfterGoal ? 2 : 1),
             particles: [...current.particles.slice(-30), ...newParticles].slice(-50),
           };
         });
@@ -1588,7 +1586,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     if (event.type !== 'gift') return;
 
     // [REAL-GIFT-DEBUG][COIN-JAR-INPUT] Gift event reached CoinJarProRenderer
-    console.log('[REAL-GIFT-DEBUG][COIN-JAR-INPUT]', JSON.stringify({
+    overlayDebugLog('[REAL-GIFT-DEBUG][COIN-JAR-INPUT]', JSON.stringify({
       type: event.type,
       screenId: (event as any).screenId || '(none)',
       giftId: (event as any).giftId || '(empty)',
@@ -1634,7 +1632,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     }
 
     // [COIN-JAR-DUPLICATE-TRACE] DELTA_CALCULATION
-    console.log('[COIN-JAR-DUPLICATE-TRACE] DELTA_CALCULATION', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-DUPLICATE-TRACE] DELTA_CALCULATION', JSON.stringify({
       giftName,
       giftKey,
       rawRepeatCount: repeatCount,
@@ -1647,7 +1645,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     const coinValue = diamonds * effectiveDelta;
 
     // [COIN-JAR-DROP-TRACE] RENDERER_DELTA — full trace for every gift event
-    console.log('[COIN-JAR-DROP-TRACE] RENDERER_DELTA', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-DROP-TRACE] RENDERER_DELTA', JSON.stringify({
       giftName,
       giftId: giftEvent.giftId || '(empty)',
       username,
@@ -1667,7 +1665,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
     // ═══ DIAGNOSTIC: Trigger 3-way image compatibility test ═══
     if (giftImageUrl && giftImageUrl.startsWith('http')) {
-      console.log('[COIN-JAR-BROWSER-GIFT]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-BROWSER-GIFT]', JSON.stringify({
         giftName, giftId: giftEvent.giftId || '(empty)',
         giftImageUrl: giftImageUrl.slice(0, 200),
         eventTimestamp: Date.now(),
@@ -1679,7 +1677,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     }
 
     // [COIN-JAR-GIFT-TRACE][RENDERER] Gift event received by renderer
-    console.log('[COIN-JAR-GIFT-TRACE][RENDERER]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-GIFT-TRACE][RENDERER]', JSON.stringify({
       giftId: giftEvent.giftId || '(empty)',
       giftName,
       repeatCount,
@@ -1695,7 +1693,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     if (giftImageUrl) {
       const testImg = new Image();
       testImg.onload = () => {
-        console.log('[COIN-JAR-GIFT-TRACE][IMAGE-LOAD]', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-GIFT-TRACE][IMAGE-LOAD]', JSON.stringify({
           status: 'LOADED',
           url: giftImageUrl.slice(0, 100),
           naturalWidth: testImg.naturalWidth,
@@ -1726,7 +1724,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     // ── USERNAME SESSION RESET ──
     // When a different user sends a gift, clear the jar completely.
     if (activeUsernameRef.current && activeUsernameRef.current !== username) {
-      console.log('[COIN-JAR-SESSION]', JSON.stringify({
+      overlayDebugLog('[COIN-JAR-SESSION]', JSON.stringify({
         previousUsername: activeUsernameRef.current,
         newUsername: username,
         reset: true,
@@ -1754,7 +1752,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
     // ── Catalog race condition ──
     if (!giftImageUrl && !isCatalogLoaded()) {
-      console.log(`[COIN-JAR-TRACE][${eid}] QUEUED (catalog loading)`, { giftName });
+      overlayDebugLog(`[COIN-JAR-TRACE][${eid}] QUEUED (catalog loading)`, { giftName });
       pendingGiftsRef.current.push({
         giftName, giftId: giftEvent.giftId || '', diamonds, repeatCount,
         username, giftImageUrl: giftEvent.giftImageUrl, screenId: giftEvent.screenId,
@@ -1763,7 +1761,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
       return;
     }
 
-    console.log('[COIN-JAR-QUEUE]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-QUEUE]', JSON.stringify({
       username,
       giftName,
       repeatCount,
@@ -1788,7 +1786,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     }
 
     // [COIN-JAR-DUPLICATE-TRACE] QUEUE_ADD
-    console.log('[COIN-JAR-DUPLICATE-TRACE] QUEUE_ADD', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-DUPLICATE-TRACE] QUEUE_ADD', JSON.stringify({
       giftName,
       repeatCount,
       queueBefore,
@@ -1798,7 +1796,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     }));
 
     // [REAL-GIFT-DEBUG][QUEUE-ADD] Gifts added to queue
-    console.log('[REAL-GIFT-DEBUG][QUEUE-ADD]', JSON.stringify({
+    overlayDebugLog('[REAL-GIFT-DEBUG][QUEUE-ADD]', JSON.stringify({
       giftName,
       giftId: giftEvent.giftId || '(empty)',
       repeatCount,
@@ -1808,7 +1806,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
       resolvedImageUrl: giftImageUrl || '(empty)',
     }));
 
-    console.log('[COIN-JAR-QUEUE] QUEUED', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-QUEUE] QUEUED', JSON.stringify({
       giftName,
       repeatCount,
       totalQueued: fallingQueueRef.current.length,
@@ -1828,12 +1826,12 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     setState(prev => {
       const current = prev ?? makeDefaultState();
       const newTotal = current.totalCoins + coinValue;
-      const newFillRatio = calculateFillRatio(newTotal, current.goalCoins, config.continueAfterGoal);
+      const newFillRatio = calculateFillRatio(newTotal, current.goalCoins, cfg.continueAfterGoal);
 
       const jarDesignWidth = 200;
       const jarDesignHeight = 192;
       const newParticles: Particle[] = [];
-      const particleCount = Math.min(config.particleAmount, repeatCount * 2);
+      const particleCount = Math.min(cfg.particleAmount, repeatCount * 2);
       for (let i = 0; i < particleCount; i++) {
         newParticles.push(createParticle(jarDesignWidth, jarDesignHeight, newFillRatio));
       }
@@ -1843,7 +1841,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
       return {
         ...current,
         totalCoins: newTotal,
-        currentFill: clamp(newFillRatio, 0, config.continueAfterGoal ? 2 : 1),
+        currentFill: clamp(newFillRatio, 0, cfg.continueAfterGoal ? 2 : 1),
         recentGift,
         particles: [...current.particles.slice(-30), ...newParticles].slice(-50),
         donors: [
@@ -1859,23 +1857,26 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     });
 
     // Queue notification
-    if (config.showDonorNotification) {
+    if (cfg.showDonorNotification) {
       setNotificationQueue(prev => [...prev, recentGift]);
     }
-  }, [config, width, height, events, makeDefaultState]);
+  // Deps: makeDefaultState is fully stable (refs). Avoid config object identity.
+  // width/height come from size prop; memoized parent keeps them stable.
+  }, [makeDefaultState]);
 
   // Sync handleEventRef so pending queue can re-invoke
   useEffect(() => { handleEventRef.current = handleEvent; }, [handleEvent]);
 
   // Subscribe to events — subscribe immediately when events source is available
-  // The pending-gift queue handles the race condition when a gift arrives before catalog loads
+  // Deps: events + mode only. handleEvent is read via ref so parent re-renders
+  // never unsubscribe/resubscribe the SSE/renderer event bus.
   useEffect(() => {
     if (!events) {
-      console.log('[COIN-JAR-RENDERER-DEMO] no events prop provided - mode=' + mode);
+      overlayDebugLog('[COIN-JAR-RENDERER-DEMO] no events prop provided - mode=' + mode);
       return;
     }
 
-    console.log('[COIN-JAR-RENDERER-DEMO] events prop received, mode=' + mode + ', subscribing immediately');
+    overlayDebugLog('[COIN-JAR-RENDERER-DEMO] events prop received, mode=' + mode + ', subscribing immediately');
     let unsub: (() => void) | undefined;
 
     // Start catalog preload in background (non-blocking)
@@ -1884,16 +1885,16 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     // Subscribe immediately — don't wait for catalog
     // handleEvent already queues gifts when catalog isn't loaded
     unsub = events.subscribe((event) => {
-      console.log('[COIN-JAR-RENDERER-DEMO] EVENT RECEIVED type=' + event.type + ' mode=' + mode);
-      handleEvent(event);
+      overlayDebugLog('[COIN-JAR-RENDERER-DEMO] EVENT RECEIVED type=' + event.type + ' mode=' + mode);
+      handleEventRef.current(event);
     });
-    console.log('[COIN-JAR-RENDERER-DEMO] subscribed to events successfully');
+    overlayDebugLog('[COIN-JAR-RENDERER-DEMO] subscribed to events successfully');
 
     return () => {
-      console.log('[COIN-JAR-RENDERER-DEMO] cleanup - unsubscribing');
+      overlayDebugLog('[COIN-JAR-RENDERER-DEMO] cleanup - unsubscribing');
       unsub?.();
     };
-  }, [events, handleEvent, mode]);
+  }, [events, mode]);
 
   // Notification queue processor
   useEffect(() => {
@@ -1971,7 +1972,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
           };
           const fg = createFallingGift(jarDesignWidth, jarDesignHeight, newFillRatio, giftDataObj);
 
-          console.log('[COIN-JAR-FALL] CREATED', JSON.stringify({
+          overlayDebugLog('[COIN-JAR-FALL] CREATED', JSON.stringify({
             giftId: fg.id, giftName: next.giftName,
             x: Math.round(fg.x), y: Math.round(fg.y),
             targetX: Math.round(fg.targetX), targetY: Math.round(fg.targetY),
@@ -1984,7 +1985,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
         if (batch.length === 0) return current;
 
-        console.log('[COIN-JAR-QUEUE] BATCH_RELEASED', JSON.stringify({
+        overlayDebugLog('[COIN-JAR-QUEUE] BATCH_RELEASED', JSON.stringify({
           count: batch.length,
           activeBefore: activeFalling,
           activeAfter: activeFalling + batch.length,
@@ -2101,7 +2102,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
             const dxToTarget = g.targetX !== undefined ? Math.round(g.x - g.targetX) : 'N/A';
             const dyToTarget = g.targetY !== undefined ? Math.round(g.y - g.targetY) : 'N/A';
 
-            console.log('[COIN-JAR-DEBUG] PHYSICS_TICK', {
+            overlayDebugLog('[COIN-JAR-DEBUG] PHYSICS_TICK', {
               id: g.id.slice(-10),
               name: g.giftData?.giftName,
               phase: g.phase,
@@ -2125,7 +2126,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
           // Diagnostic: log first movement for timing analysis
           if (!firstYMap.has(gift.id)) {
             firstYMap.set(gift.id, gift.y);
-            console.log('[COIN-JAR-FALL] ANIMATION_START', JSON.stringify({
+            overlayDebugLog('[COIN-JAR-FALL] ANIMATION_START', JSON.stringify({
               giftId: gift.id.slice(-12), giftName: gift.giftData?.giftName,
               frame: frameCount, phase: gift.phase,
               x: Math.round(gift.x), y: Math.round(gift.y),
@@ -2134,7 +2135,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
             }));
           } else if (gift.y !== firstYMap.get(gift.id) && !firstYMap.has(gift.id + '_moved')) {
             firstYMap.set(gift.id + '_moved', 1);
-            console.log('[COIN-JAR-FALL] FIRST_MOVE', JSON.stringify({
+            overlayDebugLog('[COIN-JAR-FALL] FIRST_MOVE', JSON.stringify({
               giftId: gift.id.slice(-12), giftName: gift.giftData?.giftName,
               frame: frameCount,
               startY: Math.round(firstYMap.get(gift.id)!),
@@ -2179,21 +2180,21 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
               newAccumulatedGifts.push(newAccGift);
               firstYMap.delete(gift.id);
               firstYMap.delete(gift.id + '_moved');
-              console.log('[COIN-JAR-FALL] SETTLED', JSON.stringify({
+              overlayDebugLog('[COIN-JAR-FALL] SETTLED', JSON.stringify({
                 giftId: gift.id.slice(-12), giftName: resolvedName,
                 frame: frameCount, elapsed: Math.round(performance.now() - gift.startTime),
                 finalX: Math.round(targetPos.x), finalY: Math.round(targetPos.y),
               }));
 
               // [COIN-JAR-GIFT-TRACE][ACCUMULATED] Gift settled into jar
-              console.log('[COIN-JAR-GIFT-TRACE][ACCUMULATED]', JSON.stringify({
+              overlayDebugLog('[COIN-JAR-GIFT-TRACE][ACCUMULATED]', JSON.stringify({
                 giftName: newAccGift.giftName,
                 giftId: newAccGift.giftData?.giftId || '(empty)',
                 giftImageUrl: newAccGift.giftImageUrl || '(empty)',
                 resolvedFromNested: (newAccGift.giftData?.giftImageUrl || '').slice(0, 80) || '(empty)',
               }));
 
-              console.log('[COIN-JAR-REAL-LIVE][ACCUMULATED]', JSON.stringify({
+              overlayDebugLog('[COIN-JAR-REAL-LIVE][ACCUMULATED]', JSON.stringify({
                 id: newAccGift.id,
                 giftName: newAccGift.giftName,
                 giftId: newAccGift.giftData?.giftId,
@@ -2201,7 +2202,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                 targetX: Math.round(targetPos.x),
                 targetY: Math.round(targetPos.y),
               }));
-              console.log('[COIN-JAR-DEBUG] CONVERTING_TO_ACCUMULATED', {
+              overlayDebugLog('[COIN-JAR-DEBUG] CONVERTING_TO_ACCUMULATED', {
                 id: gift.id,
                 giftName: gift.giftData?.giftName,
                 giftId: gift.giftData?.giftId,
@@ -2209,7 +2210,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                 targetX: Math.round(targetPos.x),
                 targetY: Math.round(targetPos.y),
               });
-              console.log('[COIN-JAR-FULL] FINAL_POSITION', JSON.stringify({
+              overlayDebugLog('[COIN-JAR-FULL] FINAL_POSITION', JSON.stringify({
                 giftId: gift.id,
                 giftName: gift.giftData?.giftName,
                 accumulatedCount: current.accumulatedGifts.length + newAccumulatedGifts.length,
@@ -2219,7 +2220,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                 currentX: Math.round(gift.x),
                 currentY: Math.round(gift.y),
               }));
-              console.log('[COIN-JAR-TRACE] ACCUMULATED_IMAGE_URL', {
+              overlayDebugLog('[COIN-JAR-TRACE] ACCUMULATED_IMAGE_URL', {
                 accId: newAccGift.id,
                 giftName: newAccGift.giftData?.giftName,
                 giftImageUrl: newAccGift.giftData?.giftImageUrl ? newAccGift.giftData.giftImageUrl.slice(0, 80) : 'EMPTY',
@@ -2252,7 +2253,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
             updatedAccumulatedGifts.length !== current.accumulatedGifts.length ||
             updatedFallingGifts.some((g, i) => g !== current.fallingGifts[i])) {
           if (newAccumulatedGifts.length > 0) {
-            console.log('[COIN-JAR-DEBUG] STATE_UPDATE', {
+            overlayDebugLog('[COIN-JAR-DEBUG] STATE_UPDATE', {
               prevAccumulated: current.accumulatedGifts.length,
               newAccumulated: updatedAccumulatedGifts.length,
               added: newAccumulatedGifts.length,
@@ -2319,7 +2320,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     const resolvedGiftId = catalogEntry.giftId;
     const resolvedImageUrl = getGiftImageUrl(catalogEntry);
 
-    console.log('[COIN-JAR-TEST-CATALOG]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-TEST-CATALOG]', JSON.stringify({
       name: catalogEntry.name,
       giftId: catalogEntry.giftId,
       coins: catalogEntry.coins,
@@ -2356,7 +2357,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
       giftImageUrl: resolvedImageUrl,
     };
 
-    console.log('[COIN-JAR-TEST-READY]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-TEST-READY]', JSON.stringify({
       giftName: catalogEntry.name,
       giftId: resolvedGiftId,
       diamondCount: catalogEntry.coins,
@@ -2382,7 +2383,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     const resolvedGiftId = catalogEntry?.giftId || params.giftId || 'manual-' + params.giftName;
     const resolvedImageUrl = catalogEntry ? getGiftImageUrl(catalogEntry) : '';
 
-    console.log('[COIN-JAR-IMAGE-SOURCE] REAL_TEST_EVENT', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-IMAGE-SOURCE] REAL_TEST_EVENT', JSON.stringify({
       giftId: resolvedGiftId,
       giftName: params.giftName,
       diamondCount: params.diamonds ?? 1,
@@ -2403,7 +2404,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
     } as any;
     (testEvent as any)._source = 'manual-test';
     sessionSummaryRef.current.manualEventsReceived++;
-    console.log('[COIN-JAR-REAL-TEST] MANUAL TEST INJECTION', testEvent);
+    overlayDebugLog('[COIN-JAR-REAL-TEST] MANUAL TEST INJECTION', testEvent);
     handleEvent(testEvent);
   }, [handleEvent]);
 
@@ -2429,30 +2430,30 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         const accumulated = safeState.accumulatedGifts;
         const falling = safeState.fallingGifts;
 
-        console.log('[COIN-JAR-IMAGE-INSPECT] ═══════════════════════════');
-        console.log('[COIN-JAR-IMAGE-INSPECT] STATE');
-        console.log(`  accumulatedGifts: ${accumulated.length}`);
-        console.log(`  fallingGifts: ${falling.length}`);
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] ═══════════════════════════');
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] STATE');
+        overlayDebugLog(`  accumulatedGifts: ${accumulated.length}`);
+        overlayDebugLog(`  fallingGifts: ${falling.length}`);
 
-        console.log('[COIN-JAR-IMAGE-INSPECT] ACCUMULATED GIFT DATA');
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] ACCUMULATED GIFT DATA');
         accumulated.forEach((g, i) => {
           const url = g.giftImageUrl || g.giftData?.giftImageUrl || '';
-          console.log(`  [${i}] id=${g.id.slice(-10)} name=${g.giftName || g.giftData?.giftName} url=${url ? url.slice(0, 70) : 'EMPTY'} directField=${!!g.giftImageUrl} nestedField=${!!(g.giftData?.giftImageUrl)}`);
+          overlayDebugLog(`  [${i}] id=${g.id.slice(-10)} name=${g.giftName || g.giftData?.giftName} url=${url ? url.slice(0, 70) : 'EMPTY'} directField=${!!g.giftImageUrl} nestedField=${!!(g.giftData?.giftImageUrl)}`);
         });
 
-        console.log('[COIN-JAR-IMAGE-INSPECT] SVG <image> ELEMENTS');
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] SVG <image> ELEMENTS');
         allImages.forEach((el, i) => {
           const href = el.getAttribute('href') || el.getAttribute('xlink:href') || '';
           const rect = el.getBoundingClientRect();
-          console.log(`  [${i}] href=${href ? href.slice(0, 70) : 'EMPTY'} visible=${rect.width > 0 && rect.height > 0} w=${Math.round(rect.width)} h=${Math.round(rect.height)} x=${Math.round(rect.x)} y=${Math.round(rect.y)}`);
+          overlayDebugLog(`  [${i}] href=${href ? href.slice(0, 70) : 'EMPTY'} visible=${rect.width > 0 && rect.height > 0} w=${Math.round(rect.width)} h=${Math.round(rect.height)} x=${Math.round(rect.x)} y=${Math.round(rect.y)}`);
         });
 
-        console.log('[COIN-JAR-IMAGE-INSPECT] FALLING GIFT DATA');
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] FALLING GIFT DATA');
         falling.forEach((g, i) => {
           const url = g.giftData?.giftImageUrl || '';
-          console.log(`  [${i}] id=${g.id.slice(-10)} name=${g.giftData?.giftName} url=${url ? url.slice(0, 70) : 'EMPTY'} phase=${g.phase}`);
+          overlayDebugLog(`  [${i}] id=${g.id.slice(-10)} name=${g.giftData?.giftName} url=${url ? url.slice(0, 70) : 'EMPTY'} phase=${g.phase}`);
         });
-        console.log('[COIN-JAR-IMAGE-INSPECT] ═══════════════════════════');
+        overlayDebugLog('[COIN-JAR-IMAGE-INSPECT] ═══════════════════════════');
       };
 
       // DOM diagnostic — check actual SVG elements
@@ -2461,7 +2462,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         const svgClipPaths = document.querySelectorAll('clipPath');
         const accumulated = safeState.accumulatedGifts;
         const falling = safeState.fallingGifts;
-        console.log('[COIN-JAR-DEBUG] DOM_CHECK', {
+        overlayDebugLog('[COIN-JAR-DEBUG] DOM_CHECK', {
           svgImageCount: images.length,
           clipPathCount: svgClipPaths.length,
           stateAccumulatedCount: accumulated.length,
@@ -2485,7 +2486,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
       // Repeat test — injects Rose x10 and verifies all 10 accumulate
       (window as any).__coinJarRepeatTest = async () => {
-        console.log('[COIN-JAR-REPEAT-TRACE] TEST_START', { giftName: 'Rose', repeatCount: 10 });
+        overlayDebugLog('[COIN-JAR-REPEAT-TRACE] TEST_START', { giftName: 'Rose', repeatCount: 10 });
 
         // Reset
         handleReset();
@@ -2502,14 +2503,14 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         handleEvent(testEvent);
 
         // Wait for all to settle (10 gifts × ~2.5s each, staggered 150ms = ~15s + buffer)
-        console.log('[COIN-JAR-REPEAT-TRACE] WAITING_FOR_SETTLE...');
+        overlayDebugLog('[COIN-JAR-REPEAT-TRACE] WAITING_FOR_SETTLE...');
         await new Promise(r => setTimeout(r, 20000));
 
         const finalAccumulated = safeState.accumulatedGifts.length;
         const roseCount = safeState.accumulatedGifts.filter(g => g.giftData?.giftName === 'Rose').length;
         const coinIncrease = safeState.totalCoins;
 
-        console.log('[COIN-JAR-REPEAT-TRACE] RESULT', {
+        overlayDebugLog('[COIN-JAR-REPEAT-TRACE] RESULT', {
           expected: 10,
           accumulatedTotal: finalAccumulated,
           roseCount,
@@ -2519,7 +2520,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
         // DOM check
         const images = [...document.querySelectorAll('image')];
-        console.log('[COIN-JAR-REPEAT-TRACE] DOM', {
+        overlayDebugLog('[COIN-JAR-REPEAT-TRACE] DOM', {
           totalImages: images.length,
           urls: images.map(el => (el.getAttribute('href') || '').slice(0, 50)),
         });
@@ -2530,7 +2531,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         const images = [...document.querySelectorAll('image')];
         const accumulated = safeState.accumulatedGifts;
         const falling = safeState.fallingGifts;
-        console.log('[COIN-JAR-REPEAT-TRACE] DOM_CHECK', {
+        overlayDebugLog('[COIN-JAR-REPEAT-TRACE] DOM_CHECK', {
           stateAccumulatedCount: accumulated.length,
           stateFallingCount: falling.length,
           svgImageCount: images.length,
@@ -2554,7 +2555,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
 
       // Dynamic catalog test — tests N gifts from the real catalog, NOT hardcoded names
       (window as any).__coinJarTestGiftCatalog = async () => {
-        console.log('[COIN-JAR-CATALOG-TEST] Starting...');
+        overlayDebugLog('[COIN-JAR-CATALOG-TEST] Starting...');
 
         // 1. Ensure catalog is loaded
         preloadGiftCatalog();
@@ -2572,7 +2573,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
         }
 
         const catalogCount = allGifts.length;
-        console.log(`[COIN-JAR-CATALOG-TEST] catalogCount: ${catalogCount}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] catalogCount: ${catalogCount}`);
 
         // 3. Select 20 gifts dynamically from different catalog positions
         const TEST_COUNT = Math.min(20, catalogCount);
@@ -2603,7 +2604,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
           const imageUrl = getGiftImageUrl(gift) || '';
           const imageSource = imageUrl ? 'catalog' : 'fallback';
 
-          console.log(`[COIN-JAR-CATALOG-TEST] [${i + 1}/${TEST_COUNT}] Testing: ${giftName} (${giftId})`);
+          overlayDebugLog(`[COIN-JAR-CATALOG-TEST] [${i + 1}/${TEST_COUNT}] Testing: ${giftName} (${giftId})`);
 
           // Track image load state
           let imgLoaded = false;
@@ -2652,23 +2653,23 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
             accumulated: accCount >= (i + 1),
           };
           results.push(entry);
-          console.log(`[COIN-JAR-CATALOG-TEST] [${i + 1}]`, entry);
+          overlayDebugLog(`[COIN-JAR-CATALOG-TEST] [${i + 1}]`, entry);
         }
 
         // 6. Final report
         const finalAccCount = state?.accumulatedGifts?.length || 0;
-        console.log('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
-        console.log('[COIN-JAR-CATALOG-TEST] FINAL REPORT');
-        console.log('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
-        console.log(`[COIN-JAR-CATALOG-TEST] catalogCount: ${catalogCount}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] tested: ${TEST_COUNT}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] imageResolved: ${imageResolved}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] imageLoaded: ${imageLoaded}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] animationsCompleted: ${animationsCompleted}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] accumulated: ${finalAccCount}`);
-        console.log(`[COIN-JAR-CATALOG-TEST] failed: ${failed}`);
+        overlayDebugLog('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
+        overlayDebugLog('[COIN-JAR-CATALOG-TEST] FINAL REPORT');
+        overlayDebugLog('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] catalogCount: ${catalogCount}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] tested: ${TEST_COUNT}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] imageResolved: ${imageResolved}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] imageLoaded: ${imageLoaded}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] animationsCompleted: ${animationsCompleted}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] accumulated: ${finalAccCount}`);
+        overlayDebugLog(`[COIN-JAR-CATALOG-TEST] failed: ${failed}`);
         console.table(results);
-        console.log('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
+        overlayDebugLog('[COIN-JAR-CATALOG-TEST] ═══════════════════════════');
 
         return {
           catalogCount, tested: TEST_COUNT, imageResolved, imageLoaded,
@@ -2713,7 +2714,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
   // [COIN-JAR-VISUAL-STYLE] Outer container diagnostic (once per mount)
   if (typeof window !== 'undefined' && !(window as any).__coinJarContainerDiagnosticLogged) {
     (window as any).__coinJarContainerDiagnosticLogged = true;
-    console.log('[COIN-JAR-VISUAL-STYLE]', JSON.stringify({
+    overlayDebugLog('[COIN-JAR-VISUAL-STYLE]', JSON.stringify({
       outerOpacity: config.appearance.opacity,
       jarScale: config.jarScale,
       jarW: Math.round(jarW),
@@ -2861,7 +2862,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                     style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                     onLoad={() => {
                       setDiagBlobImg('loaded');
-                      console.log('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
+                      overlayDebugLog('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
                         src: diagnosticGift.blobUrl.slice(0, 100), status: 'loaded',
                         naturalWidth: 80, naturalHeight: 80, test: 'BLOB_IMG',
                       }));
@@ -2889,7 +2890,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                       preserveAspectRatio="xMidYMid meet"
                       onLoad={() => {
                         setDiagBlobSvg('loaded');
-                        console.log('[COIN-JAR-SVG-IMAGE-LOAD]', JSON.stringify({
+                        overlayDebugLog('[COIN-JAR-SVG-IMAGE-LOAD]', JSON.stringify({
                           href: diagnosticGift.blobUrl.slice(0, 100), status: 'loaded',
                           test: 'BLOB_SVG',
                         }));
@@ -2918,7 +2919,7 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
                     style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                     onLoad={() => {
                       setDiagExternalImg('loaded');
-                      console.log('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
+                      overlayDebugLog('[COIN-JAR-IMG-ELEMENT-TEST]', JSON.stringify({
                         src: diagnosticGift.originalUrl.slice(0, 100), status: 'loaded',
                         test: 'EXTERNAL_IMG',
                       }));
@@ -2957,4 +2958,6 @@ export const CoinJarProRenderer: React.FC<RendererProps<CoinJarProConfig> & { in
   );
 };
 
-export default memo(CoinJarProRenderer);
+// Named + default exports are both memoized — module registry uses the named export.
+export const CoinJarProRenderer = memo(CoinJarProRendererImpl);
+export default CoinJarProRenderer;

@@ -162,6 +162,13 @@
       widgetUrl.searchParams.get('screen') || ''
     );
 
+    // Per-screen maximum queue length (from URL parameter, fallback to 5)
+    const maxQueueParam = widgetUrl.searchParams.get('maxQueue');
+    const DEFAULT_MAX_QUEUE_LENGTH = 5;
+    const overlayMaxQueueLength = (maxQueueParam !== null && !isNaN(parseInt(maxQueueParam)))
+      ? Math.max(1, parseInt(maxQueueParam))
+      : DEFAULT_MAX_QUEUE_LENGTH;
+
     // Track active video per screen — only ONE video per screen at a time.
     // When a new video arrives for the same screen, it is queued FIFO.
     const activeVideoByScreen = {};
@@ -169,7 +176,10 @@
     // Per-screen FIFO video queue
     // Only ONE video plays at a time per screen. Additional videos are queued FIFO.
     const videoQueueByScreen = {};
-    const MAX_VIDEO_QUEUE_LENGTH = 100;
+    // Per-screen max queue lengths - will be populated from URL or defaults
+    const maxVideoQueueLengthByScreen = {};
+    // Initialize current screen with configured max
+    maxVideoQueueLengthByScreen[overlayScreenKey] = overlayMaxQueueLength;
 
     // Instance initialization diagnostic
     console.log('[OVERLAY-INSTANCE]', {
@@ -184,12 +194,11 @@
       const normalizedKey = normalizeScreen(screenKey);
       const queue = videoQueueByScreen[normalizedKey];
       if (!queue || queue.length === 0) {
-        console.log('[VIDEO-QUEUE]', {
-          phase: 'empty',
-          instanceId: overlayInstanceId,
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'playNextInQueue-empty',
           screenKey: normalizedKey,
           timestamp: Date.now(),
-        });
+        }));
         // Clear any stale active video reference
         if (activeVideoByScreen[normalizedKey]) {
           delete activeVideoByScreen[normalizedKey];
@@ -199,38 +208,35 @@
 
       // If there's already an active video for this screen, don't start another
       if (activeVideoByScreen[normalizedKey]) {
-        console.log('[VIDEO-QUEUE]', {
-          phase: 'wait',
-          instanceId: overlayInstanceId,
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'playNextInQueue-wait',
           screenKey: normalizedKey,
           activeActionExecutionId: activeVideoByScreen[normalizedKey].actionExecutionId,
           queueLength: queue.length,
           timestamp: Date.now(),
-        });
+        }));
         return;
       }
 
       const entry = queue[0];
       if (entry.started) {
-        console.log('[VIDEO-QUEUE]', {
-          phase: 'skip-started',
-          instanceId: overlayInstanceId,
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'playNextInQueue-skip-started',
           screenKey: normalizedKey,
           actionExecutionId: entry.actionExecutionId,
           timestamp: Date.now(),
-        });
+        }));
         return;
       }
 
       entry.started = true;
-      console.log('[VIDEO-QUEUE]', {
-        phase: 'start',
-        instanceId: overlayInstanceId,
+      console.log('[TIMING-TRACE]', JSON.stringify({
+        stage: 'playNextInQueue-start',
         screenKey: normalizedKey,
         actionExecutionId: entry.actionExecutionId,
         queueLength: queue.length,
         timestamp: Date.now(),
-      });
+      }));
 
       await playQueuedVideo(normalizedKey, entry);
     }
@@ -242,23 +248,43 @@
       const removalState = entry.removalState; // Use the SAME removalState object throughout lifecycle
       const videoScreenKey = normalizeScreen(data.screen || data.screenId || '');
 
-      console.log('[VIDEO-QUEUE]', {
-        phase: 'playing',
-        instanceId: overlayInstanceId,
+      // FIX 1+2: prefer lightweight local media URL; fall back to legacy base64/videoFile
+      const mediaSrc = data.mediaUrl || data.videoFile;
+      const mediaSrcIsLocalHttp = typeof mediaSrc === 'string' && mediaSrc.indexOf('http://127.0.0.1:18890/media/') === 0;
+      const videoSrcAssignMs = Date.now();
+
+      console.log('[TIMING-TRACE]', JSON.stringify({
+        stage: 'playQueuedVideo-entry',
+        actionExecutionId,
+        actionId: data.actionId,
         screenKey: videoScreenKey,
-        actionExecutionId: actionExecutionId,
+        hasMediaUrl: !!data.mediaUrl,
+        videoFileIsLocalHttp: typeof data.videoFile === 'string' && data.videoFile.indexOf('http://127.0.0.1:18890/media/') === 0,
+        videoFileIsBase64: typeof data.videoFile === 'string' && data.videoFile.indexOf('data:') === 0,
+        mediaSrcPrefix: typeof mediaSrc === 'string' ? mediaSrc.substring(0, 80) : null,
+        mediaSrcIsLocalHttp,
         timestamp: Date.now(),
-      });
+      }));
+
+      console.log('[TIMING-TRACE]', JSON.stringify({
+        stage: 'playQueuedVideo-playing',
+        actionExecutionId,
+        screenKey: videoScreenKey,
+        timestamp: Date.now(),
+      }));
 
       // Create overlay element
       const overlay = document.createElement("div");
       overlay.className = "media-overlay";
 
       // Create video element (use preload cache if available)
-      const preloaded = consumePreload(data.videoFile);
+      const preloaded = consumePreload(mediaSrc);
       const vid = preloaded || document.createElement("video");
       if (!preloaded) {
-        vid.src = data.videoFile;
+        // Local HTTP URL loads via range requests — no base64 decode required.
+        // preload=auto lets the browser start fetching immediately.
+        vid.preload = 'auto';
+        vid.src = mediaSrc || '';
         vid.autoplay = true;
         vid.playsInline = true;
         vid.setAttribute("playsinline", "");
@@ -270,6 +296,17 @@
         vid.volume = 1;
         vid.muted = false;
       }
+
+      console.log('[VIDEO-MEDIA-TIMING]', 'video-src-assigned', JSON.stringify({
+        actionExecutionId,
+        actionId: data.actionId,
+        screenKey: videoScreenKey,
+        srcAssignMs: Date.now() - videoSrcAssignMs,
+        isLocalHttp: mediaSrcIsLocalHttp,
+        readyState: vid.readyState,
+        networkState: vid.networkState,
+        timestamp: Date.now(),
+      }));
 
       overlay.appendChild(vid);
       document.body.appendChild(overlay);
@@ -297,8 +334,21 @@
         timestamp: Date.now(),
       });
 
-      // Duration-based removal
+      // Duration-based removal — Action duration is visibility lifetime for video
       const dur = (data.duration || 5) * 1000;
+      const videoStartMs = Date.now();
+      console.log('[ACTION-DURATION-TIMER]', JSON.stringify({
+        actionId: data.actionId,
+        effectType: 'video',
+        durationMs: dur,
+        actionExecutionId: actionExecutionId,
+      }));
+      console.log('[ACTION-EFFECT-START]', JSON.stringify({
+        actionId: data.actionId,
+        effectType: 'video',
+        duration: data.duration || 5,
+        actionExecutionId: actionExecutionId,
+      }));
 
       // Single idempotent completion/removal function for this queue entry
       const complete = () => {
@@ -321,18 +371,69 @@
         try { vid.pause(); } catch { /* already stopped */ }
         vid.src = '';
 
-        // Dispatch existing media-complete behavior
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'playQueuedVideo-complete',
+          actionExecutionId,
+          actionId: data.actionId,
+          elapsedMs: Date.now() - videoStartMs,
+          expectedDurationMs: dur,
+          timestamp: Date.now(),
+        }));
+
+        console.log('[ACTION-EFFECT-END]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'video',
+          elapsedMs: Date.now() - videoStartMs,
+          expectedDurationMs: dur,
+          actionExecutionId: actionExecutionId,
+        }));
+
+        // Relay completion across Browser Source → Electron renderer context.
         if (actionExecutionId) {
-          console.log('[VIDEO-QUEUE]', {
-            phase: 'complete',
-            instanceId: overlayInstanceId,
-            screenKey: videoScreenKey,
-            actionExecutionId: actionExecutionId,
+          const completion = {
+            type: 'media-complete',
+            mediaType: 'video',
+            screen: videoScreenKey,
+            actionExecutionId,
             actionId: data.actionId,
             actionName: data.actionName,
+            timestamp: Date.now(),
+          };
+          fetch('http://127.0.0.1:18890/event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(completion),
+          }).then((response) => {
+            console.log('[MEDIA-COMPLETE-RELAY][HTTP]', JSON.stringify({
+              actionExecutionId,
+              screen: videoScreenKey,
+              mediaType: 'video',
+              status: response.status,
+              ok: response.ok,
+              timestamp: Date.now(),
+            }));
+          }).catch((error) => {
+            console.error('[MEDIA-COMPLETE-RELAY][HTTP-ERROR]', JSON.stringify({
+              actionExecutionId,
+              screen: videoScreenKey,
+              mediaType: 'video',
+              error: error instanceof Error ? error.message : String(error),
+              timestamp: Date.now(),
+            }));
+          });
+        }
+
+        // Dispatch existing media-complete behavior
+        if (actionExecutionId) {
+          console.log('[TIMING-TRACE]', JSON.stringify({
+            stage: 'playQueuedVideo-media-complete-dispatch',
+            actionExecutionId,
+            actionId: data.actionId,
+            actionName: data.actionName,
+            screen: videoScreenKey,
             mediaType: 'video',
             timestamp: Date.now(),
-          });
+          }));
           window.dispatchEvent(new CustomEvent('rosae:media-complete', {
             detail: {
               type: 'media-complete',
@@ -374,13 +475,12 @@
         preloadNextVideo();
 
         // Advance queue - play next video
-        console.log('[VIDEO-QUEUE]', {
-          phase: 'next',
-          instanceId: overlayInstanceId,
-          screenKey: videoScreenKey,
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'playQueuedVideo-next-queue',
+          actionExecutionId,
           remainingQueueLength: queue?.length || 0,
           timestamp: Date.now(),
-        });
+        }));
         playNextInQueue(videoScreenKey);
       };
 
@@ -391,7 +491,9 @@
 
       // Video metadata loaded
       vid.onloadedmetadata = () => {
-        console.log('[VIDEO-QUEUE] loadedmetadata', JSON.stringify({
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'video-loadedmetadata',
+          actionExecutionId,
           actionName: data.actionName,
           videoWidth: vid.videoWidth,
           videoHeight: vid.videoHeight,
@@ -403,6 +505,12 @@
 
       // Video ready to play
       vid.oncanplay = () => {
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'video-oncanplay',
+          actionExecutionId,
+          readyState: vid.readyState,
+          timestamp: Date.now(),
+        }));
         // Only proceed if this video is still the active one for this screen
         if (removalState.removed) return;
         if (activeVideoByScreen[videoScreenKey]?.removalState !== removalState) {
@@ -417,7 +525,9 @@
       };
 
       vid.onplaying = () => {
-        console.log('[VIDEO-QUEUE] playing', JSON.stringify({
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'video-onplaying',
+          actionExecutionId,
           actionName: data.actionName,
           readyState: vid.readyState,
           timestamp: Date.now(),
@@ -482,7 +592,9 @@
           return false;
         }
         // First attempt: normal playback with audio
-        console.log('[OVERLAY-WIDGET-AUTOPLAY] normal play attempt', JSON.stringify({
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'attemptPlay-normal-attempt',
+          actionExecutionId,
           actionName: data.actionName,
           videoSrc: vid.src ? vid.src.substring(0, 100) : null,
           muted: vid.muted,
@@ -492,9 +604,19 @@
 
         try {
           await vid.play();
-          console.log('[OVERLAY-WIDGET-AUTOPLAY] normal play success', JSON.stringify({
+          console.log('[TIMING-TRACE]', JSON.stringify({
+            stage: 'attemptPlay-normal-success',
+            actionExecutionId,
             actionName: data.actionName,
             readyState: vid.readyState,
+            timestamp: Date.now(),
+          }));
+          console.log('[VIDEO-MEDIA-TIMING]', 'playback-started', JSON.stringify({
+            actionExecutionId,
+            actionId: data.actionId,
+            playbackStartMs: Date.now() - videoSrcAssignMs,
+            readyState: vid.readyState,
+            currentTime: vid.currentTime,
             timestamp: Date.now(),
           }));
           console.log('[VIDEO-QUEUE] COMPLETE', JSON.stringify({
@@ -534,6 +656,13 @@
               await vid.play();
               console.log('[OVERLAY-WIDGET-AUTOPLAY] muted autoplay success', JSON.stringify({
                 actionName: data.actionName,
+                readyState: vid.readyState,
+                timestamp: Date.now(),
+              }));
+              console.log('[VIDEO-MEDIA-TIMING]', 'playback-started-muted', JSON.stringify({
+                actionExecutionId,
+                actionId: data.actionId,
+                playbackStartMs: Date.now() - videoSrcAssignMs,
                 readyState: vid.readyState,
                 timestamp: Date.now(),
               }));
@@ -580,13 +709,16 @@
         }
       }
 
-      // Wait for canplay event before attempting play
-      if (vid.readyState >= 3) { // HAVE_FUTURE_DATA
+      // FIX 1+2: Local HTTP media can start play as soon as HAVE_CURRENT_DATA (2).
+      // Legacy base64 data URLs still typically need canplay (HAVE_FUTURE_DATA).
+      // Keep autoplay policy fallback (muted retry) unchanged.
+      if (vid.readyState >= 2) { // HAVE_CURRENT_DATA — safe to attempt play earlier
         attemptPlay();
       } else {
-        vid.oncanplay = () => {
-          vid.oncanplay = null; // Prevent duplicate calls
-          // Only proceed to play if this video is still the active one for this screen
+        let playAttempted = false;
+        const tryPlayOnce = () => {
+          if (playAttempted) return;
+          playAttempted = true;
           if (removalState.removed) return;
           if (activeVideoByScreen[videoScreenKey]?.removalState !== removalState) {
             console.log('[VIDEO-QUEUE] stale-video-cancelled', JSON.stringify({
@@ -598,6 +730,9 @@
           }
           attemptPlay();
         };
+        // Prefer loadeddata (earlier) then canplay for compatibility
+        vid.onloadeddata = tryPlayOnce;
+        vid.oncanplay = tryPlayOnce;
       }
     }
 
@@ -697,24 +832,25 @@
     function preloadNextVideo() {
       try {
         const ev = window.__rf_peekNextQueued?.();
-        if (!ev || ev.type !== 'video' || !ev.videoFile) { cleanupPreload(); return; }
-        if (ev.videoFile === _preloadSrc && _preloadVideo?.readyState >= 2) return; // already ready
-        if (ev.videoFile === _preloadSrc) return; // already loading
+        const preloadSrc = ev && (ev.mediaUrl || ev.videoFile);
+        if (!ev || ev.type !== 'video' || !preloadSrc) { cleanupPreload(); return; }
+        if (preloadSrc === _preloadSrc && _preloadVideo?.readyState >= 2) return; // already ready
+        if (preloadSrc === _preloadSrc) return; // already loading
         cleanupPreload();
-        _preloadSrc = ev.videoFile;
+        _preloadSrc = preloadSrc;
         _preloadVideo = document.createElement('video');
         _preloadVideo.preload = 'auto';
         _preloadVideo.muted = true;
-        _preloadVideo.src = ev.videoFile;
+        _preloadVideo.src = preloadSrc;
         _preloadVideo.load();
-        console.log('[PRELOAD] started', JSON.stringify({ src: ev.videoFile.substring(0, 80), ts: Date.now() }));
+        console.log('[PRELOAD] started', JSON.stringify({ src: String(preloadSrc).substring(0, 80), ts: Date.now() }));
       } catch { cleanupPreload(); }
     }
 
     function consumePreload(src) {
       if (_preloadVideo && _preloadSrc === src && _preloadVideo.readyState >= 2) {
         const el = _preloadVideo;
-        console.log('[PRELOAD] consumed', JSON.stringify({ src: src.substring(0, 80), readyState: el.readyState, ts: Date.now() }));
+        console.log('[PRELOAD] consumed', JSON.stringify({ src: String(src || '').substring(0, 80), readyState: el.readyState, ts: Date.now() }));
         _preloadVideo = null; _preloadSrc = null;
         el.preload = 'auto'; el.muted = false; el.loop = false;
         el.currentTime = 0;
@@ -731,20 +867,32 @@
       }
     }
 
+    function buildOverlayDedupKey(actionExecutionId, type) {
+      // Multi-transport can deliver the SAME event multiple times (SSE +
+      // CustomEvent + localStorage + BroadcastChannel). Different effect types
+      // under one actionExecutionId (sound + video + image) are DIFFERENT
+      // deliveries and must all run — key includes type.
+      if (!actionExecutionId) return null;
+      return actionExecutionId + '::' + (type || 'unknown');
+    }
+
     function showAlert(data) {
       if (!data) return;
+      if (data.type === 'media-complete' || data.eventType === 'media-complete') return;
       if (filterScreen && !(data.screen || data.screenId)) return;
 
-      // Deduplicate by actionExecutionId: the same event can arrive via multiple
-      // transport channels (BroadcastChannel, CustomEvent, localStorage, SSE).
-      // Only process the first delivery; ignore subsequent duplicates.
-      if (data.actionExecutionId) {
+      // Deduplicate per (actionExecutionId, type) so combined effects under one
+      // execution id all run, while multi-transport duplicates of the same
+      // effect type are ignored.
+      const dedupKey = buildOverlayDedupKey(data.actionExecutionId, data.type);
+      if (dedupKey) {
         if (!window.__overlayDedup) {
           window.__overlayDedup = new Map();
         }
-        const existing = window.__overlayDedup.get(data.actionExecutionId);
+        const existing = window.__overlayDedup.get(dedupKey);
         if (existing) {
           console.log('[OVERLAY-WIDGET] DUPLICATE DELIVERY IGNORED', {
+            dedupKey,
             actionExecutionId: data.actionExecutionId,
             screen: data.screen,
             type: data.type,
@@ -752,10 +900,10 @@
           });
           return;
         }
-        window.__overlayDedup.set(data.actionExecutionId, Date.now());
+        window.__overlayDedup.set(dedupKey, Date.now());
 
-        // Bounded cleanup: keep at most 100 entries, remove oldest
-        if (window.__overlayDedup.size > 100) {
+        // Bounded cleanup: keep at most 200 entries, remove oldest
+        if (window.__overlayDedup.size > 200) {
           const oldestKey = window.__overlayDedup.keys().next().value;
           if (oldestKey !== undefined) {
             window.__overlayDedup.delete(oldestKey);
@@ -767,9 +915,12 @@
 
       // ── SOUND (audio playback for TikTok LIVE Studio Browser Source) ──
       if (data.type === "sound" && data.soundFile) {
+        const soundStartMs = Date.now();
+        const expectedDurationMs = ((data.duration || 5) * 1000);
         console.log('[OVERLAY-WIDGET-RENDER] START', JSON.stringify({
           type: 'sound',
           actionName: data.actionName,
+          actionId: data.actionId,
           screen: data.screen,
           soundFile: data.soundFile ? data.soundFile.substring(0, 100) : null,
           soundFileLength: data.soundFile ? data.soundFile.length : 0,
@@ -777,7 +928,14 @@
           soundFadeIn: data.soundFadeIn,
           soundFadeOut: data.soundFadeOut,
           soundLoop: data.soundLoop,
+          duration: data.duration,
           timestamp: Date.now(),
+        }));
+        console.log('[ACTION-EFFECT-START]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'sound',
+          duration: data.duration || 5,
+          actionExecutionId: data.actionExecutionId,
         }));
 
         try {
@@ -848,6 +1006,8 @@
               timestamp: Date.now(),
             }));
             updateDiag('diag-last-render', 'ERROR', 'error');
+            // Signal completion on failure so the action queue can advance.
+            setTimeout(() => completeSound(), 0);
             // Remove from tracking
             activeAudioInstances.delete(audio);
           };
@@ -867,8 +1027,49 @@
               actionName: data.actionName,
               timestamp: Date.now(),
             }));
+            console.log('[ACTION-EFFECT-END]', JSON.stringify({
+              actionId: data.actionId,
+              effectType: 'sound',
+              elapsedMs: Date.now() - soundStartMs,
+              expectedDurationMs,
+              actionExecutionId: data.actionExecutionId,
+            }));
             // Remove from tracking
             activeAudioInstances.delete(audio);
+            // Relay completion across Browser Source → Electron renderer context.
+            if (data.actionExecutionId) {
+              const completion = {
+                type: 'media-complete',
+                mediaType: 'sound',
+                screen: data.screen,
+                actionExecutionId: data.actionExecutionId,
+                actionId: data.actionId,
+                actionName: data.actionName,
+                timestamp: Date.now(),
+              };
+              fetch('http://127.0.0.1:18890/event', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(completion),
+              }).then((response) => {
+                console.log('[MEDIA-COMPLETE-RELAY][HTTP]', JSON.stringify({
+                  actionExecutionId: data.actionExecutionId,
+                  screen: data.screen,
+                  mediaType: 'sound',
+                  status: response.status,
+                  ok: response.ok,
+                  timestamp: Date.now(),
+                }));
+              }).catch((error) => {
+                console.error('[MEDIA-COMPLETE-RELAY][HTTP-ERROR]', JSON.stringify({
+                  actionExecutionId: data.actionExecutionId,
+                  screen: data.screen,
+                  mediaType: 'sound',
+                  error: error instanceof Error ? error.message : String(error),
+                  timestamp: Date.now(),
+                }));
+              });
+            }
             // Notify action queue of SOUND completion (media-aware)
             if (data.actionExecutionId) {
               console.log('[OVERLAY-WIDGET-COMPLETION] sound complete', JSON.stringify({
@@ -895,12 +1096,18 @@
 
           audio.onended = completeSound;
 
-          // Duration-based stop: ensures playback stops after configured duration.
+          // Duration-based stop: ensures playback stops after configured Action duration.
           // For looping sounds: `ended` never fires, so this is the only completion trigger.
           // For non-looping sounds shorter than duration: onended fires first, timer is cleared.
           // For non-looping sounds longer than duration: timer fires first, stops audio.
           if (data.duration) {
             const durMs = (data.duration || 5) * 1000;
+            console.log('[ACTION-DURATION-TIMER]', JSON.stringify({
+              actionId: data.actionId,
+              effectType: 'sound',
+              durationMs: durMs,
+              actionExecutionId: data.actionExecutionId,
+            }));
             soundDurationTimer = setTimeout(() => {
               if (soundCompleted) return;
               // Stop actual audio playback before completing
@@ -923,6 +1130,7 @@
               timestamp: Date.now(),
             }));
             updateDiag('diag-last-render', 'ERROR', 'error');
+            completeSound();
             activeAudioInstances.delete(audio);
           });
 
@@ -959,17 +1167,24 @@
         // ── Per-screen FIFO queue ──────────────────────────────────────
         if (!videoQueueByScreen[videoScreenKey]) {
           videoQueueByScreen[videoScreenKey] = [];
+          // Initialize max queue length for this screen if not set
+          if (maxVideoQueueLengthByScreen[videoScreenKey] === undefined) {
+            maxVideoQueueLengthByScreen[videoScreenKey] = DEFAULT_MAX_QUEUE_LENGTH;
+          }
         }
 
-        // Check queue capacity
-        if (videoQueueByScreen[videoScreenKey].length >= MAX_VIDEO_QUEUE_LENGTH) {
+        // Get max queue length for this screen
+        const maxQueueForScreen = maxVideoQueueLengthByScreen[videoScreenKey] ?? DEFAULT_MAX_QUEUE_LENGTH;
+
+        // Check queue capacity (per-screen limit)
+        if (videoQueueByScreen[videoScreenKey].length >= maxQueueForScreen) {
           console.warn('[VIDEO-QUEUE]', {
             phase: 'reject-full',
             instanceId: overlayInstanceId,
             screenKey: videoScreenKey,
             actionName: data.actionName,
             queueLength: videoQueueByScreen[videoScreenKey].length,
-            maxLength: MAX_VIDEO_QUEUE_LENGTH,
+            maxLength: maxQueueForScreen,
             timestamp: Date.now(),
           });
           return;
@@ -1003,23 +1218,34 @@
         };
         videoQueueByScreen[videoScreenKey].push(queueEntry);
 
-        console.log('[VIDEO-QUEUE]', {
-          phase: 'enqueue',
-          instanceId: overlayInstanceId,
-          screenKey: videoScreenKey,
+        console.log('[TIMING-TRACE]', JSON.stringify({
+          stage: 'overlay-widget-video-enqueue',
           actionExecutionId: data.actionExecutionId,
+          actionId: data.actionId,
+          actionName: data.actionName,
+          screen: videoScreenKey,
           queueLength: videoQueueByScreen[videoScreenKey].length,
+          maxQueueForScreen,
+          activeVideoExists: !!activeVideoByScreen[videoScreenKey],
           timestamp: Date.now(),
-        });
+        }));
 
         // If no video currently playing, start this one immediately
         if (!activeVideoByScreen[videoScreenKey]) {
+          console.log('[TIMING-TRACE]', JSON.stringify({
+            stage: 'overlay-widget-playNextInQueue-call',
+            actionExecutionId: data.actionExecutionId,
+            screen: videoScreenKey,
+            timestamp: Date.now(),
+          }));
           playNextInQueue(videoScreenKey);
         } else {
-          console.log('[OVERLAY-WIDGET-VIDEO-QUEUE] queued behind active', JSON.stringify({
-            screen: videoScreenKey,
+          console.log('[TIMING-TRACE]', JSON.stringify({
+            stage: 'overlay-widget-queued-behind-active',
             actionExecutionId: data.actionExecutionId,
+            screen: videoScreenKey,
             queuePosition: videoQueueByScreen[videoScreenKey].length,
+            activeActionExecutionId: activeVideoByScreen[videoScreenKey]?.actionExecutionId,
             timestamp: Date.now(),
           }));
         }
@@ -1065,23 +1291,23 @@
           // Completion is dispatched by remove() below — NOT here
         };
 
-        img.onerror = (e) => {
-          console.error('[OVERLAY-WIDGET-RENDER] IMAGE ERROR', JSON.stringify({
-            actionName: data.actionName,
-            error: 'Failed to load image',
-            timestamp: Date.now(),
-          }));
-          console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
-            type: 'image',
-            actionName: data.actionName,
-            error: 'Failed to load image',
-            timestamp: Date.now(),
-          }));
-          updateDiag('diag-last-render', 'ERROR', 'error');
-        };
-
         overlay.appendChild(img);
         document.body.appendChild(overlay);
+
+        const imageStartMs = Date.now();
+        const imageDurationMs = (data.duration || 5) * 1000;
+        console.log('[ACTION-EFFECT-START]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'image',
+          duration: data.duration || 5,
+          actionExecutionId: data.actionExecutionId,
+        }));
+        console.log('[ACTION-DURATION-TIMER]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'image',
+          durationMs: imageDurationMs,
+          actionExecutionId: data.actionExecutionId,
+        }));
 
         let imageRemoved = false;
         const remove = () => {
@@ -1106,8 +1332,48 @@
             imageComplete: img.complete,
             timestamp: Date.now(),
           }));
-          // Dispatch completion event BEFORE removing DOM
+          console.log('[ACTION-EFFECT-END]', JSON.stringify({
+            actionId: data.actionId,
+            effectType: 'image',
+            elapsedMs: Date.now() - imageStartMs,
+            expectedDurationMs: imageDurationMs,
+            actionExecutionId: data.actionExecutionId,
+          }));
+          // Relay completion across Browser Source → Electron renderer context.
           if (data.actionExecutionId) {
+            const completion = {
+              type: 'media-complete',
+              mediaType: 'image',
+              screen: data.screen,
+              actionExecutionId: data.actionExecutionId,
+              actionId: data.actionId,
+              actionName: data.actionName,
+              timestamp: Date.now(),
+            };
+            fetch('http://127.0.0.1:18890/event', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(completion),
+            }).then((response) => {
+              console.log('[MEDIA-COMPLETE-RELAY][HTTP]', JSON.stringify({
+                actionExecutionId: data.actionExecutionId,
+                screen: data.screen,
+                mediaType: 'image',
+                status: response.status,
+                ok: response.ok,
+                timestamp: Date.now(),
+              }));
+            }).catch((error) => {
+              console.error('[MEDIA-COMPLETE-RELAY][HTTP-ERROR]', JSON.stringify({
+                actionExecutionId: data.actionExecutionId,
+                screen: data.screen,
+                mediaType: 'image',
+                error: error instanceof Error ? error.message : String(error),
+                timestamp: Date.now(),
+              }));
+            });
+
+            // Dispatch completion event BEFORE removing DOM
             console.log('[OVERLAY-WIDGET-COMPLETION] image complete', JSON.stringify({
               actionExecutionId: data.actionExecutionId,
               actionId: data.actionId,
@@ -1131,15 +1397,49 @@
           if (overlay.parentElement) overlay.remove();
         };
 
-        setTimeout(remove, (data.duration || 5) * 1000);
+        img.onerror = () => {
+          console.error('[OVERLAY-WIDGET-RENDER] IMAGE ERROR', JSON.stringify({
+            actionName: data.actionName,
+            error: 'Failed to load image',
+            timestamp: Date.now(),
+          }));
+          console.log('[OVERLAY-WIDGET-RENDER] ERROR', JSON.stringify({
+            type: 'image',
+            actionName: data.actionName,
+            error: 'Failed to load image',
+            timestamp: Date.now(),
+          }));
+          updateDiag('diag-last-render', 'ERROR', 'error');
+          remove();
+        };
+
+        setTimeout(remove, imageDurationMs);
         return;
       }
 
       // ── KEYSTROKE ──
       if (data.type === "keystroke" && data.keystrokeKeys) {
+        // Visual card lifetime = keystrokeDuration (fallback Action duration).
+        // NOT holdMs — holdMs is native key hold on the SendInput path.
+        const keystrokeVisualSeconds = data.keystrokeDuration || data.duration || 5;
+        const keystrokeVisualMs = keystrokeVisualSeconds * 1000;
+        const keystrokeStartMs = Date.now();
+        console.log('[ACTION-EFFECT-START]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'keystroke',
+          duration: keystrokeVisualSeconds,
+          holdMs: data.keystrokeHoldMs || 100,
+          actionExecutionId: data.actionExecutionId,
+        }));
+        console.log('[ACTION-DURATION-TIMER]', JSON.stringify({
+          actionId: data.actionId,
+          effectType: 'keystroke',
+          durationMs: keystrokeVisualMs,
+          actionExecutionId: data.actionExecutionId,
+        }));
         const card = document.createElement("div");
         card.className = "alert-card alert-action";
-        card.style.setProperty("--out-delay", "4.5s");
+        card.style.setProperty("--out-delay", Math.max(0, (keystrokeVisualMs - 400) / 1000) + "s");
         card.innerHTML = `
           <div class="alert-icon">${ICONS.keystroke || "⌨️"}</div>
           <div class="alert-body">
@@ -1150,7 +1450,16 @@
           </div>
         `;
         container.prepend(card);
-        setTimeout(() => { if (card.parentElement) card.remove(); }, 5000);
+        setTimeout(() => {
+          console.log('[ACTION-EFFECT-END]', JSON.stringify({
+            actionId: data.actionId,
+            effectType: 'keystroke',
+            elapsedMs: Date.now() - keystrokeStartMs,
+            expectedDurationMs: keystrokeVisualMs,
+            actionExecutionId: data.actionExecutionId,
+          }));
+          if (card.parentElement) card.remove();
+        }, keystrokeVisualMs);
         while (container.children.length > 5) container.lastElementChild.remove();
         return;
       }

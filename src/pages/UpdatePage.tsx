@@ -264,15 +264,16 @@ export function UpdatePage(): React.JSX.Element {
               value={preferences.autoCheck}
               onChange={(v) => setPreferences({ autoCheck: v })}
             />
-            <ToggleSetting
-              label="Automatic Downloads"
-              description="Download updates automatically when available"
-              value={preferences.autoDownload}
-              onChange={(v) => setPreferences({ autoDownload: v })}
-            />
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-white">Automatic Downloads</div>
+                <div className="text-xs text-gray-500">Updates are downloaded manually when you choose Download.</div>
+              </div>
+              <span className="text-xs text-gray-500">Manual</span>
+            </div>
             <ToggleSetting
               label="Silent Mode"
-              description="Don't show update notifications"
+              description="Hide update notifications; installation still requires your confirmation"
               value={preferences.silent}
               onChange={(v) => setPreferences({ silent: v })}
             />

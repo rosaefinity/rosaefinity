@@ -174,40 +174,46 @@ export function getTargetAccumulationPosition(
 
       if (!tooCrowded) {
         // [COIN-JAR-ACCUMULATION] log each placed gift
-        console.log('[COIN-JAR-ACCUMULATION]', JSON.stringify({
-          giftIndex: existingGifts.length,
-          targetX: Math.round(cx),
-          targetY: Math.round(cy),
-          availableLeft: Math.round(leftAtRow),
-          availableRight: Math.round(rightAtRow),
-          availableWidth: Math.round(usableWidth),
-          row: rowIdx,
-          rowCapacity: numPositions,
-          colIndex: i,
-        }));
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+          console.log('[COIN-JAR-ACCUMULATION]', JSON.stringify({
+            giftIndex: existingGifts.length,
+            targetX: Math.round(cx),
+            targetY: Math.round(cy),
+            availableLeft: Math.round(leftAtRow),
+            availableRight: Math.round(rightAtRow),
+            availableWidth: Math.round(usableWidth),
+            row: rowIdx,
+            rowCapacity: numPositions,
+            colIndex: i,
+          }));
+        }
         return { x: cx, y: cy };
       } else {
-        console.log('[COIN-JAR-ACCUMULATION-REJECT]', JSON.stringify({
-          giftIndex: existingGifts.length,
-          candidateX: Math.round(cx),
-          candidateY: Math.round(cy),
-          reason: 'overlap',
-        }));
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+          console.log('[COIN-JAR-ACCUMULATION-REJECT]', JSON.stringify({
+            giftIndex: existingGifts.length,
+            candidateX: Math.round(cx),
+            candidateY: Math.round(cy),
+            reason: 'overlap',
+          }));
+        }
       }
     }
   }
 
   // ── Full-jar fallback: scan upward from pile top to find ANY valid gap ──
-  console.log('[COIN-JAR-FULL] NO_POSITION_AVAILABLE', JSON.stringify({
-    accumulatedCount: existingGifts.length,
-    pileTopY: Math.round(pileTopY),
-    reason: 'main_grid_scan_exhausted',
-  }));
-  console.log('[COIN-JAR-FULL] SEARCH_START', JSON.stringify({
-    accumulatedCount: existingGifts.length,
-    pileTopY: Math.round(pileTopY),
-    innerTop, innerBottom,
-  }));
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+    console.log('[COIN-JAR-FULL] NO_POSITION_AVAILABLE', JSON.stringify({
+      accumulatedCount: existingGifts.length,
+      pileTopY: Math.round(pileTopY),
+      reason: 'main_grid_scan_exhausted',
+    }));
+    console.log('[COIN-JAR-FULL] SEARCH_START', JSON.stringify({
+      accumulatedCount: existingGifts.length,
+      pileTopY: Math.round(pileTopY),
+      innerTop, innerBottom,
+    }));
+  }
 
   const minDistSq = MIN_GAP * MIN_GAP;
   for (let fallbackRow = 1; fallbackRow <= 60; fallbackRow++) {
@@ -244,10 +250,12 @@ export function getTargetAccumulationPosition(
         }
       }
       if (!tooCrowded) {
-        console.log('[COIN-JAR-FULL] VALID_POSITION_FOUND', JSON.stringify({
-          x: Math.round(cx), y: Math.round(fallbackY),
-          fallbackRow, colIndex: i,
-        }));
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+          console.log('[COIN-JAR-FULL] VALID_POSITION_FOUND', JSON.stringify({
+            x: Math.round(cx), y: Math.round(fallbackY),
+            fallbackRow, colIndex: i,
+          }));
+        }
         return { x: cx, y: fallbackY };
       }
     }
@@ -257,11 +265,13 @@ export function getTargetAccumulationPosition(
   const absFallbackY = Math.max(innerTop + HALF, Math.min(pileTopY - rowStep, innerBottom - HALF));
   const [absLeft, absRight] = jarBounds(absFallbackY);
   const clampedX = Math.max(absLeft + HALF, Math.min(centerX, absRight - HALF));
-  console.log('[COIN-JAR-FULL] FALLBACK', JSON.stringify({
-    x: Math.round(clampedX), y: Math.round(absFallbackY),
-    reason: 'no_valid_position_found',
-    jarBoundsLeft: absLeft, jarBoundsRight: absRight,
-  }));
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+    console.log('[COIN-JAR-FULL] FALLBACK', JSON.stringify({
+      x: Math.round(clampedX), y: Math.round(absFallbackY),
+      reason: 'no_valid_position_found',
+      jarBoundsLeft: absLeft, jarBoundsRight: absRight,
+    }));
+  }
   return { x: clampedX, y: absFallbackY };
 }
 
@@ -359,10 +369,12 @@ export function updateFallingGiftPhysics(
 
   // Check bounce settle BEFORE physics update (before gravity increases velocity above threshold)
   if (phase === 'bounce' && Math.abs(velocity.y) < SETTLE_THRESHOLD && Math.abs(velocity.x) < SETTLE_THRESHOLD) {
-    console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_FROM_BOUNCE', {
-      y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
-      baseY: Math.round(baseY),
-    });
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+      console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_FROM_BOUNCE', {
+        y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
+        baseY: Math.round(baseY),
+      });
+    }
     phase = 'settle';
     y = baseY;
     velocity.x = 0;
@@ -419,20 +431,24 @@ export function updateFallingGiftPhysics(
       }
 
       if (Math.abs(velocity.y) < SETTLE_THRESHOLD && Math.abs(velocity.x) < SETTLE_THRESHOLD) {
-        console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_DIRECT', {
-          prevPhase: gift.phase, y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
-          baseY: Math.round(baseY), x: Math.round(x),
-        });
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+          console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_DIRECT', {
+            prevPhase: gift.phase, y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
+            baseY: Math.round(baseY), x: Math.round(x),
+          });
+        }
         phase = 'settle';
         y = baseY;
         velocity.x = 0;
         velocity.y = 0;
       } else {
         // Bounce
-        console.log('[COIN-JAR-DEBUG] PHASE_BOUNCE', {
-          prevPhase: gift.phase, y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
-          baseY: Math.round(baseY),
-        });
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+          console.log('[COIN-JAR-DEBUG] PHASE_BOUNCE', {
+            prevPhase: gift.phase, y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
+            baseY: Math.round(baseY),
+          });
+        }
         y = baseY;
         velocity.y *= -BOUNCE_DAMPING;
         velocity.x *= 0.8;
@@ -442,10 +458,12 @@ export function updateFallingGiftPhysics(
 
     // Transition from bounce to settle
     if (phase === 'bounce' && Math.abs(velocity.y) < SETTLE_THRESHOLD && Math.abs(velocity.x) < SETTLE_THRESHOLD) {
-      console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_FROM_BOUNCE', {
-        y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
-        baseY: Math.round(baseY),
-      });
+      if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') {
+        console.log('[COIN-JAR-DEBUG] PHASE_SETTLE_FROM_BOUNCE', {
+          y: Math.round(y), vy: Math.round(velocity.y * 100) / 100,
+          baseY: Math.round(baseY),
+        });
+      }
       phase = 'settle';
       y = baseY;
       velocity.x = 0;

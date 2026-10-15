@@ -67,23 +67,23 @@ const DEFAULT_FEATURES: LicenseV2Features = {
  */
 async function fetchSubscriptionFromAPI(): Promise<{ plan: string; status: string; features: LicenseV2Features; expiresAt: number | null } | null> {
   const session = useAuthStore.getState().session;
-  console.log('[ENTITLEMENT-ELECTRON] auth initialized', { hasSession: !!session, hasToken: !!session?.accessToken });
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] auth initialized', { hasSession: !!session, hasToken: !!session?.accessToken });
   if (!session?.accessToken) {
-    console.log('[ENTITLEMENT-ELECTRON] access token NOT present — returning null');
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] access token NOT present — returning null');
     return null;
   }
-  console.log('[ENTITLEMENT-ELECTRON] access token present');
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] access token present');
   try {
     const url = `${API_URL}/v1/auth/subscription`;
-    console.log('[ENTITLEMENT-ELECTRON] subscription request URL', { url, isElectron: !!api() });
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] subscription request URL', { url, isElectron: !!api() });
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
-    console.log('[ENTITLEMENT-ELECTRON] subscription HTTP response', { status: res.status, ok: res.ok });
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] subscription HTTP response', { status: res.status, ok: res.ok });
     const json = await res.json();
-    console.log('[ENTITLEMENT-ELECTRON] subscription raw response', { success: json.success, plan: json.data?.plan, status: json.data?.status });
+    if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] subscription raw response', { success: json.success, plan: json.data?.plan, status: json.data?.status });
     if (json.success && json.data) {
-      console.log('[ENTITLEMENT-ELECTRON] fetched subscription from API:', json.data);
+      if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] fetched subscription from API:', json.data);
       return {
         plan: json.data.plan || 'free',
         status: json.data.status || 'active',
@@ -117,11 +117,11 @@ export const useLicenseStore = create<LicenseStore>()(
       const wasInit = get().isInitialized;
       set({ isLoading: true, lastError: null, userId });
       try {
-        console.log('[ENTITLEMENT-ELECTRON] initLicense start', { userId, isElectron: !!api(), wasInitialized: wasInit });
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] initLicense start', { userId, isElectron: !!api(), wasInitialized: wasInit });
         const sub = await fetchSubscriptionFromAPI();
         if (sub) {
-          console.log('[ENTITLEMENT-ELECTRON] normalized subscription', { plan: sub.plan, status: sub.status });
-          console.log('[ENTITLEMENT-ELECTRON] store before update', { prevPlan });
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] normalized subscription', { plan: sub.plan, status: sub.status });
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] store before update', { prevPlan });
           set({
             plan: sub.plan as 'free' | 'pro',
             status: sub.status as 'active' | 'expired' | 'suspended',
@@ -132,9 +132,9 @@ export const useLicenseStore = create<LicenseStore>()(
           });
           // Notify listeners (e.g. app-store profile lock recalculation) that entitlements are now authoritative
           window.dispatchEvent(new CustomEvent('rosae:license-updated'));
-          console.log('[ENTITLEMENT-ELECTRON] store after update', { plan: sub.plan, wasStaleFree: prevPlan === 'free' && sub.plan === 'pro' });
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] store after update', { plan: sub.plan, wasStaleFree: prevPlan === 'free' && sub.plan === 'pro' });
         } else {
-          console.log('[ENTITLEMENT-ELECTRON] no subscription found, defaulting to free');
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] no subscription found, defaulting to free');
           set({ isInitialized: true, isLoading: false });
           window.dispatchEvent(new CustomEvent('rosae:license-updated'));
         }
@@ -150,16 +150,18 @@ export const useLicenseStore = create<LicenseStore>()(
       const { userId } = get();
       if (!userId) return;
       try {
-        console.log('[ENTITLEMENT-ELECTRON] refresh start', { userId });
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] refresh start', { userId });
         const sub = await fetchSubscriptionFromAPI();
         if (sub) {
-          console.log('[ENTITLEMENT-ELECTRON] refresh normalized', { plan: sub.plan, status: sub.status });
+          if (typeof window !== 'undefined' && window.localStorage?.getItem('rf_overlay_debug') === '1') console.log('[ENTITLEMENT-ELECTRON] refresh normalized', { plan: sub.plan, status: sub.status });
           set({
             plan: sub.plan as 'free' | 'pro',
             status: sub.status as 'active' | 'expired' | 'suspended',
             features: sub.features,
             expiresAt: sub.expiresAt,
           });
+          // Notify listeners (e.g. app-store profile lock recalculation) that entitlements have changed
+          window.dispatchEvent(new CustomEvent('rosae:license-updated'));
         }
       } catch (err: any) {
         set({ lastError: err.message });

@@ -110,11 +110,18 @@ export function CustomizePage() {
   const handleConfigChange = useCallback(
     (key: string, value: unknown) => {
       const inst = instanceRef.current;
+      // User target edits redefine the increase-mode step (spec: newTarget
+      // = target + initialTarget). System-driven increases never route
+      // through this handler, so initialTarget stays stable mid-session.
+      const extra: Record<string, unknown> =
+        key === 'target' && typeof value === 'number' && value > 0
+          ? { initialTarget: value }
+          : {};
       if (inst) {
-        updateConfig(inst.id, { ...inst.config, [key]: value });
+        updateConfig(inst.id, { ...inst.config, [key]: value, ...extra });
       } else if (mod) {
         // No instance yet — create one on first change
-        const newConfig = { ...(mod.defaultConfig as Record<string, unknown>), [key]: value };
+        const newConfig = { ...(mod.defaultConfig as Record<string, unknown>), [key]: value, ...extra };
         const created = addInstance({
           moduleId: mod.id,
           name: mod.name,
@@ -302,14 +309,13 @@ export function CustomizePage() {
         const goals = useGoalStore.getState().goals;
         const goal = goals.find((g) => g.enabled);
         if (goal) {
+          // Spec-compliant mode progression — progress is PRESERVED (not reset).
+          // increase: newTarget = target + initialTarget
+          // double:   newTarget = target × 2
           if (reachedBehavior === 'increase') {
-            useGoalStore.getState().updateGoal(goal.id, { target: goal.target + goal.target });
-            useGoalStore.getState().updateRuntime(goal.id, { current: 0, reached: false, lastCompletedTarget: 0 });
-            useGoalStore.getState().broadcastGoalProgress(goal.id);
+            useGoalStore.getState().increaseGoalTarget(goal.id);
           } else if (reachedBehavior === 'double') {
-            useGoalStore.getState().updateGoal(goal.id, { target: goal.target * 2 });
-            useGoalStore.getState().updateRuntime(goal.id, { current: 0, reached: false, lastCompletedTarget: 0 });
-            useGoalStore.getState().broadcastGoalProgress(goal.id);
+            useGoalStore.getState().doubleGoalTarget(goal.id);
           }
         }
       }
@@ -371,6 +377,20 @@ export function CustomizePage() {
     instanceModuleId: instance?.moduleId,
     resolvedModuleId: mod?.id,
     currentProfileId: currentProfileId,
+    // [GOAL-CONFIG-FORENSIC] boundary G — full keys + goal fields (temporary)
+    effectiveConfigKeys: effectiveConfig ? Object.keys(effectiveConfig) : null,
+    effectiveConfigGoalFields: {
+      target: (effectiveConfig as any)?.target ?? null,
+      initialTarget: (effectiveConfig as any)?.initialTarget ?? null,
+      reachedBehavior: (effectiveConfig as any)?.reachedBehavior ?? null,
+      current: (effectiveConfig as any)?.current ?? null,
+    },
+    instanceConfigKeys: instance?.config ? Object.keys(instance.config as object) : null,
+    instanceConfigGoalFields: {
+      target: (instance?.config as any)?.target ?? null,
+      initialTarget: (instance?.config as any)?.initialTarget ?? null,
+      reachedBehavior: (instance?.config as any)?.reachedBehavior ?? null,
+    },
     effectiveConfig: {
       textColor: effectiveConfig?.textColor,
       barColor: effectiveConfig?.barColor,

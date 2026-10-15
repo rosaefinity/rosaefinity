@@ -144,6 +144,23 @@ export interface ElectronAPI {
   openOverlay: () => void;
   closeOverlay: () => void;
   sendToOverlay: (data: any) => void;
+  /** FIX 1+2: register Dexie-resolved media for local /media/{id} serving */
+  mediaRegister?: (payload: {
+    mediaId: string;
+    type?: string;
+    fileName?: string;
+    data: string;
+    actionId?: string;
+  }) => Promise<{
+    success: boolean;
+    mediaId?: string;
+    mediaUrl?: string;
+    cached?: boolean;
+    contentType?: string;
+    size?: number;
+    error?: string;
+    code?: string;
+  }>;
   onOverlayEvent: (cb: (data: any) => void) => () => void;
   onOverlayConnected: (cb: (data: any) => void) => () => void;
   onOverlayDisconnected: (cb: (data: any) => void) => () => void;
@@ -152,6 +169,34 @@ export interface ElectronAPI {
   sendKeystroke: (keys: string, holdMs?: number) => Promise<boolean>;
   sendKeystrokes: (keys: string, opts?: { holdMs?: number; eventData?: any }) => void;
   onKeystrokeEvent: (cb: (data: any) => void) => () => void;
+  diagnosticPackagedRuntime: () => Promise<{
+    success: boolean;
+    processType: string;
+    platform: string;
+    arch: string;
+    cwd: string;
+    dirname: string;
+    resourcesPath: string;
+    appPath: string;
+    isPackaged: boolean;
+    nutKeyboard: boolean;
+    nutKey: boolean;
+    robot: boolean;
+    keystrokeKeymapExists: boolean;
+    nutKeyValues: Record<string, any>;
+    robotjsValues: Record<string, any>;
+    keymapTest?: Record<string, any>;
+    keystrokeKeymapError?: string;
+    error?: string;
+    stack?: string;
+  }>;
+  diagnosticTestPackagedKeystroke: (keys: string, holdMs?: number) => Promise<{
+    success: boolean;
+    keys: string;
+    holdMs: number;
+    error?: string;
+    stack?: string;
+  }>;
 
   // Global Input Hook
   startGlobalHook: (screen?: string) => Promise<{ success: boolean; running: boolean }>;
@@ -188,8 +233,12 @@ export interface ElectronAPI {
   obsTest: (opts: { ip: string; port: number; password: string }) => Promise<{ success: boolean; error?: string }>;
   obsStatus: () => Promise<{ connected: boolean }>;
   obsSwitchScene: (opts: { sceneName: string }) => Promise<any>;
-  obsGetScenes: () => Promise<any>;
+  obsGetScenes: () => Promise<
+    | { success: true; scenes: string[]; currentScene?: string | null }
+    | { success: false; error?: string; scenes?: string[] }
+  >;
   obsToggleSource: (opts: { sceneName: string; sourceName: string }) => Promise<any>;
+  onObsStatusChanged: (cb: (data: { connected: boolean }) => void) => () => void;
 
   // Streamer.bot
   sbSetConfig: (config: any) => void;
@@ -318,6 +367,8 @@ export interface ElectronAPI {
     progress: any;
     currentInfo: any;
     lastCheckedAt: number | null;
+    error?: string | null;
+    releaseNotes?: string;
   }>;
   updateGetPreferences: () => Promise<{
     channel: string;
