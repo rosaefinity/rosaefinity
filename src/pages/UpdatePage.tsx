@@ -7,6 +7,7 @@ import React from "react";
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useUpdateStore } from '../store/update-store';
+import { useAppVersion } from '../hooks/use-app-version';
 import { isElectron } from '../services/electron-service';
 import { Button } from '../components/ui/button';
 import type { UpdateChannel } from '../services/update/types';
@@ -37,12 +38,13 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof
 
 export function UpdatePage(): React.JSX.Element {
   const {
-    status, currentVersion, latestVersion, channel, progress,
+    status, latestVersion, channel, progress,
     currentInfo, releaseNotes, lastCheckedAt, lastInstalledAt,
     ignoredVersions, preferences, error,
     checkForUpdates, downloadUpdate, installUpdate, cancelDownload,
     setChannel, setPreferences, skipVersion, unskipVersion, clearError,
   } = useUpdateStore();
+  const currentVersion = useAppVersion();
 
   const [showPreferences, setShowPreferences] = useState(false);
   const [showIgnored, setShowIgnored] = useState(false);

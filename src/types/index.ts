@@ -44,6 +44,7 @@ export interface ActionAdvancedSettings {
   userCooldown: number;
   fadeInOut: boolean;
   repeatCombo: boolean;
+  maxCombo: number;
   skipNext: boolean;
 }
 
@@ -105,6 +106,7 @@ export interface Action {
   userCooldown?: number;
   fadeInOut?: boolean;
   repeatCombo?: boolean;
+  maxCombo?: number;
   skipNext?: boolean;
   createdAt: string;
   updatedAt: string;

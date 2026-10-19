@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useAuthStore } from "../../store/auth-store";
 import { useLicenseStore } from "../../store/license-store";
+import { useAppVersion } from "../../hooks/use-app-version";
 import { RosaeFinityLogo } from "../branding/RosaeFinityLogo";
 import {
   LayoutDashboard, Settings, Zap, Bell, Volume2,
@@ -144,7 +145,7 @@ export function Sidebar() {
         {/* Version */}
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_rgba(250,204,21,0.5)]" />
-          <span className="text-xs text-white/30">v1.0.1</span>
+          <span className="text-xs text-white/30">v{useAppVersion()}</span>
         </div>
       </div>
     </aside>

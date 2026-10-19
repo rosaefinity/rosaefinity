@@ -2046,6 +2046,39 @@ export const useAppStore = create<AppStore>()(
             }
           }
 
+          // Repair overlayScreensMaxQueue if missing or partial.
+          // This ensures existing profiles that predate the per-screen queue feature
+          // get the default keys without losing any other setupConfig fields.
+          if (sc) {
+            const defaults = DEFAULT_SETUP.overlayScreensMaxQueue;
+            if (!sc.overlayScreensMaxQueue) {
+              useAppStore.setState({
+                setupConfig: {
+                  ...sc,
+                  overlayScreensMaxQueue: defaults,
+                },
+              });
+            } else {
+              let needsRepair = false;
+              const repaired = { ...sc.overlayScreensMaxQueue };
+              for (let i = 0; i < 8; i++) {
+                const key = `screen-${i}`;
+                if (repaired[key] === undefined) {
+                  repaired[key] = defaults[key];
+                  needsRepair = true;
+                }
+              }
+              if (needsRepair) {
+                useAppStore.setState({
+                  setupConfig: {
+                    ...sc,
+                    overlayScreensMaxQueue: repaired,
+                  },
+                });
+              }
+            }
+          }
+
           // Recalculate profile locks after rehydration using actual persisted state.
           // Uses the rehydrated streamProfiles and currentProfileId (not pre-rehydration defaults).
           // Handles both initialization orders: license init before or after rehydration.

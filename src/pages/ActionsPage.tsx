@@ -15,8 +15,9 @@ import { sendToOverlay } from "../lib/overlay-bus";
 import { db, saveActionMedia, deleteActionMedia, getAllSounds } from "../lib/db";
 import { getOverlayWidgetUrl } from "../lib/browser-source-url";
 import { normalizeScreenWithTrace as normalizeScreen } from "../lib/screen-normalizer";
-import { executeAction, executeDeferredTestKeystroke } from "../store/event-dispatch";
+import { executeAction, executeDeferredTestKeystroke, dispatchTikTokEvent } from "../store/event-dispatch";
 import { runManualTestAction } from "../lib/manual-action-test";
+import { dispatchTestActionCombo, dispatchTestGiftCombo } from "../lib/test-gift-combo";
 import { pendingKeystrokeController } from "../lib/pending-keystroke";
 import {
   exportActionPackFromActions,
@@ -583,7 +584,7 @@ function GiftCard({ gift, selected, onSelect }: { gift: TikTokGift; selected: bo
 // ── GIFT DATA — diambil live dari StreamToEarn ────────────────
 
 export function ActionsPage() {
-  const { actions, addAction, updateAction, deleteAction, duplicateAction, events, addEvent, updateEvent, deleteEvent } = useAppStore();
+  const { actions, addAction, updateAction, deleteAction, duplicateAction, events, addEvent, updateEvent, deleteEvent, setupConfig, updateSetupConfig } = useAppStore();
   const importActionsToCurrentProfile = useAppStore((s) => s.importActionsToCurrentProfile);
   const { plan, features } = useLicenseStore();
   const [searchQuery, setSearchQuery] = useState("");
@@ -611,6 +612,7 @@ export function ActionsPage() {
   const [selectedGift, setSelectedGift] = useState<string>("");
   const [giftSearch, setGiftSearch] = useState("");
   const [showGiftPicker, setShowGiftPicker] = useState(false);
+  const [testGiftRepeats, setTestGiftRepeats] = useState(1);
 
   const filteredGifts = allGifts.filter(g => !giftSearch || g.name.toLowerCase().includes(giftSearch.toLowerCase()));
 
@@ -1119,10 +1121,30 @@ export function ActionsPage() {
       })),
     }));
 
-    // If no linked event, fall back to a generic test but with proper structure
+    // If no linked event, execute the selected action directly through the
+    // normal queue path. No synthetic gift event is dispatched and no Goal
+    // Overlay side effects are triggered.
     if (linkedEvents.length === 0) {
-      console.warn('[TEST-ACTION] No linked event found for action:', action.name, '- using generic gift test');
-      testActionWithGenericEvent(action, rfKeyId);
+      console.warn('[TEST-ACTION] No linked event found for action:', action.name, '- using direct test of selected action');
+
+      const actionScreen = normalizeScreen(action.overlayScreen || action.screen || "Screen 1");
+      const maxQueue = setupConfig.overlayScreensMaxQueue?.[`screen-${Number(actionScreen) - 1}`] ?? 5;
+      console.log('[TEST-ACTION-DIRECT]', JSON.stringify({
+        actionId: action.id,
+        actionName: action.name,
+        actionScreen,
+        repeats: testGiftRepeats,
+        maxQueue,
+        rfKeyId,
+      }));
+
+      void dispatchTestActionCombo({
+        executeAction,
+        action,
+        repeatCount: testGiftRepeats,
+        screenId: `screen-${Number(actionScreen) - 1}`,
+        maxQueue,
+      });
       return;
     }
 
@@ -1243,8 +1265,34 @@ export function ActionsPage() {
       generatedEvent: testEventData,
     }));
 
-    // Use the same executeAction path as TikTok events, but bypass the queue
-    // so repeated test clicks play immediately instead of waiting for the previous test
+    // Gift tests run through the production dispatcher so the combo cap and the
+    // normal queue capacity are exercised. bypassQueue would hide both.
+    if (testEventData.type === "gift") {
+      const actionScreen = normalizeScreen(action.overlayScreen || action.screen || "Screen 1");
+      console.log('[TEST-ACTION-GIFT-COMBO]', JSON.stringify({
+        actionId: action.id,
+        actionName: action.name,
+        actionScreen,
+        repeats: testGiftRepeats,
+        maxQueue: setupConfig.overlayScreensMaxQueue?.[`screen-${Number(actionScreen) - 1}`] ?? 5,
+        rfKeyId,
+      }));
+      dispatchTestGiftCombo({
+        dispatch: dispatchTikTokEvent,
+        repeatCount: testGiftRepeats,
+        screenId: `screen-${Number(actionScreen) - 1}`,
+        giftName: testEventData.giftName,
+        giftId: testEventData.giftId,
+        diamondCount: testEventData.diamondCount,
+        giftImageUrl: testEventData.giftImageUrl,
+        user: "test_user",
+        roomId: `test-room-${actionScreen}`,
+      });
+      return;
+    }
+
+    // Non-gift tests keep the existing manual path: immediate execution with the
+    // pending-keystroke countdown.
     console.log('[TEST-ACTION-EXECUTE]', JSON.stringify({
       actionId: action.id,
       actionName: action.name,
@@ -1308,17 +1356,19 @@ export function ActionsPage() {
       actionId: action.id,
     }));
 
-    // SAME architecture as linked-event Test Action — including keystroke pending.
-    // New Actions often have no linked event; they must not bypass pending.
-    runManualTestAction(action, testEventData, rfKey, {
-      executeAction,
-      executeDeferredTestKeystroke,
-      showPendingKeystroke,
-      updatePendingKeystroke,
-      hidePendingKeystroke,
-      pendingController: pendingKeystrokeController,
-      setInterval: (fn, ms) => window.setInterval(fn, ms),
-      clearInterval: (id) => window.clearInterval(id),
+    // Generic tests are also gifts, so they use the dispatcher and queue instead
+    // of the manual bypass path.
+    const actionScreen = normalizeScreen(action.overlayScreen || action.screen || "Screen 1");
+    dispatchTestGiftCombo({
+      dispatch: dispatchTikTokEvent,
+      repeatCount: testGiftRepeats,
+      screenId: `screen-${Number(actionScreen) - 1}`,
+      giftName: testEventData.giftName,
+      giftId: testEventData.giftId,
+      diamondCount: testEventData.diamondCount,
+      giftImageUrl: testEventData.giftImageUrl,
+      user: "test_user",
+      roomId: `test-room-${actionScreen}`,
     });
   }
 
@@ -1371,6 +1421,13 @@ export function ActionsPage() {
               <Plus className="w-4 h-4" /> Create New Action
             </Button>
           </div>
+        </div>
+        {/* Test Gift Repeats Control */}
+        <div className="flex items-center gap-2 mb-4">
+          <label className="text-xs text-white/40">Test Gift Repeats:</label>
+          <input type="number" min={1} max={101} value={testGiftRepeats}
+            onChange={(e) => setTestGiftRepeats(Math.max(1, Math.min(101, Number(e.target.value) || 1)))}
+            className="w-16 h-7 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs text-white outline-none focus:border-primary/40 text-center" />
         </div>
       </motion.div>
 
@@ -1554,7 +1611,17 @@ export function ActionsPage() {
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <div className="flex items-center gap-1.5">
-                    <input type="number" min={1} max={99} defaultValue={5}
+                    <input type="number" min={1} max={100}
+                      value={setupConfig.overlayScreensMaxQueue?.[`screen-${n - 1}`] ?? 5}
+                      onChange={(e) => {
+                        const value = Math.max(1, Math.min(100, Number(e.target.value) || 5));
+                        updateSetupConfig({
+                          overlayScreensMaxQueue: {
+                            ...setupConfig.overlayScreensMaxQueue,
+                            [`screen-${n - 1}`]: value,
+                          },
+                        });
+                      }}
                       className="w-12 h-7 px-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs text-white outline-none focus:border-primary/40 text-center" />
                     <span className="text-[10px] text-white/30">max</span>
                   </div>

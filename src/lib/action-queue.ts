@@ -68,23 +68,14 @@ const maxQueueLengthByScreen: Map<string, number> = new Map();
  * Reads from app-store setupConfig.overlayScreensMaxQueue with fallback to default.
  */
 export function getMaxQueueLength(screen: string): number {
-  // Check cache first
-  if (maxQueueLengthByScreen.has(screen)) {
-    return maxQueueLengthByScreen.get(screen)!;
-  }
-
-  // Read from app-store (may be undefined during SSR/initialization)
-  let maxQueue = DEFAULT_MAX_QUEUE_LENGTH;
-  try {
-    const setupConfig = useAppStore.getState().setupConfig;
-    if (setupConfig?.overlayScreensMaxQueue?.[screen] !== undefined) {
-      maxQueue = setupConfig.overlayScreensMaxQueue[screen];
-    }
-  } catch {
-    // Store not available (e.g., during tests or SSR)
-  }
-
-  // Cache the value
+  const index = Number(screen);
+  const configKey = Number.isInteger(index) && index >= 1 ? `screen-${index - 1}` : screen;
+  const configured = useAppStore.getState().setupConfig?.overlayScreensMaxQueue?.[configKey];
+  const maxQueue = Number.isFinite(configured)
+    ? Math.max(1, Math.min(100, Number(configured)))
+    : DEFAULT_MAX_QUEUE_LENGTH;
+  // Cache every lookup result. Stale fallback values such as 5 are overwritten
+  // when config hydrates, which fixes the stale default cache path.
   maxQueueLengthByScreen.set(screen, maxQueue);
   return maxQueue;
 }
@@ -222,6 +213,9 @@ export function enqueueAction(
   const admissionMode = deferIfFull ? 'deferred' : 'normal';
 
   if (totalVideoInFlight >= maxQueueForScreen) {
+    console.log('[DEBUG-QUEUE-FULL]', JSON.stringify({
+      screen, totalVideoInFlight, maxQueueForScreen, queueLength: queue.queue.length
+    }));
     if (deferIfFull && incomingIsVideo && queue.deferred.length < MAX_DEFERRED_PER_SCREEN) {
       const executionId = actionExecutionId || generateActionExecutionId();
       queue.deferred.push({

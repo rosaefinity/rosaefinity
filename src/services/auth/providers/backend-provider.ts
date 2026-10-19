@@ -4,14 +4,12 @@
 // =============================================
 
 import type { AuthProvider, AuthUser, AuthSession, AuthResult, AuthProviderType } from '../types';
+import { API_URL } from '../../../lib/api-url';
 
-// VITE_API_URL must be set in .env.production for production builds
-// In development, it falls back to localhost:3000/api
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
-
-if (!API_URL && !import.meta.env.DEV) {
-  console.error('[RosaeFinity] VITE_API_URL is not set. Authentication will not work without a backend URL.');
+if (!import.meta.env.DEV) {
+  console.log('[AUTH] Production API configured:', new URL(API_URL).origin);
 }
+
 const ACCESS_TOKEN_KEY = 'rf_access_token';
 const REFRESH_TOKEN_KEY = 'rf_refresh_token';
 

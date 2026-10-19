@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth-store';
 import { authFetch, isAuthFailureError } from '../lib/auth-fetch';
+import { API_URL } from '../lib/api-url';
 import { toast } from '../components/Toast';
 
 // ── Types ──
@@ -213,7 +214,7 @@ export function AdminUsersPage(): React.JSX.Element {
     try {
       // Use fetch directly to access pagination metadata alongside data
       const token = localStorage.getItem('rf_access_token');
-      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/v1/admin/users?page=${page}&limit=${PAGE_SIZE}`, {
+      const res = await fetch(`${API_URL}/v1/admin/users?page=${page}&limit=${PAGE_SIZE}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),

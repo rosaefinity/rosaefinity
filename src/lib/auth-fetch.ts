@@ -7,8 +7,7 @@
 import { getAuthProvider } from '../services/auth/auth-factory';
 import { useAuthStore } from '../store/auth-store';
 import { safeNavigate } from './safe-navigate';
-
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
+import { API_URL } from './api-url';
 const ACCESS_TOKEN_KEY = 'rf_access_token';
 
 interface AuthFetchError {

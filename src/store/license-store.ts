@@ -9,8 +9,7 @@ import { create } from 'zustand';
 import { api, safeInvoke } from '../services/electron-service';
 import type { LicenseV2Status, LicenseV2Features } from '../services/electron-service';
 import { useAuthStore } from './auth-store';
-
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '');
+import { API_URL } from '../lib/api-url';
 
 interface LicenseStore {
   // — State (all backend-sourced) —

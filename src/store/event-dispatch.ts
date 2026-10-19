@@ -20,6 +20,54 @@ const userCooldowns: Map<string, Map<string, number>> = new Map();
 // Track per-gift cumulative repeatCount to calculate the true delta.
 const lastGiftRepeatCount = new Map<string, number>();
 
+// Cumulative combo accounting. The per-screen Overlay Max Queue setting is
+// the single combo cap; no separate action-level combo setting exists.
+const comboDeliveredByKey = new Map<string, number>();
+const comboLastRepeatByKey = new Map<string, number>();
+
+function comboKey(data: any, actionId: string): string {
+  const screen = getNormalizedActionScreen({ overlayScreen: data.screenId || 'screen-0' });
+  return `${getGiftTrackKey(data)}::${screen}::${actionId}`;
+}
+
+function noteComboInstance(data: any): void {
+  const key = getGiftTrackKey(data);
+  const repeatCount = Math.max(1, Number(data.repeatCount) || 1);
+  const previous = comboLastRepeatByKey.get(key) ?? 0;
+  if (repeatCount < previous) {
+    const prefix = `${key}::`;
+    for (const deliveredKey of comboDeliveredByKey.keys()) {
+      if (deliveredKey.startsWith(prefix)) comboDeliveredByKey.delete(deliveredKey);
+    }
+  }
+  comboLastRepeatByKey.set(key, repeatCount);
+}
+
+export function resetComboState(): void {
+  comboDeliveredByKey.clear();
+  comboLastRepeatByKey.clear();
+}
+
+function comboExecutionDelta(data: any, actionId: string, maxCombo: number): number {
+  const key = comboKey(data, actionId);
+  const repeatCount = Math.max(1, Number(data.repeatCount) || 1);
+  const delivered = comboDeliveredByKey.get(key) ?? 0;
+  const target = Math.min(repeatCount, maxCombo);
+  const delta = Math.max(0, target - delivered);
+  if (delta > 0) comboDeliveredByKey.set(key, target);
+
+  console.log('[DEBUG-COMBO-DELTA]', JSON.stringify({
+    key, cumulative: repeatCount, delivered, target, delta
+  }));
+
+  return delta;
+}
+
+function getScreenComboLimit(screen: string): number {
+  const configured = useAppStore.getState().setupConfig?.overlayScreensMaxQueue?.[`screen-${Math.max(0, Number(screen) - 1)}`];
+  return Number.isFinite(configured) ? Math.max(1, Math.min(100, Number(configured))) : 5;
+}
+
 function getGiftTrackKey(data: any): string {
   return [data.screenId || 'screen-0', data.roomId || 'room-unknown', data.user || 'unknown', data.giftId || data.giftName || 'gift'].join(':');
 }
@@ -233,6 +281,14 @@ export function dispatchTikTokEvent(data: any) {
     const screenId: ScreenId = data.screenId || "screen-0";
     for (const key of lastGiftRepeatCount.keys()) {
       if (key.startsWith(`${screenId}:`)) lastGiftRepeatCount.delete(key);
+    }
+    // Clear combo state for this screen (new key format includes screen)
+    const comboPrefix = `${screenId}::`;
+    for (const key of comboDeliveredByKey.keys()) {
+      if (key.startsWith(comboPrefix)) comboDeliveredByKey.delete(key);
+    }
+    for (const key of comboLastRepeatByKey.keys()) {
+      if (key.startsWith(comboPrefix)) comboLastRepeatByKey.delete(key);
     }
     if (overlayDebugEnabled()) console.log('[DISPATCH-CLEANUP] TikTok disconnected, clearing state for screen', screenId);
     // Clear action queue
@@ -500,9 +556,13 @@ export function dispatchTikTokEvent(data: any) {
     }
 
     const isCombo = data.combo === true || data.gift?.combo === true;
-    const incrementCount = isCombo ? (Number(data.normalizedGiftDelta) || 0) : 1;
-    if (incrementCount <= 0) continue;
-    const executions = incrementCount;
+    const screen = getNormalizedActionScreen(action);
+    const rawIncrement = isCombo ? (Number(data.normalizedGiftDelta) || 0) : 1;
+    if (rawIncrement <= 0) continue;
+    // Ordinary gifts are independent. Max Queue is the single combo cap.
+    const executions = isCombo
+      ? (noteComboInstance(data), comboExecutionDelta(data, action.id, getScreenComboLimit(screen)))
+      : 1;
     for (let increment = 0; increment < executions; increment += 1) {
       const executionId = executions > 1
         ? `exec-combo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`

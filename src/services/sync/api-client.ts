@@ -5,9 +5,10 @@
 // =============================================
 
 import { api, isElectron } from '../electron-service';
-import type { SyncPushPayload, SyncPushResult, SyncPullResult, SyncEntityType } from './types';
+import type { SyncPushPayload, SyncPullResult, SyncPushResult, SyncEntityType } from './types';
+import { API_URL } from '../../lib/api-url';
 
-const BASE_URL = `${import.meta.env.VITE_API_URL}/v1`;
+const BASE_URL = `${API_URL}/v1`;
 
 interface RequestOptions {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
